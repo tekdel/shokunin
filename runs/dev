@@ -1,0 +1,32 @@
+#!/bin/bash
+# runs/dev - Development tools and languages
+
+# Programming languages
+sudo pacman -S --needed --noconfirm \
+    python \
+    python-pip \
+    python-pipx \
+    nodejs \
+    npm \
+    go \
+    rust \
+    rustup
+
+# Build tools
+sudo pacman -S --needed --noconfirm \
+    cmake \
+    make \
+    gcc \
+    clang \
+    llvm
+
+# Version control
+sudo pacman -S --needed --noconfirm \
+    github-cli
+
+# Development utilities
+sudo pacman -S --needed --noconfirm \
+    shellcheck \
+    shfmt
+
+echo "Development tools installed successfully!"

@@ -1,0 +1,45 @@
+#!/bin/bash
+# runs/terminal - Terminal emulator and CLI tools
+
+# Terminal emulator
+sudo pacman -S --needed --noconfirm \
+    alacritty
+
+# Shell
+sudo pacman -S --needed --noconfirm \
+    zsh \
+    zsh-completions \
+    zsh-syntax-highlighting \
+    zsh-autosuggestions
+
+# Modern CLI tools
+sudo pacman -S --needed --noconfirm \
+    bat \
+    eza \
+    fzf \
+    ripgrep \
+    fd \
+    zoxide \
+    starship \
+    btop \
+    dust \
+    duf \
+    procs \
+    tokei
+
+# Git tools
+sudo pacman -S --needed --noconfirm \
+    git-delta \
+    lazygit
+
+# Other useful CLI tools
+sudo pacman -S --needed --noconfirm \
+    tmux \
+    tree \
+    jq \
+    yq \
+    tldr \
+    the_silver_searcher
+
+echo "Terminal tools installed successfully!"
+echo "Consider changing your shell: chsh -s \$(which zsh)"

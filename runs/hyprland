@@ -1,0 +1,39 @@
+#!/bin/bash
+# runs/hyprland - Hyprland window manager and ecosystem
+
+# Core Hyprland packages
+sudo pacman -S --needed --noconfirm \
+    hyprland \
+    hyprlock \
+    hypridle \
+    hyprpaper \
+    waybar \
+    xdg-desktop-portal-hyprland \
+    xdg-desktop-portal-gtk \
+    qt5-wayland \
+    qt6-wayland \
+    polkit-gnome
+
+# Notifications and utilities
+sudo pacman -S --needed --noconfirm \
+    mako \
+    grim \
+    slurp \
+    swappy \
+    wl-clipboard \
+    cliphist \
+    brightnessctl \
+    playerctl \
+    pamixer
+
+# Application launcher and menu
+paru -S --needed --noconfirm \
+    rofi-wayland
+
+# Wallpaper and theming
+sudo pacman -S --needed --noconfirm \
+    swaybg \
+    waypaper
+
+echo "Hyprland installed successfully!"
+echo "Note: Copy dotfiles to ~/.config/hypr/ to configure"

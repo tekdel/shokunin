@@ -1,0 +1,28 @@
+#!/bin/bash
+# runs/docker - Docker and container tools
+
+sudo pacman -S --needed --noconfirm \
+    docker \
+    docker-compose \
+    docker-buildx
+
+# Install lazydocker from AUR
+paru -S --needed --noconfirm \
+    lazydocker
+
+# Enable and start docker service
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Add current user to docker group
+if [ -n "$SUDO_USER" ]; then
+    sudo usermod -aG docker "$SUDO_USER"
+    echo "User $SUDO_USER added to docker group"
+    echo "Note: Log out and back in for group changes to take effect"
+elif [ -n "$USER" ]; then
+    sudo usermod -aG docker "$USER"
+    echo "User $USER added to docker group"
+    echo "Note: Log out and back in for group changes to take effect"
+fi
+
+echo "Docker installed successfully!"

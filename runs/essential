@@ -1,0 +1,25 @@
+#!/bin/bash
+# runs/essential - Essential system packages
+
+sudo pacman -S --needed --noconfirm \
+    base-devel \
+    git \
+    vim \
+    neovim \
+    wget \
+    curl \
+    htop \
+    man-db \
+    man-pages \
+    bash-completion \
+    less \
+    unzip \
+    zip \
+    p7zip \
+    tar \
+    rsync \
+    openssh \
+    networkmanager \
+    inetutils \
+    usbutils \
+    pciutils

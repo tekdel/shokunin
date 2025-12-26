@@ -1,0 +1,130 @@
+#!/bin/bash
+# run - Execute installation scripts from runs/ directory
+# Usage:
+#   ./run              - Run all scripts
+#   ./run hyprland     - Run only scripts matching "hyprland"
+#   ./run --dry        - Dry run (show what would execute)
+#   ./run --dry docker - Dry run for docker
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNS_DIR="$SCRIPT_DIR/runs"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+DRY_RUN=false
+FILTERS=()
+
+# Parse arguments
+for arg in "$@"; do
+    case $arg in
+        --dry)
+            DRY_RUN=true
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS] [FILTER...]"
+            echo ""
+            echo "Options:"
+            echo "  --dry       Dry run (show what would execute without running)"
+            echo "  --help      Show this help message"
+            echo ""
+            echo "Filters:"
+            echo "  Run only scripts matching the filter(s)"
+            echo ""
+            echo "Examples:"
+            echo "  $0                    # Run all scripts"
+            echo "  $0 hyprland           # Run only hyprland script"
+            echo "  $0 docker cups        # Run docker and cups scripts"
+            echo "  $0 --dry              # See what would run (all scripts)"
+            echo "  $0 --dry hyprland     # See what hyprland script would do"
+            exit 0
+            ;;
+        *)
+            FILTERS+=("$arg")
+            ;;
+    esac
+done
+
+# Check if runs directory exists
+if [ ! -d "$RUNS_DIR" ]; then
+    echo -e "${RED}Error: runs/ directory not found${NC}"
+    exit 1
+fi
+
+# Find all executable scripts in runs/
+scripts=()
+while IFS= read -r -d '' script; do
+    scripts+=("$script")
+done < <(find "$RUNS_DIR" -maxdepth 1 -type f -executable -print0 | sort -z)
+
+if [ ${#scripts[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No executable scripts found in runs/${NC}"
+    exit 1
+fi
+
+# Apply filters
+filtered_scripts=()
+if [ ${#FILTERS[@]} -eq 0 ]; then
+    # No filters, use all scripts
+    filtered_scripts=("${scripts[@]}")
+else
+    # Apply filters
+    for script in "${scripts[@]}"; do
+        script_name=$(basename "$script")
+        for filter in "${FILTERS[@]}"; do
+            if [[ "$script_name" == *"$filter"* ]]; then
+                filtered_scripts+=("$script")
+                break
+            fi
+        done
+    done
+fi
+
+if [ ${#filtered_scripts[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No scripts match the filter(s): ${FILTERS[*]}${NC}"
+    exit 1
+fi
+
+# Show what will run
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}DRY RUN MODE${NC} - No changes will be made"
+else
+    echo -e "${GREEN}Running installation scripts${NC}"
+fi
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+for script in "${filtered_scripts[@]}"; do
+    script_name=$(basename "$script")
+
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "${BLUE}[DRY RUN]${NC} Would execute: ${GREEN}$script_name${NC}"
+    else
+        echo -e "${GREEN}▶${NC} Running: ${GREEN}$script_name${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+        if bash "$script"; then
+            echo -e "${GREEN}✓${NC} $script_name completed successfully"
+        else
+            echo -e "${RED}✗${NC} $script_name failed"
+            exit 1
+        fi
+
+        echo ""
+    fi
+done
+
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}Dry run complete${NC} - ${#filtered_scripts[@]} script(s) would run"
+else
+    echo -e "${GREEN}All scripts completed successfully!${NC}"
+fi
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

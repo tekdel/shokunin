@@ -1,0 +1,33 @@
+#!/bin/bash
+# runs/apps - Optional applications
+
+# Web browser (zen-browser from AUR)
+paru -S --needed --noconfirm \
+    zen-browser-bin
+
+# File manager
+sudo pacman -S --needed --noconfirm \
+    nautilus \
+    file-roller
+
+# Media
+sudo pacman -S --needed --noconfirm \
+    mpv \
+    imv
+
+# PDF viewer
+sudo pacman -S --needed --noconfirm \
+    zathura \
+    zathura-pdf-mupdf
+
+# Office (uncomment if needed)
+# sudo pacman -S --needed --noconfirm \
+#     libreoffice-fresh
+
+# Communication (AUR - uncomment if needed)
+# paru -S --needed --noconfirm \
+#     discord \
+#     slack-desktop \
+#     spotify
+
+echo "Applications installed successfully!"

@@ -1,0 +1,16 @@
+#!/bin/bash
+# runs/cups - Printing support
+
+sudo pacman -S --needed --noconfirm \
+    cups \
+    cups-pdf \
+    ghostscript \
+    gsfonts \
+    system-config-printer
+
+# Enable and start cups service
+sudo systemctl enable cups
+sudo systemctl start cups
+
+echo "CUPS printing system installed successfully!"
+echo "Access printer configuration at: http://localhost:631"
