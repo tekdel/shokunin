@@ -47,4 +47,4 @@ white   = "#a6adc8"
 style = { shape = "Block", blinking = "On" }
 
 [shell]
-program = "/bin/bash"
+program = "/bin/zsh"

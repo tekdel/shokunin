@@ -27,6 +27,7 @@ sudo pacman -S --needed --noconfirm \
 # Development utilities
 sudo pacman -S --needed --noconfirm \
     shellcheck \
-    shfmt
+    shfmt \
+    mise
 
 echo "Development tools installed successfully!"

@@ -18,11 +18,12 @@ A modular, maintainable Arch Linux installation system with Hyprland. Inspired b
 
 - **Window Manager:** Hyprland with full ecosystem
 - **Terminal:** Alacritty + modern CLI tools (bat, eza, fzf, ripgrep, etc.)
-- **Shell:** Bash with starship prompt
+- **Shell:** Zsh with Oh My Zsh
 - **Browser:** Zen Browser
+- **Boot:** Plymouth splash screen (Omarchy-style)
 - **Services:** Docker, CUPS (printing)
-- **Development:** Git, Neovim, multiple language toolchains
-- **Your dotfiles:** Hyprland, Waybar, Alacritty configs included
+- **Development:** Git, Neovim, mise, multiple language toolchains
+- **Your dotfiles:** Hyprland, Waybar, Alacritty, tmux configs included
 
 ## Repository Structure
 
@@ -206,13 +207,13 @@ git pull
 
 | Script | Purpose | Key Packages |
 |--------|---------|--------------|
-| `essential` | Core system | base-devel, git, vim, htop |
+| `essential` | Core system | base-devel, git, vim, neovim, plymouth |
 | `hyprland` | Window manager | hyprland, waybar, rofi, mako |
-| `terminal` | CLI tools | alacritty, bat, eza, fzf, ripgrep |
+| `terminal` | CLI tools | alacritty, zsh, oh-my-zsh, bat, eza, fzf, ripgrep, tmux |
 | `docker` | Containers | docker, docker-compose, lazydocker |
 | `cups` | Printing | cups, system-config-printer |
-| `dev` | Development | python, node, rust, go |
-| `apps` | Applications | zen-browser, nautilus, mpv |
+| `dev` | Development | python, nodejs, rust, go, mise |
+| `apps` | Applications | zen-browser, nautilus, mpv, keepassxc |
 | `fonts` | Fonts | JetBrains Mono, Nerd Fonts |
 
 ## What Makes This Different
@@ -221,12 +222,14 @@ git pull
 
 | Feature | Omarchy | This Installer |
 |---------|---------|----------------|
-| Packages | 144+ packages | ~50-70 packages (minimal) |
+| Packages | 144+ packages | ~60-80 packages (minimal) |
 | Customization | Complex theme system | Simple dotfiles |
 | Updates | Custom migration system | Standard git + pacman |
 | Maintenance | Update through Omarchy system | Edit scripts directly |
 | Bloat | Many apps pre-installed | Only essentials |
 | Control | Opinionated defaults | Full control |
+| Plymouth | ✅ bgrt theme | ✅ Same (bgrt theme) |
+| Shell | Zsh | ✅ Zsh + Oh My Zsh |
 
 ### vs ThePrimeagen's Setup
 

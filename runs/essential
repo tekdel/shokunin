@@ -22,4 +22,7 @@ sudo pacman -S --needed --noconfirm \
     networkmanager \
     inetutils \
     usbutils \
-    pciutils
+    pciutils \
+    plymouth
+
+echo "Essential packages installed successfully!"

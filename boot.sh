@@ -177,9 +177,34 @@ if [ -d "/root/installer/dotfiles" ]; then
         cp -r /root/installer/dotfiles/nvim /home/$USERNAME/.config/
     fi
 
+    # Copy home directory files
+    if [ -f "/root/installer/dotfiles/bash/.bashrc" ]; then
+        cp /root/installer/dotfiles/bash/.bashrc /home/$USERNAME/
+    fi
+    if [ -f "/root/installer/dotfiles/bash/.bash_profile" ]; then
+        cp /root/installer/dotfiles/bash/.bash_profile /home/$USERNAME/
+    fi
+    if [ -f "/root/installer/dotfiles/zsh/.zshrc" ]; then
+        cp /root/installer/dotfiles/zsh/.zshrc /home/$USERNAME/
+    fi
+    if [ -f "/root/installer/dotfiles/git/.gitconfig" ]; then
+        cp /root/installer/dotfiles/git/.gitconfig /home/$USERNAME/
+    fi
+    if [ -f "/root/installer/dotfiles/tmux/.tmux.conf" ]; then
+        cp /root/installer/dotfiles/tmux/.tmux.conf /home/$USERNAME/
+    fi
+    if [ -f "/root/installer/dotfiles/.mise.toml" ]; then
+        cp /root/installer/dotfiles/.mise.toml /home/$USERNAME/
+    fi
+
     # Fix permissions
     chown -R $USERNAME:$USERNAME /home/$USERNAME
     success "Dotfiles installed"
+fi
+
+# Configure Plymouth if installed
+if pacman -Q plymouth >/dev/null 2>&1; then
+    run_script "./install/05-plymouth.sh"
 fi
 
 # Enable services

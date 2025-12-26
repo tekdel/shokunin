@@ -21,14 +21,14 @@ cat > /boot/loader/entries/arch.conf <<EOF
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /initramfs-linux.img
-options root=UUID=$ROOT_UUID rw quiet splash
+options root=UUID=$ROOT_UUID rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash
 EOF
 
 # Configure bootloader
 cat > /boot/loader/loader.conf <<EOF
 default arch.conf
-timeout 3
-console-mode max
+timeout 0
+console-mode keep
 editor  no
 EOF
 

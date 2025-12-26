@@ -36,7 +36,7 @@ EOF
 
 # Create user
 log "Creating user $USERNAME..."
-useradd -m -G $USER_GROUPS -s /bin/bash $USERNAME
+useradd -m -G $USER_GROUPS -s /bin/zsh $USERNAME
 
 # Set user password
 log "Setting password for $USERNAME..."
