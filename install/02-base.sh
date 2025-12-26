@@ -28,7 +28,8 @@ pacstrap /mnt \
     git \
     vim \
     sudo \
-    reflector
+    reflector \
+    efibootmgr
 
 # Generate fstab
 log "Generating fstab..."
