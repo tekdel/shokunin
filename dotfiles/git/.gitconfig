@@ -1,0 +1,34 @@
+[user]
+    name = Your Name
+    email = your.email@example.com
+
+[core]
+    editor = nvim
+    pager = delta
+
+[init]
+    defaultBranch = main
+
+[pull]
+    rebase = true
+
+[push]
+    default = current
+    autoSetupRemote = true
+
+[alias]
+    st = status
+    co = checkout
+    br = branch
+    ci = commit
+    unstage = reset HEAD --
+    last = log -1 HEAD
+    lg = log --oneline --graph --decorate --all
+
+[delta]
+    navigate = true
+    line-numbers = true
+    side-by-side = true
+
+[interactive]
+    diffFilter = delta --color-only

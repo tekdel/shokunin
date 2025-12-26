@@ -20,6 +20,10 @@ sudo pacman -S --needed --noconfirm \
     zathura \
     zathura-pdf-mupdf
 
+# Password manager
+sudo pacman -S --needed --noconfirm \
+    keepassxc
+
 # Office (uncomment if needed)
 # sudo pacman -S --needed --noconfirm \
 #     libreoffice-fresh
