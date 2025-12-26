@@ -29,7 +29,8 @@ pacstrap /mnt \
     vim \
     sudo \
     reflector \
-    efibootmgr
+    efibootmgr \
+    cryptsetup
 
 # Generate fstab
 log "Generating fstab..."

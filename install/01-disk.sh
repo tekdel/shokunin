@@ -1,5 +1,5 @@
 #!/bin/bash
-# install/01-disk.sh - Partition and format disk
+# install/01-disk.sh - Partition and format disk with LUKS encryption
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
@@ -7,15 +7,18 @@ source "$SCRIPT_DIR/../config/system.conf"
 
 check_root
 
-log "Starting disk partitioning on $DISK"
+log "Starting disk partitioning on $DISK with LUKS encryption"
 
 # Warn user
 warn "This will ERASE ALL DATA on $DISK"
+warn "Full-disk encryption will be enabled (Omarchy-style)"
 warn "Press Ctrl+C to cancel, or press Enter to continue..."
 read -r
 
 # Unmount if mounted
 umount -R /mnt 2>/dev/null || true
+cryptsetup close cryptroot 2>/dev/null || true
+cryptsetup close cryptswap 2>/dev/null || true
 
 # Wipe disk
 log "Wiping disk..."
@@ -26,24 +29,24 @@ sgdisk --zap-all "$DISK"
 log "Creating partition table..."
 parted "$DISK" --script mklabel gpt
 
-# Create EFI partition (512MB)
-log "Creating EFI partition..."
-parted "$DISK" --script mkpart ESP fat32 1MiB 513MiB
+# Create EFI partition (1GB - Omarchy standard)
+log "Creating EFI partition (1GB)..."
+parted "$DISK" --script mkpart ESP fat32 1MiB 1025MiB
 parted "$DISK" --script set 1 esp on
 
 # Create swap partition (if enabled)
 if [ "$SWAP_SIZE" != "0" ]; then
-    log "Creating swap partition ($SWAP_SIZE)..."
-    SWAP_END="$((513 + ${SWAP_SIZE%G} * 1024))MiB"
-    parted "$DISK" --script mkpart primary linux-swap 513MiB "$SWAP_END"
+    log "Creating encrypted swap partition ($SWAP_SIZE)..."
+    SWAP_END="$((1025 + ${SWAP_SIZE%G} * 1024))MiB"
+    parted "$DISK" --script mkpart primary 1025MiB "$SWAP_END"
     ROOT_START="$SWAP_END"
 else
-    ROOT_START="513MiB"
+    ROOT_START="1025MiB"
 fi
 
 # Create root partition (rest of disk)
-log "Creating root partition..."
-parted "$DISK" --script mkpart primary ext4 "$ROOT_START" 100%
+log "Creating encrypted root partition..."
+parted "$DISK" --script mkpart primary "$ROOT_START" 100%
 
 # Determine partition names
 if [[ "$DISK" =~ "nvme" ]]; then
@@ -64,24 +67,57 @@ else
     fi
 fi
 
-# Format partitions
+# Format EFI partition (unencrypted)
 log "Formatting EFI partition..."
 mkfs.fat -F32 "$EFI_PART"
 
-if [ "$SWAP_SIZE" != "0" ]; then
-    log "Setting up swap..."
-    mkswap "$SWAP_PART"
-    swapon "$SWAP_PART"
-fi
+# Set up LUKS encryption
+log "Setting up LUKS encryption..."
+info "You will be prompted to enter an encryption password"
+info "This password will be required at every boot"
+warn "DO NOT FORGET THIS PASSWORD - there is no recovery!"
+echo ""
 
-log "Formatting root partition..."
-mkfs.ext4 -F "$ROOT_PART"
+# Encrypt root partition
+log "Encrypting root partition..."
+cryptsetup luksFormat --type luks2 "$ROOT_PART"
+
+log "Opening encrypted root partition..."
+cryptsetup open "$ROOT_PART" cryptroot
+
+# Format encrypted root
+log "Formatting encrypted root partition..."
+mkfs.ext4 /dev/mapper/cryptroot
+
+# Set up encrypted swap (if enabled)
+if [ "$SWAP_SIZE" != "0" ]; then
+    log "Encrypting swap partition..."
+    echo "Swap" | cryptsetup luksFormat --type luks2 "$SWAP_PART" -
+
+    log "Opening encrypted swap..."
+    echo "Swap" | cryptsetup open "$SWAP_PART" cryptswap -
+
+    log "Formatting swap..."
+    mkswap /dev/mapper/cryptswap
+    swapon /dev/mapper/cryptswap
+fi
 
 # Mount partitions
 log "Mounting partitions..."
-mount "$ROOT_PART" /mnt
+mount /dev/mapper/cryptroot /mnt
 mkdir -p /mnt/boot
 mount "$EFI_PART" /mnt/boot
 
-success "Disk partitioning complete!"
+# Export partition info for other scripts
+export ROOT_PART
+export SWAP_PART
+export EFI_PART
+
+success "Disk partitioning with LUKS encryption complete!"
 lsblk "$DISK"
+echo ""
+info "Encrypted partitions:"
+info "  Root: $ROOT_PART -> /dev/mapper/cryptroot"
+if [ "$SWAP_SIZE" != "0" ]; then
+    info "  Swap: $SWAP_PART -> /dev/mapper/cryptswap"
+fi

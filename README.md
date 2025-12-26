@@ -20,7 +20,8 @@ A modular, maintainable Arch Linux installation system with Hyprland. Inspired b
 - **Terminal:** Alacritty + modern CLI tools (bat, eza, fzf, ripgrep, etc.)
 - **Shell:** Zsh with Oh My Zsh
 - **Browser:** Zen Browser
-- **Boot:** Plymouth splash screen (Omarchy-style)
+- **Boot:** Limine bootloader + Plymouth splash screen (Omarchy-style)
+- **Security:** LUKS2 full-disk encryption (required)
 - **Services:** Docker, CUPS (printing)
 - **Development:** Git, Neovim, mise, multiple language toolchains
 - **Your dotfiles:** Hyprland, Waybar, Alacritty, tmux configs included

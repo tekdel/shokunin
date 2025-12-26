@@ -101,21 +101,32 @@ ROOT_PASSWORD=$(prompt_password "Enter root password")
 # Timezone
 TIMEZONE=$(prompt "Enter timezone (e.g., Europe/Bucharest)" "$TIMEZONE")
 
+# Swap size
+echo ""
+info "Swap partition configuration"
+info "Recommended: 32G for systems with 16-32GB RAM"
+info "Set to 0 to disable swap"
+SWAP_SIZE=$(prompt "Enter swap size (e.g., 32G, 16G, or 0 for no swap)" "$SWAP_SIZE")
+
 # Export for use in scripts
-export DISK HOSTNAME USERNAME USER_PASSWORD ROOT_PASSWORD TIMEZONE
+export DISK HOSTNAME USERNAME USER_PASSWORD ROOT_PASSWORD TIMEZONE SWAP_SIZE
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}Configuration Summary${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "Disk:     ${GREEN}$DISK${NC}"
-echo -e "Hostname: ${GREEN}$HOSTNAME${NC}"
-echo -e "Username: ${GREEN}$USERNAME${NC}"
-echo -e "Timezone: ${GREEN}$TIMEZONE${NC}"
+echo -e "Disk:       ${GREEN}$DISK${NC}"
+echo -e "Swap:       ${GREEN}$SWAP_SIZE${NC}"
+echo -e "Encryption: ${GREEN}LUKS2 (required)${NC}"
+echo -e "Hostname:   ${GREEN}$HOSTNAME${NC}"
+echo -e "Username:   ${GREEN}$USERNAME${NC}"
+echo -e "Timezone:   ${GREEN}$TIMEZONE${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 warn "This will ERASE ALL DATA on $DISK!"
+warn "Full-disk encryption will be enabled"
+warn "You will set an encryption password during installation"
 warn "Press Ctrl+C now to cancel, or press Enter to continue..."
 read -r
 

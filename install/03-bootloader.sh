@@ -12,13 +12,23 @@ log "Installing Limine bootloader..."
 # Install Limine package
 pacman -S --needed --noconfirm limine
 
-# Get root partition UUID and device
-ROOT_PART=$(findmnt -n -o SOURCE /)
-ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
-DISK=$(lsblk -no PKNAME "$ROOT_PART")
+# Get root partition device and UUID
+# If encrypted, we need the underlying physical partition
+if [ -e /dev/mapper/cryptroot ]; then
+    # Encrypted system
+    CRYPT_PART=$(cryptsetup status cryptroot | grep device: | awk '{print $2}')
+    CRYPT_UUID=$(blkid -s UUID -o value "$CRYPT_PART")
+    DISK=$(lsblk -no PKNAME "$CRYPT_PART")
 
-# Get kernel command line parameters
-CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash"
+    # Kernel command line with encryption
+    CMDLINE="cryptdevice=UUID=$CRYPT_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash"
+else
+    # Non-encrypted system (shouldn't happen with our setup)
+    ROOT_PART=$(findmnt -n -o SOURCE /)
+    ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
+    DISK=$(lsblk -no PKNAME "$ROOT_PART")
+    CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash"
+fi
 
 # Create Limine configuration
 log "Creating Limine configuration..."
