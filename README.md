@@ -74,7 +74,7 @@ A modular, maintainable Arch Linux installation system with Hyprland. Inspired b
 
 ```bash
 # If you've published to GitHub:
-curl -L https://raw.githubusercontent.com/YOUR-USERNAME/arch-minimal/main/boot.sh | bash
+curl -L https://raw.githubusercontent.com/tekdel/shokunin/main/boot.sh | bash
 
 # Or copy this repository to the ISO and run:
 ./boot.sh
@@ -93,8 +93,8 @@ curl -L https://raw.githubusercontent.com/YOUR-USERNAME/arch-minimal/main/boot.s
 
 ```bash
 # Clone repository
-git clone https://github.com/YOUR-USERNAME/arch-minimal ~/arch-minimal
-cd ~/arch-minimal
+git clone https://github.com/tekdel/shokunin ~/shokunin
+cd ~/shokunin
 
 # Install everything
 ./run
@@ -189,7 +189,7 @@ git push
 sudo pacman -Syu
 
 # Update this installer
-cd ~/arch-minimal
+cd ~/shokunin
 git pull
 ```
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # boot.sh - Main entry point for fresh Arch Linux installation
-# Usage: curl -L https://raw.githubusercontent.com/YOU/arch-minimal/main/boot.sh | bash
+# Usage: curl -L https://raw.githubusercontent.com/tekdel/shokunin/main/boot.sh | bash
 
 set -e
 
@@ -43,8 +43,8 @@ if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
 fi
 
 # Clone or navigate to repo
-REPO_URL="https://github.com/andrei/arch-minimal.git"  # CHANGE THIS TO YOUR REPO
-INSTALL_DIR="/root/arch-minimal"
+REPO_URL="https://github.com/tekdel/shokunin.git"
+INSTALL_DIR="/root/shokunin"
 
 if [ -d "$INSTALL_DIR" ]; then
     log "Repository already exists, using existing directory..."
@@ -227,9 +227,9 @@ for service in "\${ENABLE_SERVICES[@]}"; do
 done
 
 # Copy installer to user's home for future use
-log "Copying installer to /home/$USERNAME/arch-minimal..."
-cp -r /root/installer /home/$USERNAME/arch-minimal
-chown -R $USERNAME:$USERNAME /home/$USERNAME/arch-minimal
+log "Copying installer to /home/$USERNAME/shokunin..."
+cp -r /root/installer /home/$USERNAME/shokunin
+chown -R $USERNAME:$USERNAME /home/$USERNAME/shokunin
 
 success "Installation complete!"
 
@@ -250,6 +250,6 @@ echo ""
 echo -e "After reboot:"
 echo -e "  1. Log in with username: ${GREEN}$USERNAME${NC}"
 echo -e "  2. Start Hyprland: ${GREEN}Hyprland${NC}"
-echo -e "  3. Manage packages: ${GREEN}cd ~/arch-minimal && ./run${NC}"
+echo -e "  3. Manage packages: ${GREEN}cd ~/shokunin && ./run${NC}"
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
