@@ -17,7 +17,10 @@ if [ -e /dev/mapper/cryptroot ]; then
     # Encrypted system
     CRYPT_PART=$(cryptsetup status cryptroot | grep device: | awk '{print $2}')
     CRYPT_UUID=$(blkid -s UUID -o value "$CRYPT_PART")
-    DISK=$(lsblk -no PKNAME "$CRYPT_PART")
+
+    # Get the disk device (e.g., vda from /dev/vda3)
+    # Remove partition number and /dev/ prefix
+    DISK=$(echo "$CRYPT_PART" | sed 's/[0-9]*$//' | sed 's|/dev/||')
 
     # Kernel command line with encryption
     CMDLINE="cryptdevice=UUID=$CRYPT_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash"
@@ -25,9 +28,14 @@ else
     # Non-encrypted system (shouldn't happen with our setup)
     ROOT_PART=$(findmnt -n -o SOURCE /)
     ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
-    DISK=$(lsblk -no PKNAME "$ROOT_PART")
+
+    # Get the disk device
+    DISK=$(echo "$ROOT_PART" | sed 's/[0-9]*$//' | sed 's|/dev/||')
+
     CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash"
 fi
+
+log "Using disk: $DISK"
 
 # Create Limine configuration
 log "Creating Limine configuration..."
