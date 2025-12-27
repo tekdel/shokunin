@@ -17,11 +17,10 @@ log "Configuring Plymouth boot splash (Omarchy-style)..."
 # Backup mkinitcpio.conf
 cp /etc/mkinitcpio.conf /etc/mkinitcpio.conf.backup
 
-# Configure HOOKS following Omarchy's approach with encryption
-# HOOKS order: base udev plymouth keyboard autodetect microcode modconf kms keymap consolefont block encrypt filesystems fsck
-# Plymouth must come BEFORE encrypt for graphical password prompt
-log "Configuring mkinitcpio hooks with encryption support..."
-sed -i 's/^HOOKS=.*/HOOKS=(base udev plymouth keyboard autodetect microcode modconf kms keymap consolefont block encrypt filesystems fsck)/' /etc/mkinitcpio.conf
+# Add Plymouth hook (encryption hooks already configured by 02.5-initramfs.sh)
+# Plymouth must come AFTER udev but BEFORE keyboard for graphical password prompt
+log "Adding Plymouth to mkinitcpio hooks..."
+sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
 
 # Set Plymouth theme (bgrt shows UEFI manufacturer logo)
 log "Setting Plymouth theme..."

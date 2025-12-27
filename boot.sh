@@ -202,6 +202,8 @@ export USER_PASSWORD="$USER_PASSWORD"
 export ROOT_PASSWORD="$ROOT_PASSWORD"
 export TIMEZONE="$TIMEZONE"
 
+# Configure initramfs with encryption support BEFORE bootloader
+run_script "./install/02.5-initramfs.sh"
 run_script "./install/03-bootloader.sh"
 run_script "./install/04-users.sh"
 
