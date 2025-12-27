@@ -55,25 +55,12 @@ theme_margin: 0
     cmdline: $CMDLINE
     module_path: boot():/initramfs-linux.img
 
-# LTS kernel
-/Arch Linux LTS
-    protocol: linux
-    kernel_path: boot():/vmlinuz-linux-lts
-    cmdline: $CMDLINE
-    module_path: boot():/initramfs-linux-lts.img
-
-# Fallback entries
+# Fallback initramfs (for recovery)
 /Arch Linux (Fallback)
     protocol: linux
     kernel_path: boot():/vmlinuz-linux
     cmdline: $CMDLINE
     module_path: boot():/initramfs-linux-fallback.img
-
-/Arch Linux LTS (Fallback)
-    protocol: linux
-    kernel_path: boot():/vmlinuz-linux-lts
-    cmdline: $CMDLINE
-    module_path: boot():/initramfs-linux-lts-fallback.img
 EOF
 
 # Install Limine to disk
