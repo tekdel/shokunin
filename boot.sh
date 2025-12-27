@@ -46,7 +46,7 @@ fi
 
 # Repository configuration
 REPO_URL="https://github.com/tekdel/shokunin.git"
-TARBALL_URL_GITHUB="https://github.com/tekdel/shokunin/archive/refs/heads/main.tar.gz"
+TARBALL_URL_GITHUB="https://github.com/tekdel/shokunin/archive/refs/heads/master.tar.gz"
 TARBALL_URL_LOCAL="http://10.0.2.2:8000/shokunin.tar.gz"
 INSTALL_DIR="/root/shokunin"
 
