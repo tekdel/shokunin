@@ -9,13 +9,7 @@ check_root
 
 log "Starting disk partitioning on $DISK with LUKS encryption"
 
-# Warn user
-warn "This will ERASE ALL DATA on $DISK"
-warn "Full-disk encryption will be enabled (Omarchy-style)"
-warn "Press Ctrl+C to cancel, or press Enter to continue..."
-read -r
-
-# Unmount if mounted
+# Unmount if mounted (no need to ask again - already confirmed in boot.sh)
 umount -R /mnt 2>/dev/null || true
 cryptsetup close cryptroot 2>/dev/null || true
 cryptsetup close cryptswap 2>/dev/null || true
@@ -78,12 +72,35 @@ info "This password will be required at every boot"
 warn "DO NOT FORGET THIS PASSWORD - there is no recovery!"
 echo ""
 
-# Encrypt root partition
-log "Encrypting root partition..."
-cryptsetup luksFormat --type luks2 "$ROOT_PART"
+# Encrypt root partition with retry logic
+MAX_RETRIES=3
+RETRY_COUNT=0
 
-log "Opening encrypted root partition..."
-cryptsetup open "$ROOT_PART" cryptroot
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    log "Encrypting root partition... (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
+
+    if cryptsetup luksFormat --type luks2 "$ROOT_PART"; then
+        log "Opening encrypted root partition..."
+
+        if cryptsetup open "$ROOT_PART" cryptroot; then
+            success "Root partition encrypted and opened successfully!"
+            break
+        else
+            warn "Failed to open partition - password mismatch?"
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                warn "Let's try again. Please enter the SAME password twice."
+                # Wipe the failed LUKS header and retry
+                wipefs -af "$ROOT_PART"
+            else
+                error "Failed to encrypt root partition after $MAX_RETRIES attempts"
+            fi
+        fi
+    else
+        error "Failed to format LUKS partition"
+    fi
+done
 
 # Format encrypted root
 log "Formatting encrypted root partition..."
