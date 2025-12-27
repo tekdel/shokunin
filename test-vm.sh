@@ -142,12 +142,7 @@ install_mode() {
         -boot d \
         -nic user,model=virtio-net-pci \
         -vga virtio \
-        -device virtio-serial-pci \
-        -device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
-        -chardev spicevmc,id=spicechannel0,name=vdagent \
-        -spice port=5930,disable-ticketing=on \
-        -device qxl-vga \
-        -display gtk,gl=on \
+        -display gtk,gl=on,grab-on-hover=on \
         -audiodev pa,id=snd0 \
         -device intel-hda \
         -device hda-output,audiodev=snd0
@@ -172,12 +167,7 @@ boot_mode() {
         -boot c \
         -nic user,model=virtio-net-pci \
         -vga virtio \
-        -device virtio-serial-pci \
-        -device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
-        -chardev spicevmc,id=spicechannel0,name=vdagent \
-        -spice port=5930,disable-ticketing=on \
-        -device qxl-vga \
-        -display gtk,gl=on \
+        -display gtk,gl=on,grab-on-hover=on \
         -audiodev pa,id=snd0 \
         -device intel-hda \
         -device hda-output,audiodev=snd0
