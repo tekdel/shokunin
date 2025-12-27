@@ -87,7 +87,7 @@ The script will automatically:
    - Which disk to use (auto-detects /dev/vda for VM, /dev/sda for hardware, /dev/nvme0n1 for NVMe)
    - Hostname
    - Username & password
-   - Timezone
+   - Timezone (default: America/Los_Angeles)
    - Swap size (default: 32GB)
 
 5. **Wait 20-30 minutes**

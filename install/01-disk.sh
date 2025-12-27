@@ -3,8 +3,8 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
-source "$SCRIPT_DIR/../config/system.conf"
 
+# Don't source system.conf - we use exported variables from boot.sh
 check_root
 
 log "Starting disk partitioning on $DISK with LUKS encryption"

@@ -145,7 +145,7 @@ USER_PASSWORD=$(prompt_password "Enter password for $USERNAME")
 ROOT_PASSWORD=$(prompt_password "Enter root password")
 
 # Timezone
-TIMEZONE=$(prompt "Enter timezone (e.g., Europe/Bucharest)" "$TIMEZONE")
+TIMEZONE=$(prompt "Enter timezone (e.g., America/Los_Angeles)" "$TIMEZONE")
 
 # Swap size
 echo ""
