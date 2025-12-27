@@ -219,7 +219,7 @@ info "Set to 0 to disable swap"
 SWAP_SIZE=$(prompt "Enter swap size (e.g., 32G, 16G, or 0 for no swap)" "$SWAP_SIZE")
 
 # Export for use in scripts
-export DISK HOSTNAME USERNAME USER_PASSWORD ROOT_PASSWORD TIMEZONE SWAP_SIZE
+export DISK HOSTNAME USERNAME USER_PASSWORD ROOT_PASSWORD TIMEZONE SWAP_SIZE CRYPT_PASSWORD
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -235,8 +235,7 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 warn "This will ERASE ALL DATA on $DISK!"
-warn "Full-disk encryption will be enabled"
-warn "You will set an encryption password during installation"
+warn "Full-disk encryption will be enabled (password already set)"
 warn "Press Ctrl+C now to cancel, or press Enter to continue..."
 read -r </dev/tty
 
@@ -249,6 +248,8 @@ echo ""
 
 # Phase 1: Disk setup and base system (run outside chroot)
 if ! should_skip "disk"; then
+    # Ensure encryption password is exported for disk script
+    export CRYPT_PASSWORD
     run_script "./install/01-disk.sh"
     checkpoint "disk"
 fi
