@@ -113,11 +113,30 @@ echo -e "${GREEN}System Configuration${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# Disk selection
+# Disk selection - auto-detect VM (vda) vs real hardware (sda)
 warn "Available disks:"
 lsblk -d -n -o NAME,SIZE,TYPE | grep disk
 echo ""
-DISK=$(prompt "Enter disk to install to (e.g., /dev/sda)" "$DISK")
+
+# Auto-detect disk device
+if [ -b "/dev/vda" ]; then
+    # Running in VM (QEMU/KVM)
+    DISK="/dev/vda"
+    DISK_EXAMPLE="/dev/vda"
+elif [ -b "/dev/sda" ]; then
+    # Real hardware
+    DISK="/dev/sda"
+    DISK_EXAMPLE="/dev/sda"
+elif [ -b "/dev/nvme0n1" ]; then
+    # NVMe disk
+    DISK="/dev/nvme0n1"
+    DISK_EXAMPLE="/dev/nvme0n1"
+else
+    # Fallback - let user specify
+    DISK_EXAMPLE="/dev/sda or /dev/vda"
+fi
+
+DISK=$(prompt "Enter disk to install to (e.g., $DISK_EXAMPLE)" "$DISK")
 
 # Verify disk
 if [ ! -b "$DISK" ]; then

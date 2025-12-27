@@ -84,7 +84,7 @@ The script will automatically:
 - Start the installation process
 
 4. **Answer prompts:**
-   - Which disk to use
+   - Which disk to use (auto-detects /dev/vda for VM, /dev/sda for hardware, /dev/nvme0n1 for NVMe)
    - Hostname
    - Username & password
    - Timezone
@@ -113,10 +113,9 @@ cd ~/shokunin
 Before installing on real hardware, test in a virtual machine:
 
 ```bash
-# Terminal 1: Prepare tarball and start HTTP server
+# Terminal 1: Start server (generates tarball on-the-fly)
 cd /path/to/shokunin
-./prepare-vm-test.sh
-cd /tmp && python -m http.server 8000
+./serve-for-vm.sh
 
 # Terminal 2: Start VM from Arch ISO
 ./test-vm.sh install
@@ -132,6 +131,8 @@ curl -L http://10.0.2.2:8000/boot.sh | bash
 ```
 
 **Same command works everywhere** - the script automatically detects whether to download from GitHub (real hardware) or local HTTP server (VM testing).
+
+The `serve-for-vm.sh` script creates the tarball on-the-fly when requested, so you don't need to run `prepare-vm-test.sh` first!
 
 ## Managing Your System
 
