@@ -9,19 +9,34 @@ check_root
 
 log "Starting disk partitioning on $DISK with LUKS encryption"
 
-# Unmount if mounted (no need to ask again - already confirmed in boot.sh)
+# Thorough cleanup before partitioning
+log "Cleaning up existing mounts and devices..."
+
+# Unmount everything
 umount -R /mnt 2>/dev/null || true
+swapoff -a 2>/dev/null || true
+
+# Close all LUKS devices
 cryptsetup close cryptroot 2>/dev/null || true
 cryptsetup close cryptswap 2>/dev/null || true
-swapoff -a 2>/dev/null || true
+
+# Force remove any device mapper devices
+dmsetup remove_all 2>/dev/null || true
+
+# Wait for devices to settle
+sleep 2
 
 # Thoroughly wipe disk and all LUKS headers
 log "Wiping disk and removing all signatures..."
 wipefs -af "$DISK"
 sgdisk --zap-all "$DISK"
 dd if=/dev/zero of="$DISK" bs=1M count=10 conv=fsync 2>/dev/null || true
+
+# Force kernel to re-read partition table
+log "Updating kernel partition table..."
+blockdev --rereadpt "$DISK" 2>/dev/null || true
 partprobe "$DISK" 2>/dev/null || true
-sleep 1
+sleep 2
 
 # Create GPT partition table
 log "Creating partition table..."
@@ -45,6 +60,11 @@ fi
 # Create root partition (rest of disk)
 log "Creating encrypted root partition..."
 parted "$DISK" --script mkpart primary "$ROOT_START" 100%
+
+# Inform kernel of partition changes
+log "Updating kernel with new partition table..."
+partprobe "$DISK"
+sleep 2
 
 # Determine partition names
 if [[ "$DISK" =~ "nvme" ]]; then
