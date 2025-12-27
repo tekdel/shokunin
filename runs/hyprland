@@ -35,5 +35,12 @@ sudo pacman -S --needed --noconfirm \
     swaybg \
     waypaper
 
+# Display manager (graphical login)
+sudo pacman -S --needed --noconfirm \
+    sddm
+
+# Enable SDDM for graphical login
+sudo systemctl enable sddm
+
 echo "Hyprland installed successfully!"
-echo "Note: Copy dotfiles to ~/.config/hypr/ to configure"
+echo "Note: SDDM display manager enabled for graphical login"
