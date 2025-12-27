@@ -104,11 +104,9 @@ prompt_password() {
 
     while true; do
         echo "" >&2
-        echo "$prompt_text:" >&2
-        read -s password </dev/tty
+        read -s -p "$prompt_text: " password </dev/tty
         echo >&2
-        echo "Confirm password:" >&2
-        read -s password_confirm </dev/tty
+        read -s -p "Confirm password: " password_confirm </dev/tty
         echo >&2
 
         if [ "$password" = "$password_confirm" ]; then

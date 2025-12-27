@@ -21,6 +21,7 @@ log "Running pacstrap (this may take a while)..."
 pacstrap /mnt \
     base \
     linux \
+    linux-lts \
     linux-firmware \
     base-devel \
     networkmanager \

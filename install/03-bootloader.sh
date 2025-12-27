@@ -35,7 +35,7 @@ cat > /boot/limine.cfg <<EOF
 # Limine Configuration
 
 # Global settings
-timeout: 0
+timeout: 5
 graphics: yes
 theme_margin_gradient: 0
 theme_margin: 0
@@ -47,12 +47,25 @@ theme_margin: 0
     cmdline: $CMDLINE
     module_path: boot():/initramfs-linux.img
 
-# Fallback entry
+# LTS kernel
+/Arch Linux LTS
+    protocol: linux
+    kernel_path: boot():/vmlinuz-linux-lts
+    cmdline: $CMDLINE
+    module_path: boot():/initramfs-linux-lts.img
+
+# Fallback entries
 /Arch Linux (Fallback)
     protocol: linux
     kernel_path: boot():/vmlinuz-linux
     cmdline: $CMDLINE
     module_path: boot():/initramfs-linux-fallback.img
+
+/Arch Linux LTS (Fallback)
+    protocol: linux
+    kernel_path: boot():/vmlinuz-linux-lts
+    cmdline: $CMDLINE
+    module_path: boot():/initramfs-linux-lts-fallback.img
 EOF
 
 # Install Limine to disk
