@@ -1,102 +1,55 @@
 # Arch Linux Minimal Installer
 
-A modular, maintainable Arch Linux installation system with Hyprland. Inspired by [Omarchy](https://omarchy.org/) and [ThePrimeagen's dev setup](https://github.com/ThePrimeagen/dev).
+Automated Arch Linux installation with Hyprland, full-disk encryption, and your dotfiles.
 
-**One command installs everything:** disk partitioning, base Arch, Hyprland, your dotfiles, and all your packages.
+**One command installs everything:** disk partitioning, base system, Hyprland, and all your packages.
 
 ## Features
 
-- ✅ **Automated installation** - One command from bare metal to working system
-- ✅ **Modular design** - Each component in its own script
-- ✅ **Easy to maintain** - Add packages by editing simple scripts
-- ✅ **Your dotfiles included** - Everything in one repository
-- ✅ **Safe testing** - VM testing script included
-- ✅ **Minimal bloat** - Only ~50-70 packages (vs Omarchy's 144+)
-- ✅ **No complex migrations** - Simple git-based updates
+- **Automated installation** - One command from bare metal to working system
+- **Modular design** - Each component in its own script
+- **Full-disk encryption** - LUKS2 encryption (required)
+- **Your dotfiles included** - Everything in one repository
+- **Easy to maintain** - Add packages by editing simple scripts
+- **VM testing** - Test safely before installing on real hardware
 
 ## What's Included
 
-- **Window Manager:** Hyprland with full ecosystem
-- **Terminal:** Alacritty + modern CLI tools (bat, eza, fzf, ripgrep, etc.)
+- **Window Manager:** Hyprland with Waybar, Rofi, and Mako
+- **Terminal:** Alacritty with modern CLI tools
 - **Shell:** Zsh with Oh My Zsh
 - **Browser:** Zen Browser
-- **Boot:** Limine bootloader + Plymouth splash screen (Omarchy-style)
-- **Security:** LUKS2 full-disk encryption (required)
-- **Services:** Docker, CUPS (printing)
-- **Development:** Git, Neovim, mise, multiple language toolchains
-- **Your dotfiles:** Hyprland, Waybar, Alacritty, tmux configs included
-
-## Repository Structure
-
-```
-.
-├── boot.sh                      # Entry point - run this to install
-├── run                          # Package installer/updater
-├── test-vm.sh                   # VM testing helper
-│
-├── config/
-│   └── system.conf             # System settings (timezone, hostname, etc.)
-│
-├── install/                     # Fresh installation scripts
-│   ├── 01-disk.sh              # Disk partitioning
-│   ├── 02-base.sh              # Base Arch installation
-│   ├── 03-bootloader.sh        # Bootloader setup
-│   └── 04-users.sh             # User creation
-│
-├── runs/                        # Modular package scripts
-│   ├── essential               # Core system packages
-│   ├── hyprland                # Hyprland window manager
-│   ├── terminal                # Terminal tools
-│   ├── docker                  # Docker setup
-│   ├── cups                    # Printing support
-│   ├── dev                     # Development tools
-│   ├── apps                    # Applications
-│   └── fonts                   # Fonts
-│
-├── dotfiles/                    # Your configuration files
-│   ├── hypr/                   # Hyprland config
-│   ├── waybar/                 # Status bar config
-│   ├── alacritty/              # Terminal config
-│   ├── bash/                   # Shell config
-│   └── git/                    # Git config
-│
-└── lib/
-    └── common.sh               # Shared utilities
-```
+- **Boot:** Limine bootloader with Plymouth splash screen
+- **Kernels:** Both stable and LTS kernels
+- **Development:** Neovim, mise, Git, Docker
+- **Your dotfiles:** Hyprland, Waybar, Alacritty, tmux, and more
 
 ## Quick Start
 
-### Fresh Installation (From Arch ISO)
+### Installation (From Arch ISO)
 
 1. **Boot Arch ISO**
 2. **Connect to internet** (if needed)
 3. **Run installer:**
 
 ```bash
-# One command - works on both real hardware and VM:
 curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
 ```
 
-The script will automatically:
-- Try to clone from GitHub
-- Fall back to tarball download if git is not available
-- Download and extract the full repository
-- Start the installation process
-
 4. **Answer prompts:**
-   - Which disk to use (auto-detects /dev/vda for VM, /dev/sda for hardware, /dev/nvme0n1 for NVMe)
+   - Disk to use (auto-detected)
    - Hostname
    - Username & password
+   - Encryption password
    - Timezone (default: America/Los_Angeles)
    - Swap size (default: 32GB)
 
 5. **Wait 20-30 minutes**
-6. **Reboot into your new system!**
+6. **Reboot and enjoy!**
 
 ### On Existing System
 
 ```bash
-# Clone repository
 git clone https://github.com/tekdel/shokunin ~/shokunin
 cd ~/shokunin
 
@@ -105,60 +58,40 @@ cd ~/shokunin
 
 # Or install specific components
 ./run hyprland terminal
-./run --dry              # Dry run to see what would install
 ```
 
-## Testing in VM (Recommended!)
+## Testing in VM
 
-Before installing on real hardware, test in a virtual machine:
+Before installing on real hardware, test in a VM:
 
 ```bash
-# Terminal 1: Start server (generates tarball on-the-fly)
-cd /path/to/shokunin
-./serve-for-vm.sh
+# Install UEFI firmware
+sudo pacman -S edk2-ovmf
 
-# Terminal 2: Start VM from Arch ISO
+# Start VM
 ./test-vm.sh install
 
-# Inside VM: Run the same command as real hardware
+# Inside VM - same command as real hardware
 curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
 
-# After installation, boot into the system
+# After installation
 ./test-vm.sh boot
 
-# Clean up when done
+# Clean up
 ./test-vm.sh clean
 ```
-
-**Same command works everywhere** - the script automatically detects whether to download from GitHub (real hardware) or local HTTP server (VM testing).
-
-The `serve-for-vm.sh` script creates the tarball on-the-fly when requested, so you don't need to run `prepare-vm-test.sh` first!
 
 ## Managing Your System
 
 ### Adding Packages
 
-Edit the appropriate script in `runs/`:
-
 ```bash
-# Want to add a terminal tool?
+# Edit the appropriate script
 vim runs/terminal
 
-# Add to the list:
-#   neofetch \
-
+# Add your package
 # Install it
 ./run terminal
-```
-
-### Removing Packages
-
-```bash
-# Remove from the script
-vim runs/apps
-
-# Remove from system
-sudo pacman -Rns package-name
 ```
 
 ### Creating New Categories
@@ -167,12 +100,10 @@ sudo pacman -Rns package-name
 # Create new script
 cat > runs/gaming <<'EOF'
 #!/bin/bash
-sudo pacman -S --needed --noconfirm steam lutris
+sudo pacman -S --needed --noconfirm steam
 EOF
 
 chmod +x runs/gaming
-
-# Install
 ./run gaming
 ```
 
@@ -188,143 +119,84 @@ cp -r dotfiles/hypr ~/.config/
 # Reload Hyprland
 hyprctl reload
 
-# Commit changes
-git add dotfiles/hypr/hyprland.conf
-git commit -m "Update Hyprland config"
+# Commit
+git add dotfiles/
+git commit -m "Update config"
 git push
 ```
 
-### System Updates
+## Package Categories
 
-```bash
-# Regular Arch updates
-sudo pacman -Syu
-
-# Update this installer
-cd ~/shokunin
-git pull
-```
+| Script | Purpose |
+|--------|---------|
+| `essential` | Core system packages |
+| `hyprland` | Window manager and components |
+| `terminal` | CLI tools and shell |
+| `docker` | Container tools |
+| `cups` | Printing support |
+| `dev` | Development tools |
+| `apps` | Applications |
+| `fonts` | Fonts |
 
 ## Customization
 
 ### Before Installation
 
-1. **Fork this repository**
-2. **Edit `config/system.conf`** - Set your preferences
-3. **Edit `runs/*` scripts** - Add/remove packages
-4. **Add your dotfiles** - Put your configs in `dotfiles/`
-5. **Update `boot.sh`** - Change REPO_URL to your fork
-6. **Test in VM!**
+1. Fork this repository
+2. Edit `config/system.conf` for defaults
+3. Edit `runs/*` scripts to add/remove packages
+4. Add your dotfiles to `dotfiles/`
+5. Update REPO_URL in `boot.sh` to your fork
+6. Test in VM
 
-### Package Categories
+## Repository Structure
 
-| Script | Purpose | Key Packages |
-|--------|---------|--------------|
-| `essential` | Core system | base-devel, git, vim, neovim, plymouth |
-| `hyprland` | Window manager | hyprland, waybar, rofi, mako |
-| `terminal` | CLI tools | alacritty, zsh, oh-my-zsh, bat, eza, fzf, ripgrep, tmux |
-| `docker` | Containers | docker, docker-compose, lazydocker |
-| `cups` | Printing | cups, system-config-printer |
-| `dev` | Development | python, nodejs, rust, go, mise |
-| `apps` | Applications | zen-browser, nautilus, mpv, keepassxc |
-| `fonts` | Fonts | JetBrains Mono, Nerd Fonts |
-
-## What Makes This Different
-
-### vs Omarchy
-
-| Feature | Omarchy | This Installer |
-|---------|---------|----------------|
-| Packages | 144+ packages | ~60-80 packages (minimal) |
-| Customization | Complex theme system | Simple dotfiles |
-| Updates | Custom migration system | Standard git + pacman |
-| Maintenance | Update through Omarchy system | Edit scripts directly |
-| Bloat | Many apps pre-installed | Only essentials |
-| Control | Opinionated defaults | Full control |
-| Plymouth | ✅ bgrt theme | ✅ Same (bgrt theme) |
-| Shell | Zsh | ✅ Zsh + Oh My Zsh |
-
-### vs ThePrimeagen's Setup
-
-| Feature | ThePrimeagen | This Installer |
-|---------|--------------|----------------|
-| Scope | Assumes system exists | Full system install |
-| Disk setup | N/A | Automated partitioning |
-| Bootloader | N/A | Automated |
-| User creation | N/A | Automated |
-| Design | Modular runs/ pattern | Same modular pattern ✅ |
-
-## Usage Examples
-
-### Example 1: Minimal Desktop
-
-```bash
-./run essential hyprland terminal fonts
 ```
-
-### Example 2: Development Machine
-
-```bash
-./run essential hyprland terminal dev docker fonts
-```
-
-### Example 3: Full Setup
-
-```bash
-./run  # Installs everything
-```
-
-### Example 4: Dry Run
-
-```bash
-./run --dry docker  # See what docker script does
+.
+├── boot.sh              # Installation entry point
+├── run                  # Package manager
+├── test-vm.sh           # VM testing
+│
+├── config/
+│   └── system.conf      # System defaults
+│
+├── install/             # Installation scripts
+│   ├── 01-disk.sh       # Disk partitioning
+│   ├── 02-base.sh       # Base system
+│   ├── 03-bootloader.sh # Bootloader
+│   └── 04-users.sh      # User creation
+│
+├── runs/                # Package scripts
+│   ├── essential
+│   ├── hyprland
+│   ├── terminal
+│   └── ...
+│
+└── dotfiles/            # Your configs
+    ├── hypr/
+    ├── waybar/
+    ├── nvim/
+    └── ...
 ```
 
 ## Troubleshooting
 
-### Installation fails during disk setup
+**Installation fails:**
+- Check disk path with `lsblk`
+- Verify UEFI firmware for VM: `sudo pacman -S edk2-ovmf`
 
-- Check disk path is correct (`lsblk`)
-- Make sure disk is not mounted
-- Verify UEFI vs BIOS mode
-
-### Package installation fails
-
+**Package installation fails:**
 - Check internet connection
-- Update mirrors: `reflector --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist`
-- Try again: `./run <category>`
+- Update mirrors: `sudo pacman -Sy`
 
-### Hyprland won't start
-
-- Check if installed: `pacman -Q hyprland`
+**Hyprland won't start:**
 - Check logs: `journalctl -xe`
-- Verify dotfiles are in place: `ls ~/.config/hypr/`
-
-### AUR helper (paru) issues
-
-- Reinstall: `cd /tmp && git clone https://aur.archlinux.org/paru.git && cd paru && makepkg -si`
-
-## Contributing
-
-This is your personal installer! Customize it however you want.
-
-1. Fork the repository
-2. Make your changes
-3. Test in VM
-4. Use it!
-
-## Credits
-
-- Inspired by [Omarchy](https://omarchy.org/) by DHH
-- Modular design from [ThePrimeagen's dev setup](https://github.com/ThePrimeagen/dev)
-- Built for minimal, maintainable Arch Linux installations
+- Verify config: `ls ~/.config/hypr/`
 
 ## License
 
-MIT - Do whatever you want with it!
+MIT
 
 ---
 
-**Happy installing!** 🚀
-
-For questions or issues, check the scripts - they're simple bash and well-commented.
+**Questions?** The scripts are simple bash - just read them!
