@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -80,6 +80,8 @@ cat << "EOF"
 ╚═══════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
+echo -e "${GREEN}Version: ${VERSION}${NC}"
+echo ""
 
 # Check if running from Arch ISO
 if [ ! -f /etc/arch-release ]; then
