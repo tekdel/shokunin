@@ -35,7 +35,9 @@ EOF
 
 # Create user
 log "Creating user $USERNAME..."
-useradd -m -G $USER_GROUPS -s /bin/zsh $USERNAME
+# Only add to basic groups that exist in base system
+# Docker and other groups will be added later when packages are installed
+useradd -m -G wheel,audio,video,input -s /bin/zsh $USERNAME
 
 # Set user password
 log "Setting password for $USERNAME..."

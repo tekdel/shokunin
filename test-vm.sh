@@ -41,6 +41,11 @@ if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     error "QEMU is not installed. Install with: sudo pacman -S qemu-full"
 fi
 
+# Check if OVMF is installed
+if [ ! -f /usr/share/edk2/x64/OVMF.4m.fd ]; then
+    error "OVMF firmware not found. Install with: sudo pacman -S edk2-ovmf"
+fi
+
 # Function to show usage
 show_usage() {
     echo "Usage: $0 [COMMAND]"
@@ -137,7 +142,7 @@ install_mode() {
         -m "$MEMORY" \
         -cpu host \
         -smp "$CPUS" \
-        -bios /usr/share/ovmf/x64/OVMF.fd \
+        -bios /usr/share/edk2/x64/OVMF.4m.fd \
         -drive file="$DISK_IMAGE",format=qcow2,if=virtio \
         -cdrom "$ISO_PATH" \
         -boot d \
@@ -164,7 +169,7 @@ boot_mode() {
         -m "$MEMORY" \
         -cpu host \
         -smp "$CPUS" \
-        -bios /usr/share/ovmf/x64/OVMF.fd \
+        -bios /usr/share/edk2/x64/OVMF.4m.fd \
         -drive file="$DISK_IMAGE",format=qcow2,if=virtio \
         -boot c \
         -nic user,model=virtio-net-pci \
