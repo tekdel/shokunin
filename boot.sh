@@ -12,6 +12,12 @@ fi
 
 set -e
 
+# Check for minimal install flag (bootloader test mode)
+MINIMAL_INSTALL=false
+if [[ "$1" == "--minimal" ]] || [[ "$1" == "-m" ]]; then
+    MINIMAL_INSTALL=true
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -201,11 +207,21 @@ export USERNAME="$USERNAME"
 export USER_PASSWORD="$USER_PASSWORD"
 export ROOT_PASSWORD="$ROOT_PASSWORD"
 export TIMEZONE="$TIMEZONE"
+export MINIMAL_INSTALL="$MINIMAL_INSTALL"
 
 # Configure initramfs with encryption support BEFORE bootloader
 run_script "./install/02.5-initramfs.sh"
 run_script "./install/03-bootloader.sh"
 run_script "./install/04-users.sh"
+
+# Check if minimal install mode (stop here for bootloader testing)
+if [ "\$MINIMAL_INSTALL" = "true" ]; then
+    success "Minimal installation complete (bootloader only)!"
+    echo ""
+    echo "System ready for boot testing."
+    echo "To complete full installation later, run: ./boot.sh --continue"
+    exit 0
+fi
 
 # Install paru (AUR helper)
 install_aur_helper "$USERNAME"
