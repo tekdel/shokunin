@@ -74,12 +74,12 @@ A modular, maintainable Arch Linux installation system with Hyprland. Inspired b
 
 ```bash
 # One command - works on both real hardware and VM:
-curl -L https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
 ```
 
 The script will automatically:
-- Try to clone from GitHub (if repository is public)
-- Fall back to local HTTP server (for VM testing)
+- Try to clone from GitHub
+- Fall back to tarball download if git is not available
 - Download and extract the full repository
 - Start the installation process
 
@@ -121,7 +121,7 @@ cd /path/to/shokunin
 ./test-vm.sh install
 
 # Inside VM: Run the same command as real hardware
-curl -L https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
 
 # After installation, boot into the system
 ./test-vm.sh boot

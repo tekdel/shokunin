@@ -1,7 +1,14 @@
 #!/bin/bash
 # boot.sh - Main entry point for fresh Arch Linux installation
-# Usage (real hardware): curl -L https://raw.githubusercontent.com/tekdel/shokunin/main/boot.sh | bash
-# Usage (VM testing):    curl -L http://10.0.2.2:8000/boot.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
+
+# If stdin is not a terminal (being piped from curl), re-exec with proper stdin
+if [ ! -t 0 ]; then
+    # Save script to temp file and re-exec with /dev/tty as stdin
+    TEMP_SCRIPT=$(mktemp)
+    cat > "$TEMP_SCRIPT"
+    exec bash "$TEMP_SCRIPT" < /dev/tty
+fi
 
 set -e
 
