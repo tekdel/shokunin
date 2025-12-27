@@ -13,7 +13,8 @@ fi
 set -e
 
 # Check for minimal install flag (bootloader test mode)
-MINIMAL_INSTALL=false
+# Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
+MINIMAL_INSTALL="${MINIMAL_INSTALL:-false}"
 if [[ "$1" == "--minimal" ]] || [[ "$1" == "-m" ]]; then
     MINIMAL_INSTALL=true
 fi
