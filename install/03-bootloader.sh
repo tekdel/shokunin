@@ -39,7 +39,7 @@ log "Using disk: $DISK"
 
 # Create Limine configuration
 log "Creating Limine configuration..."
-cat > /boot/limine.cfg <<EOF
+cat > /boot/limine.conf <<EOF
 # Limine Configuration
 
 # Global settings
@@ -74,7 +74,7 @@ if [ -d /sys/firmware/efi ]; then
     cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/
 
     # Copy config to EFI directory (Limine looks for it next to BOOTX64.EFI)
-    cp /boot/limine.cfg /boot/EFI/BOOT/limine.cfg
+    cp /boot/limine.conf /boot/EFI/BOOT/limine.conf
 
     # Create EFI boot entry
     if command -v efibootmgr >/dev/null 2>&1; then
