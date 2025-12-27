@@ -2,7 +2,7 @@
 # runs/apps - Optional applications
 
 # Web browser (zen-browser from AUR)
-paru -S --needed --noconfirm \
+paru -S --needed --noconfirm --skipreview \
     zen-browser-bin
 
 # File manager

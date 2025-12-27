@@ -27,7 +27,7 @@ sudo pacman -S --needed --noconfirm \
     pamixer
 
 # Application launcher and menu
-paru -S --needed --noconfirm \
+paru -S --needed --noconfirm --skipreview \
     rofi-wayland
 
 # Wallpaper and theming

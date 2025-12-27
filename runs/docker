@@ -7,7 +7,7 @@ sudo pacman -S --needed --noconfirm \
     docker-buildx
 
 # Install lazydocker from AUR
-paru -S --needed --noconfirm \
+paru -S --needed --noconfirm --skipreview \
     lazydocker
 
 # Enable and start docker service
