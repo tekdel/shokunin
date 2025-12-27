@@ -23,6 +23,8 @@ sudo pacman -S --needed --noconfirm \
     inetutils \
     usbutils \
     pciutils \
-    plymouth
+    plymouth \
+    gnome-keyring \
+    seahorse
 
 echo "Essential packages installed successfully!"
