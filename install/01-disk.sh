@@ -13,11 +13,15 @@ log "Starting disk partitioning on $DISK with LUKS encryption"
 umount -R /mnt 2>/dev/null || true
 cryptsetup close cryptroot 2>/dev/null || true
 cryptsetup close cryptswap 2>/dev/null || true
+swapoff -a 2>/dev/null || true
 
-# Wipe disk
-log "Wiping disk..."
+# Thoroughly wipe disk and all LUKS headers
+log "Wiping disk and removing all signatures..."
 wipefs -af "$DISK"
 sgdisk --zap-all "$DISK"
+dd if=/dev/zero of="$DISK" bs=1M count=10 conv=fsync 2>/dev/null || true
+partprobe "$DISK" 2>/dev/null || true
+sleep 1
 
 # Create GPT partition table
 log "Creating partition table..."
@@ -59,6 +63,14 @@ else
     else
         ROOT_PART="${DISK}2"
     fi
+fi
+
+# Wipe partitions before use
+log "Wiping partition signatures..."
+wipefs -af "$EFI_PART"
+wipefs -af "$ROOT_PART"
+if [ "$SWAP_SIZE" != "0" ]; then
+    wipefs -af "$SWAP_PART"
 fi
 
 # Format EFI partition (unencrypted)
@@ -120,9 +132,6 @@ mount "$EFI_PART" /mnt/boot
 # Set up encrypted swap (if enabled)
 if [ "$SWAP_SIZE" != "0" ]; then
     log "Setting up encrypted swap partition..."
-
-    # Wipe any existing LUKS header first
-    wipefs -af "$SWAP_PART"
 
     # Generate random keyfile for swap (stored on encrypted root)
     log "Generating keyfile for swap..."
