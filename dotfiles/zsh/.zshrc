@@ -116,6 +116,9 @@ alias zshreload='source ~/.zshrc'
 # Tool Integrations
 # ============================================================================
 
+# tmux-sessionizer keybinding (Ctrl+f)
+bindkey -s '^f' "tmux-sessionizer\n"
+
 # Starship prompt (comment out if using Oh My Zsh theme)
 # if command -v starship >/dev/null 2>&1; then
 #     eval "$(starship init zsh)"

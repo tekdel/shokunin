@@ -1,6 +1,7 @@
 #!/bin/bash
 # boot.sh - Main entry point for fresh Arch Linux installation
-# Usage: curl -L https://raw.githubusercontent.com/tekdel/shokunin/main/boot.sh | bash
+# Usage (real hardware): curl -L https://raw.githubusercontent.com/tekdel/shokunin/main/boot.sh | bash
+# Usage (VM testing):    curl -L http://10.0.2.2:8000/boot.sh | bash
 
 set -e
 
@@ -14,6 +15,7 @@ NC='\033[0m'
 log() { echo -e "${GREEN}[+]${NC} $1"; }
 error() { echo -e "${RED}[!]${NC} $1" >&2; exit 1; }
 warn() { echo -e "${YELLOW}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
 
 # Banner
 echo -e "${CYAN}"
@@ -42,27 +44,63 @@ if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
     error "No internet connection. Please connect to the internet first."
 fi
 
-# Clone or navigate to repo
+# Repository configuration
 REPO_URL="https://github.com/tekdel/shokunin.git"
+TARBALL_URL_GITHUB="https://github.com/tekdel/shokunin/archive/refs/heads/main.tar.gz"
+TARBALL_URL_LOCAL="http://10.0.2.2:8000/shokunin.tar.gz"
 INSTALL_DIR="/root/shokunin"
 
-if [ -d "$INSTALL_DIR" ]; then
-    log "Repository already exists, using existing directory..."
+# Check if already in repository directory
+if [ -f "./config/system.conf" ] && [ -f "./lib/common.sh" ]; then
+    INSTALL_DIR="$(pwd)"
+    log "Running from local directory: $INSTALL_DIR"
+elif [ -d "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/config/system.conf" ]; then
+    log "Repository already exists at $INSTALL_DIR"
     cd "$INSTALL_DIR"
 else
-    log "Cloning repository..."
-    warn "Note: Update REPO_URL in boot.sh to your actual repository URL"
+    # Need to download the repository
+    log "Downloading repository..."
 
-    # For now, just copy if running from local directory
-    if [ -f "./config/system.conf" ]; then
-        INSTALL_DIR="$(pwd)"
-        log "Running from local directory: $INSTALL_DIR"
+    # Try git clone first (for real hardware with GitHub access)
+    if git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null; then
+        success "Repository cloned from GitHub"
+        cd "$INSTALL_DIR"
+    # Try downloading GitHub tarball
+    elif curl -fsSL "$TARBALL_URL_GITHUB" -o /tmp/shokunin.tar.gz 2>/dev/null; then
+        log "Downloading from GitHub as tarball..."
+        mkdir -p "$INSTALL_DIR"
+        tar xzf /tmp/shokunin.tar.gz -C "$INSTALL_DIR" --strip-components=1
+        rm /tmp/shokunin.tar.gz
+        success "Repository downloaded from GitHub"
+        cd "$INSTALL_DIR"
+    # Try local HTTP server (for VM testing)
+    elif curl -fsSL "$TARBALL_URL_LOCAL" -o /tmp/shokunin.tar.gz 2>/dev/null; then
+        log "Downloading from local HTTP server (VM testing mode)..."
+        mkdir -p "$INSTALL_DIR"
+        tar xzf /tmp/shokunin.tar.gz -C "$INSTALL_DIR"
+        rm /tmp/shokunin.tar.gz
+        success "Repository downloaded from local HTTP server"
+        cd "$INSTALL_DIR"
     else
-        error "Repository not found. Update REPO_URL in boot.sh or run from the repository directory."
+        error "Failed to download repository. Please either:
+
+  1. Push your repository to GitHub and make it public
+
+  2. For VM testing, start HTTP server:
+     Terminal 1 (on host):
+       cd /path/to/shokunin
+       ./prepare-vm-test.sh
+       cd /tmp && python -m http.server 8000
+
+     Terminal 2 (on host):
+       ./test-vm.sh install
+
+     Inside VM:
+       curl -L http://10.0.2.2:8000/boot.sh | bash
+
+  3. Manually copy repository to $INSTALL_DIR and run ./boot.sh"
     fi
 fi
-
-cd "$INSTALL_DIR"
 
 # Source configuration
 source ./config/system.conf
@@ -206,6 +244,28 @@ if [ -d "/root/installer/dotfiles" ]; then
     fi
     if [ -f "/root/installer/dotfiles/.mise.toml" ]; then
         cp /root/installer/dotfiles/.mise.toml /home/$USERNAME/
+    fi
+    if [ -f "/root/installer/dotfiles/zsh/.zprofile" ]; then
+        cp /root/installer/dotfiles/zsh/.zprofile /home/$USERNAME/
+    fi
+
+    # Copy bin directory to .local/bin
+    if [ -d "/root/installer/dotfiles/bin" ]; then
+        mkdir -p /home/$USERNAME/.local/bin
+        cp -r /root/installer/dotfiles/bin/* /home/$USERNAME/.local/bin/
+        chmod +x /home/$USERNAME/.local/bin/*
+    fi
+
+    # Configure tmux to use .config directory
+    if [ -f "/home/$USERNAME/.tmux.conf" ]; then
+        mkdir -p /home/$USERNAME/.config/tmux
+        mv /home/$USERNAME/.tmux.conf /home/$USERNAME/.config/tmux/tmux.conf
+    fi
+
+    # Setup global gitignore
+    if [ -f "/root/installer/dotfiles/git/.gitignore_global" ]; then
+        cp /root/installer/dotfiles/git/.gitignore_global /home/$USERNAME/
+        git config --global core.excludesfile ~/.gitignore_global
     fi
 
     # Fix permissions

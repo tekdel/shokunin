@@ -73,18 +73,22 @@ A modular, maintainable Arch Linux installation system with Hyprland. Inspired b
 3. **Run installer:**
 
 ```bash
-# If you've published to GitHub:
+# One command - works on both real hardware and VM:
 curl -L https://raw.githubusercontent.com/tekdel/shokunin/main/boot.sh | bash
-
-# Or copy this repository to the ISO and run:
-./boot.sh
 ```
+
+The script will automatically:
+- Try to clone from GitHub (if repository is public)
+- Fall back to local HTTP server (for VM testing)
+- Download and extract the full repository
+- Start the installation process
 
 4. **Answer prompts:**
    - Which disk to use
    - Hostname
    - Username & password
    - Timezone
+   - Swap size (default: 32GB)
 
 5. **Wait 20-30 minutes**
 6. **Reboot into your new system!**
@@ -109,11 +113,16 @@ cd ~/shokunin
 Before installing on real hardware, test in a virtual machine:
 
 ```bash
-# Setup VM environment
-./test-vm.sh setup
+# Terminal 1: Prepare tarball and start HTTP server
+cd /path/to/shokunin
+./prepare-vm-test.sh
+cd /tmp && python -m http.server 8000
 
-# Boot from ISO and test installation
+# Terminal 2: Start VM from Arch ISO
 ./test-vm.sh install
+
+# Inside VM: Run the same command as real hardware
+curl -L http://10.0.2.2:8000/boot.sh | bash
 
 # After installation, boot into the system
 ./test-vm.sh boot
@@ -121,6 +130,8 @@ Before installing on real hardware, test in a virtual machine:
 # Clean up when done
 ./test-vm.sh clean
 ```
+
+**Same command works everywhere** - the script automatically detects whether to download from GitHub (real hardware) or local HTTP server (VM testing).
 
 ## Managing Your System
 
