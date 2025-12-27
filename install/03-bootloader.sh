@@ -86,6 +86,9 @@ if [ -d /sys/firmware/efi ]; then
     mkdir -p /boot/EFI/BOOT
     cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/
 
+    # Copy config to EFI directory (Limine looks for it next to BOOTX64.EFI)
+    cp /boot/limine.cfg /boot/EFI/BOOT/limine.cfg
+
     # Create EFI boot entry
     if command -v efibootmgr >/dev/null 2>&1; then
         # Remove old Limine entries
