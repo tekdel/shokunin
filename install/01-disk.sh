@@ -108,6 +108,11 @@ mkfs.ext4 /dev/mapper/cryptroot
 
 # Set up encrypted swap (if enabled)
 if [ "$SWAP_SIZE" != "0" ]; then
+    log "Setting up encrypted swap partition..."
+
+    # Wipe any existing LUKS header first
+    wipefs -af "$SWAP_PART"
+
     log "Encrypting swap partition..."
     echo "Swap" | cryptsetup luksFormat --type luks2 "$SWAP_PART" -
 
