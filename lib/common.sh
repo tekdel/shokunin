@@ -88,10 +88,10 @@ prompt() {
     local result
 
     if [ -n "$default_value" ]; then
-        read -p "$prompt_text [$default_value]: " result
+        read -p "$prompt_text [$default_value]: " result </dev/tty
         echo "${result:-$default_value}"
     else
-        read -p "$prompt_text: " result
+        read -p "$prompt_text: " result </dev/tty
         echo "$result"
     fi
 }
@@ -103,9 +103,9 @@ prompt_password() {
     local password_confirm
 
     while true; do
-        read -s -p "$prompt_text: " password
+        read -s -p "$prompt_text: " password </dev/tty
         echo
-        read -s -p "Confirm password: " password_confirm
+        read -s -p "Confirm password: " password_confirm </dev/tty
         echo
 
         if [ "$password" = "$password_confirm" ]; then

@@ -47,7 +47,6 @@ fi
 # Repository configuration
 REPO_URL="https://github.com/tekdel/shokunin.git"
 TARBALL_URL_GITHUB="https://github.com/tekdel/shokunin/archive/refs/heads/master.tar.gz"
-TARBALL_URL_LOCAL="http://10.0.2.2:8000/shokunin.tar.gz"
 INSTALL_DIR="/root/shokunin"
 
 # Check if already in repository directory
@@ -58,14 +57,14 @@ elif [ -d "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/config/system.conf" ]; then
     log "Repository already exists at $INSTALL_DIR"
     cd "$INSTALL_DIR"
 else
-    # Need to download the repository
-    log "Downloading repository..."
+    # Need to download the repository from GitHub
+    log "Downloading repository from GitHub..."
 
-    # Try git clone first (for real hardware with GitHub access)
+    # Try git clone first
     if git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null; then
         success "Repository cloned from GitHub"
         cd "$INSTALL_DIR"
-    # Try downloading GitHub tarball
+    # Try downloading GitHub tarball (fallback when git not available)
     elif curl -fsSL "$TARBALL_URL_GITHUB" -o /tmp/shokunin.tar.gz 2>/dev/null; then
         log "Downloading from GitHub as tarball..."
         mkdir -p "$INSTALL_DIR"
@@ -73,32 +72,15 @@ else
         rm /tmp/shokunin.tar.gz
         success "Repository downloaded from GitHub"
         cd "$INSTALL_DIR"
-    # Try local HTTP server (for VM testing)
-    elif curl -fsSL "$TARBALL_URL_LOCAL" -o /tmp/shokunin.tar.gz 2>/dev/null; then
-        log "Downloading from local HTTP server (VM testing mode)..."
-        mkdir -p "$INSTALL_DIR"
-        tar xzf /tmp/shokunin.tar.gz -C "$INSTALL_DIR"
-        rm /tmp/shokunin.tar.gz
-        success "Repository downloaded from local HTTP server"
-        cd "$INSTALL_DIR"
     else
-        error "Failed to download repository. Please either:
+        error "Failed to download repository from GitHub.
 
-  1. Push your repository to GitHub and make it public
+Please ensure:
+  1. Repository is public: https://github.com/tekdel/shokunin
+  2. You have internet access
+  3. The branch 'master' exists
 
-  2. For VM testing, start HTTP server:
-     Terminal 1 (on host):
-       cd /path/to/shokunin
-       ./prepare-vm-test.sh
-       cd /tmp && python -m http.server 8000
-
-     Terminal 2 (on host):
-       ./test-vm.sh install
-
-     Inside VM:
-       curl -L http://10.0.2.2:8000/boot.sh | bash
-
-  3. Manually copy repository to $INSTALL_DIR and run ./boot.sh"
+Or manually copy repository to $INSTALL_DIR and run ./boot.sh"
     fi
 fi
 
@@ -185,7 +167,7 @@ warn "This will ERASE ALL DATA on $DISK!"
 warn "Full-disk encryption will be enabled"
 warn "You will set an encryption password during installation"
 warn "Press Ctrl+C now to cancel, or press Enter to continue..."
-read -r
+read -r </dev/tty
 
 # Update system clock
 sync_time
