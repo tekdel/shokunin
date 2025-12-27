@@ -99,38 +99,12 @@ mkfs.fat -F32 "$EFI_PART"
 
 # Set up LUKS encryption
 log "Setting up LUKS encryption..."
-info "You will be prompted to enter an encryption password"
-info "This password will be used for ALL encrypted partitions (root + swap)"
-info "This password will be required at every boot"
-warn "DO NOT FORGET THIS PASSWORD - there is no recovery!"
-echo ""
 
-# Ask for encryption password once
-MAX_RETRIES=3
-RETRY_COUNT=0
-CRYPT_PASSWORD=""
-
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    echo "Enter encryption password:" >&2
-    read -s CRYPT_PASSWORD </dev/tty
-    echo "" >&2
-
-    echo "Confirm encryption password:" >&2
-    read -s CRYPT_PASSWORD_CONFIRM </dev/tty
-    echo "" >&2
-
-    if [ "$CRYPT_PASSWORD" = "$CRYPT_PASSWORD_CONFIRM" ]; then
-        success "Password confirmed!"
-        break
-    else
-        warn "Passwords do not match. Try again."
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-
-        if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
-            error "Failed to confirm password after $MAX_RETRIES attempts"
-        fi
-    fi
-done
+# Use encryption password from boot.sh (already confirmed there)
+if [ -z "$CRYPT_PASSWORD" ]; then
+    error "Encryption password not set! This should be passed from boot.sh"
+fi
+log "Using encryption password from setup..."
 
 # Encrypt root partition with the password
 log "Encrypting root partition..."

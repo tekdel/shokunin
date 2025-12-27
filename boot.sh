@@ -181,14 +181,35 @@ HOSTNAME=$(prompt "Enter hostname" "$HOSTNAME")
 # Username
 USERNAME=$(prompt "Enter username" "$USERNAME")
 
+# Encryption password
+echo ""
+CRYPT_PASSWORD=$(prompt_password "Enter disk encryption password")
+
 # User password
-USER_PASSWORD=$(prompt_password "Enter password for $USERNAME")
+echo ""
+read -p "Use same password for user account? (Y/n): " same_password </dev/tty
+if [[ "$same_password" =~ ^[Nn]$ ]]; then
+    USER_PASSWORD=$(prompt_password "Enter password for $USERNAME")
+else
+    USER_PASSWORD="$CRYPT_PASSWORD"
+    success "Using same password for user account"
+fi
 
 # Root password
-ROOT_PASSWORD=$(prompt_password "Enter root password")
+echo ""
+read -p "Use same password for root? (Y/n): " same_root </dev/tty
+if [[ "$same_root" =~ ^[Nn]$ ]]; then
+    ROOT_PASSWORD=$(prompt_password "Enter root password")
+else
+    ROOT_PASSWORD="$CRYPT_PASSWORD"
+    success "Using same password for root"
+fi
 
 # Timezone
 TIMEZONE=$(prompt "Enter timezone (e.g., America/Los_Angeles)" "$TIMEZONE")
+
+# Export encryption password for disk script
+export CRYPT_PASSWORD
 
 # Swap size
 echo ""
