@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.0.9"
+VERSION="1.1.0"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -332,9 +332,8 @@ fi
 # Copy dotfiles
 if [ -d "/root/installer/dotfiles" ]; then
     log "Copying dotfiles..."
-    cp -r /root/installer/dotfiles/. /home/$USERNAME/
 
-    # Create .config if it doesn't exist
+    # Create .config directory structure
     mkdir -p /home/$USERNAME/.config
 
     # Copy config directories
@@ -411,10 +410,11 @@ for service in "\${ENABLE_SERVICES[@]}"; do
     fi
 done
 
-# Copy installer to user's home for future use
-log "Copying installer to /home/$USERNAME/shokunin..."
-cp -r /root/installer /home/$USERNAME/shokunin
-chown -R $USERNAME:$USERNAME /home/$USERNAME/shokunin
+# Copy installer to user's projects folder
+log "Creating projects directory..."
+mkdir -p /home/$USERNAME/projects
+cp -r /root/installer /home/$USERNAME/projects/shokunin
+chown -R $USERNAME:$USERNAME /home/$USERNAME/projects
 
 # Clean up password files
 rm -f /root/installer/.user_password /root/installer/.root_password
