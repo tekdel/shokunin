@@ -18,3 +18,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.orig
+
+# Password files (security)
+.user_password
+.root_password

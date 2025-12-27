@@ -19,6 +19,42 @@ if [[ "$1" == "--minimal" ]] || [[ "$1" == "-m" ]]; then
     MINIMAL_INSTALL=true
 fi
 
+# Check for resume checkpoint
+RESUME_FROM=""
+if [[ "$1" == "--resume-from" ]] && [[ -n "$2" ]]; then
+    RESUME_FROM="$2"
+    log "Resuming from checkpoint: $RESUME_FROM"
+fi
+
+# Checkpoint helper function
+checkpoint() {
+    local name=$1
+    echo "$name" > /mnt/root/.install_checkpoint
+    log "Checkpoint: $name"
+}
+
+# Check if we should skip a step
+should_skip() {
+    local step=$1
+    case "$RESUME_FROM" in
+        "")
+            return 1  # Don't skip, no resume point
+            ;;
+        "bootloader")
+            [[ "$step" == "disk" || "$step" == "base" ]] && return 0 || return 1
+            ;;
+        "users")
+            [[ "$step" == "disk" || "$step" == "base" || "$step" == "bootloader" ]] && return 0 || return 1
+            ;;
+        "packages")
+            [[ "$step" == "disk" || "$step" == "base" || "$step" == "bootloader" || "$step" == "users" ]] && return 0 || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -191,29 +227,51 @@ log "Starting installation process..."
 echo ""
 
 # Phase 1: Disk setup and base system (run outside chroot)
-run_script "./install/01-disk.sh"
-run_script "./install/02-base.sh"
+if ! should_skip "disk"; then
+    run_script "./install/01-disk.sh"
+    checkpoint "disk"
+fi
+
+if ! should_skip "base"; then
+    run_script "./install/02-base.sh"
+    checkpoint "base"
+fi
+
+# Save passwords to files for chroot (env vars don't reliably pass through)
+echo -n "$USER_PASSWORD" > /mnt/root/installer/.user_password
+echo -n "$ROOT_PASSWORD" > /mnt/root/installer/.root_password
+chmod 600 /mnt/root/installer/.user_password /mnt/root/installer/.root_password
 
 # Phase 2: System configuration (run inside chroot)
 log "Entering chroot environment..."
-arch-chroot /mnt /bin/bash <<CHROOT_EOF
+arch-chroot /mnt /bin/bash <<'CHROOT_EOF'
 set -e
 
 cd /root/installer
 source ./lib/common.sh
 source ./config/system.conf
 
+# Import variables from parent environment
 export HOSTNAME="$HOSTNAME"
 export USERNAME="$USERNAME"
-export USER_PASSWORD="$USER_PASSWORD"
-export ROOT_PASSWORD="$ROOT_PASSWORD"
 export TIMEZONE="$TIMEZONE"
 export MINIMAL_INSTALL="$MINIMAL_INSTALL"
 
+# Read passwords from files (more reliable than env vars)
+export USER_PASSWORD="$(cat /root/installer/.user_password)"
+export ROOT_PASSWORD="$(cat /root/installer/.root_password)"
+
 # Configure initramfs with encryption support BEFORE bootloader
-run_script "./install/02.5-initramfs.sh"
-run_script "./install/03-bootloader.sh"
-run_script "./install/04-users.sh"
+if ! should_skip "bootloader"; then
+    run_script "./install/02.5-initramfs.sh"
+    run_script "./install/03-bootloader.sh"
+    echo "bootloader" > /root/.install_checkpoint
+fi
+
+if ! should_skip "users"; then
+    run_script "./install/04-users.sh"
+    echo "users" > /root/.install_checkpoint
+fi
 
 # Check if minimal install mode (stop here for bootloader testing)
 if [ "\$MINIMAL_INSTALL" = "true" ]; then
@@ -225,11 +283,14 @@ if [ "\$MINIMAL_INSTALL" = "true" ]; then
 fi
 
 # Install paru (AUR helper)
-install_aur_helper "$USERNAME"
+if ! should_skip "packages"; then
+    install_aur_helper "$USERNAME"
 
-# Run all package installation scripts as the user
-log "Installing packages..."
-sudo -u "$USERNAME" bash -c 'cd /root/installer && ./run'
+    # Run all package installation scripts as the user
+    log "Installing packages..."
+    sudo -u "$USERNAME" bash -c 'cd /root/installer && ./run'
+    echo "packages" > /root/.install_checkpoint
+fi
 
 # Copy dotfiles
 if [ -d "/root/installer/dotfiles" ]; then
@@ -317,6 +378,9 @@ done
 log "Copying installer to /home/$USERNAME/shokunin..."
 cp -r /root/installer /home/$USERNAME/shokunin
 chown -R $USERNAME:$USERNAME /home/$USERNAME/shokunin
+
+# Clean up password files
+rm -f /root/installer/.user_password /root/installer/.root_password
 
 success "Installation complete!"
 
