@@ -21,7 +21,7 @@ VM_NAME="arch-test"
 VM_DIR="$HOME/.local/share/vms/$VM_NAME"
 DISK_IMAGE="$VM_DIR/arch-test.qcow2"
 DISK_SIZE="20G"
-ISO_PATH="$HOME/Downloads/archlinux.iso"
+ISO_PATH="$HOME/Downloads/archlinux-x86_64.iso"
 MEMORY="4G"
 CPUS="4"
 
