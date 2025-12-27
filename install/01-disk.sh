@@ -68,43 +68,54 @@ mkfs.fat -F32 "$EFI_PART"
 # Set up LUKS encryption
 log "Setting up LUKS encryption..."
 info "You will be prompted to enter an encryption password"
+info "This password will be used for ALL encrypted partitions (root + swap)"
 info "This password will be required at every boot"
 warn "DO NOT FORGET THIS PASSWORD - there is no recovery!"
 echo ""
 
-# Encrypt root partition with retry logic
+# Ask for encryption password once
 MAX_RETRIES=3
 RETRY_COUNT=0
+CRYPT_PASSWORD=""
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    log "Encrypting root partition... (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
+    echo "Enter encryption password:" >&2
+    read -s CRYPT_PASSWORD </dev/tty
+    echo "" >&2
 
-    if cryptsetup luksFormat --type luks2 "$ROOT_PART"; then
-        log "Opening encrypted root partition..."
+    echo "Confirm encryption password:" >&2
+    read -s CRYPT_PASSWORD_CONFIRM </dev/tty
+    echo "" >&2
 
-        if cryptsetup open "$ROOT_PART" cryptroot; then
-            success "Root partition encrypted and opened successfully!"
-            break
-        else
-            warn "Failed to open partition - password mismatch?"
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                warn "Let's try again. Please enter the SAME password twice."
-                # Wipe the failed LUKS header and retry
-                wipefs -af "$ROOT_PART"
-            else
-                error "Failed to encrypt root partition after $MAX_RETRIES attempts"
-            fi
-        fi
+    if [ "$CRYPT_PASSWORD" = "$CRYPT_PASSWORD_CONFIRM" ]; then
+        success "Password confirmed!"
+        break
     else
-        error "Failed to format LUKS partition"
+        warn "Passwords do not match. Try again."
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+
+        if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+            error "Failed to confirm password after $MAX_RETRIES attempts"
+        fi
     fi
 done
+
+# Encrypt root partition with the password
+log "Encrypting root partition..."
+echo -n "$CRYPT_PASSWORD" | cryptsetup luksFormat --type luks2 "$ROOT_PART" -
+
+log "Opening encrypted root partition..."
+echo -n "$CRYPT_PASSWORD" | cryptsetup open "$ROOT_PART" cryptroot -
 
 # Format encrypted root
 log "Formatting encrypted root partition..."
 mkfs.ext4 /dev/mapper/cryptroot
+
+# Mount root first so we can store keyfile on it
+log "Mounting root partition..."
+mount /dev/mapper/cryptroot /mnt
+mkdir -p /mnt/boot
+mount "$EFI_PART" /mnt/boot
 
 # Set up encrypted swap (if enabled)
 if [ "$SWAP_SIZE" != "0" ]; then
@@ -113,22 +124,40 @@ if [ "$SWAP_SIZE" != "0" ]; then
     # Wipe any existing LUKS header first
     wipefs -af "$SWAP_PART"
 
-    log "Encrypting swap partition..."
-    echo "Swap" | cryptsetup luksFormat --type luks2 "$SWAP_PART" -
+    # Generate random keyfile for swap (stored on encrypted root)
+    log "Generating keyfile for swap..."
+    mkdir -p /mnt/root
+    dd if=/dev/urandom of=/mnt/root/swap.key bs=1024 count=4
+    chmod 000 /mnt/root/swap.key
+
+    log "Encrypting swap partition with keyfile..."
+    echo -n "$CRYPT_PASSWORD" | cryptsetup luksFormat --type luks2 "$SWAP_PART" /mnt/root/swap.key -
 
     log "Opening encrypted swap..."
-    echo "Swap" | cryptsetup open "$SWAP_PART" cryptswap -
+    cryptsetup open "$SWAP_PART" cryptswap --key-file /mnt/root/swap.key
 
     log "Formatting swap..."
     mkswap /dev/mapper/cryptswap
     swapon /dev/mapper/cryptswap
+
+    # Configure crypttab for automatic swap unlock at boot
+    log "Configuring /etc/crypttab for encrypted swap..."
+    SWAP_UUID=$(blkid -s UUID -o value "$SWAP_PART")
+
+    mkdir -p /mnt/etc
+    cat > /mnt/etc/crypttab <<EOF
+# /etc/crypttab: encrypted partitions
+# See crypttab(5) for format
+
+# Encrypted swap - automatically unlocked with keyfile after root is mounted
+cryptswap UUID=$SWAP_UUID /root/swap.key luks
+EOF
+    success "Crypttab configured - swap will auto-unlock after root"
 fi
 
-# Mount partitions
-log "Mounting partitions..."
-mount /dev/mapper/cryptroot /mnt
-mkdir -p /mnt/boot
-mount "$EFI_PART" /mnt/boot
+# Clear password from memory
+unset CRYPT_PASSWORD
+unset CRYPT_PASSWORD_CONFIRM
 
 # Export partition info for other scripts
 export ROOT_PART
