@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.0.1"
+VERSION="1.0.2"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -311,11 +311,21 @@ fi
 
 # Install paru (AUR helper)
 if ! should_skip "packages"; then
+    # Enable passwordless sudo temporarily for package installation
+    log "Configuring temporary passwordless sudo for installation..."
+    echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/temp-install
+    chmod 440 /etc/sudoers.d/temp-install
+
     install_aur_helper "$USERNAME"
 
     # Run all package installation scripts as the user
     log "Installing packages..."
     sudo -u "$USERNAME" bash -c 'cd /root/installer && ./run'
+
+    # Remove temporary passwordless sudo
+    rm -f /etc/sudoers.d/temp-install
+    log "Removed temporary passwordless sudo"
+
     echo "packages" > /root/.install_checkpoint
 fi
 
