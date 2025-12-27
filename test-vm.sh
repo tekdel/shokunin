@@ -137,6 +137,7 @@ install_mode() {
         -m "$MEMORY" \
         -cpu host \
         -smp "$CPUS" \
+        -bios /usr/share/ovmf/x64/OVMF.fd \
         -drive file="$DISK_IMAGE",format=qcow2,if=virtio \
         -cdrom "$ISO_PATH" \
         -boot d \
@@ -163,6 +164,7 @@ boot_mode() {
         -m "$MEMORY" \
         -cpu host \
         -smp "$CPUS" \
+        -bios /usr/share/ovmf/x64/OVMF.fd \
         -drive file="$DISK_IMAGE",format=qcow2,if=virtio \
         -boot c \
         -nic user,model=virtio-net-pci \
