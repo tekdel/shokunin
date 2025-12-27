@@ -1,27 +1,15 @@
 # Global mise configuration
-# This file defines the default versions of tools to install system-wide
-# Place this in your home directory: ~/.config/mise/config.toml or ~/.mise.toml
+# mise-en-place: polyglot tool version manager
+# See: https://mise.jdx.dev
 
 [tools]
 # Node.js LTS (automatically uses latest LTS version)
 node = "lts"
 
-# You can also specify exact versions:
-# node = "20.11.0"
-# python = "3.12"
-# ruby = "3.3"
+# Uncomment to add other tools:
+# python = "latest"
+# go = "latest"
 
 [settings]
-# Auto-install missing tools
-missing_runtime_behavior = "autoinstall"
-
 # Enable experimental features
 experimental = true
-
-# Use all CPU cores for compilation
-jobs = 4
-
-[alias.node]
-# Aliases for Node.js versions
-lts = "lts"
-latest = "latest"
