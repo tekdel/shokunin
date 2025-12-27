@@ -55,10 +55,10 @@ else
     echo "Oh My Zsh already installed"
 fi
 
-# Change default shell to zsh
+# Change default shell to zsh (use sudo since temporary passwordless sudo is active)
 if [ "$SHELL" != "$(which zsh)" ]; then
     echo "Changing default shell to zsh..."
-    chsh -s $(which zsh)
+    sudo chsh -s $(which zsh) $USER
     echo "Shell changed! Log out and back in for changes to take effect."
 fi
 
