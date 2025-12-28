@@ -1,0 +1,5 @@
+#!/bin/bash
+# Screenshot script for Hyprland
+# Takes a screenshot of selected area and opens in swappy
+
+grim -g "$(slurp)" - | swappy -f -
