@@ -14,8 +14,6 @@ sudo pacman -S --needed --noconfirm \
 
 # Modern CLI tools
 sudo pacman -S --needed --noconfirm \
-    bat \
-    eza \
     fzf \
     ripgrep \
     fd \
@@ -26,11 +24,6 @@ sudo pacman -S --needed --noconfirm \
     duf \
     procs \
     tokei
-
-# Git tools
-sudo pacman -S --needed --noconfirm \
-    git-delta \
-    lazygit
 
 # Other useful CLI tools
 sudo pacman -S --needed --noconfirm \
