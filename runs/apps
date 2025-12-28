@@ -28,10 +28,17 @@ sudo pacman -S --needed --noconfirm \
 # sudo pacman -S --needed --noconfirm \
 #     libreoffice-fresh
 
+# Development & Database
+paru -S --needed --noconfirm --skipreview \
+    dbeaver
+
+# Music & Entertainment
+paru -S --needed --noconfirm --skipreview \
+    spotify
+
 # Communication (AUR - uncomment if needed)
-# paru -S --needed --noconfirm \
+# paru -S --needed --noconfirm --skipreview \
 #     discord \
-#     slack-desktop \
-#     spotify
+#     slack-desktop
 
 echo "Applications installed successfully!"
