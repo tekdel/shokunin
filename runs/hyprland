@@ -29,7 +29,9 @@ sudo pacman -S --needed --noconfirm \
 
 # Application launcher (Walker - same as Omarchy)
 paru -S --needed --noconfirm --skipreview \
-    walker-bin
+    walker-bin \
+    elephant-desktopapplications \
+    elephant-runner
 
 # Wallpaper and theming
 sudo pacman -S --needed --noconfirm \
