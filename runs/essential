@@ -22,6 +22,8 @@ sudo pacman -S --needed --noconfirm \
     openssh \
     iwd \
     impala \
+    bluez \
+    bluez-utils \
     bluetui \
     inetutils \
     usbutils \

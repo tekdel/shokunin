@@ -52,8 +52,6 @@ log "Configuring sudo..."
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
 chmod 440 /etc/sudoers.d/wheel
 
-# Enable NetworkManager
-log "Enabling NetworkManager..."
-systemctl enable NetworkManager
+# Note: iwd and bluetooth will be enabled by boot.sh from ENABLE_SERVICES
 
 success "System configured and user created!"
