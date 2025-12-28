@@ -6,37 +6,43 @@
 
     "modules-left": ["hyprland/workspaces", "hyprland/window"],
     "modules-center": ["clock"],
-    "modules-right": ["pulseaudio", "network", "cpu", "memory", "battery", "tray"],
+    "modules-right": ["bluetooth", "network", "pulseaudio", "cpu", "memory", "battery", "tray"],
 
     "hyprland/workspaces": {
         "format": "{icon}",
         "on-click": "activate",
         "format-icons": {
-            "1": "1",
-            "2": "2",
-            "3": "3",
-            "4": "4",
-            "5": "5"
+            "1": "󰲠",
+            "2": "󰲢",
+            "3": "󰲤",
+            "4": "󰲦",
+            "5": "󰲨",
+            "active": "",
+            "default": ""
         }
     },
 
     "hyprland/window": {
         "format": "{}",
-        "max-length": 50
+        "max-length": 50,
+        "separate-outputs": true
     },
 
     "clock": {
-        "format": "{:%H:%M  %d/%m/%Y}",
+        "format": "󰥔 {:%H:%M}",
+        "format-alt": "󰃭 {:%d/%m/%Y}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>"
     },
 
     "cpu": {
-        "format": " {usage}%",
+        "format": "󰻠 {usage}%",
+        "interval": 2,
         "tooltip": false
     },
 
     "memory": {
-        "format": " {}%"
+        "format": "󰍛 {}%",
+        "interval": 2
     },
 
     "battery": {
@@ -45,26 +51,46 @@
             "critical": 15
         },
         "format": "{icon} {capacity}%",
-        "format-icons": ["", "", "", "", ""]
+        "format-charging": "󰂄 {capacity}%",
+        "format-plugged": "󰚥 {capacity}%",
+        "format-icons": ["󰂃", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
     },
 
     "network": {
-        "format-wifi": " {essid}",
-        "format-ethernet": " {ipaddr}",
-        "format-disconnected": "⚠ Disconnected",
-        "tooltip-format": "{ifname}: {ipaddr}/{cidr}"
+        "format-wifi": "󰖩 {essid}",
+        "format-ethernet": "󰈀 {ipaddr}",
+        "format-disconnected": "󰖪 Disconnected",
+        "tooltip-format": "{ifname}: {ipaddr}/{cidr}\n󰕒 {bandwidthDownBits} 󰕒 {bandwidthUpBits}",
+        "on-click": "impala"
+    },
+
+    "bluetooth": {
+        "format": "󰂯",
+        "format-disabled": "󰂲",
+        "format-connected": "󰂱 {num_connections}",
+        "tooltip-format": "{controller_alias}\t{controller_address}",
+        "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{device_enumerate}",
+        "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
+        "on-click": "bluetui"
     },
 
     "pulseaudio": {
         "format": "{icon} {volume}%",
-        "format-muted": " Muted",
+        "format-muted": "󰖁 Muted",
         "format-icons": {
-            "default": ["", "", ""]
+            "headphone": "󰋋",
+            "hands-free": "󰋎",
+            "headset": "󰋎",
+            "phone": "󰄜",
+            "portable": "󰄜",
+            "car": "󰄋",
+            "default": ["󰕿", "󰖀", "󰕾"]
         },
         "on-click": "pamixer -t"
     },
 
     "tray": {
+        "icon-size": 16,
         "spacing": 10
     }
 }
