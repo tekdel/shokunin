@@ -9,6 +9,7 @@ sudo pacman -S --needed --noconfirm \
     wget \
     curl \
     htop \
+    btop \
     man-db \
     man-pages \
     bash-completion \
@@ -20,6 +21,8 @@ sudo pacman -S --needed --noconfirm \
     rsync \
     openssh \
     networkmanager \
+    impala \
+    bluetui \
     inetutils \
     usbutils \
     pciutils \
