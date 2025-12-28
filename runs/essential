@@ -34,5 +34,30 @@ sudo pacman -S --needed --noconfirm \
     power-profiles-daemon \
     bolt
 
+# Configure polkit to allow wheel group to manage iwd and bluetooth
+echo "Configuring polkit rules for iwd and bluetooth..."
+sudo mkdir -p /etc/polkit-1/rules.d
+
+sudo tee /etc/polkit-1/rules.d/50-net-wifi-bluetooth.rules > /dev/null << 'EOF'
+// Allow wheel group members to control iwd (WiFi) without password
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("net.connman.iwd.") == 0 &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+
+// Allow wheel group members to control bluetooth without password
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.bluez.") == 0 &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+
+# Enable iwd service
+sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
+
 echo "Essential packages installed successfully!"
 echo "Note: Using iwd for WiFi management (managed via impala TUI)"
