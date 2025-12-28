@@ -1,0 +1,37 @@
+#!/bin/bash
+# runs/audio - Audio system with PipeWire and Bluetooth support
+
+# PipeWire audio system
+sudo pacman -S --needed --noconfirm \
+    pipewire \
+    pipewire-pulse \
+    pipewire-alsa \
+    pipewire-jack \
+    wireplumber \
+    gst-plugin-pipewire \
+    pavucontrol
+
+# Audio mixers (TUI and CLI)
+sudo pacman -S --needed --noconfirm \
+    pulsemixer \
+    alsa-utils
+
+# Enable PipeWire services for current user
+echo "Enabling PipeWire services..."
+systemctl --user enable --now pipewire.socket
+systemctl --user enable --now pipewire-pulse.socket
+systemctl --user enable --now wireplumber.service
+
+# Test audio system
+echo "Audio system installed successfully!"
+echo ""
+echo "Audio controls:"
+echo "  TUI Mixer:     pulsemixer"
+echo "  GUI Mixer:     pavucontrol"
+echo "  CLI Volume:    pamixer -i 5 / pamixer -d 5"
+echo "  Waybar click:  Click volume icon to mute/unmute"
+echo ""
+echo "Bluetooth Audio:"
+echo "  1. Connect headphones via bluetui"
+echo "  2. Audio will automatically route to headphones"
+echo "  3. Use pulsemixer to select output device"
