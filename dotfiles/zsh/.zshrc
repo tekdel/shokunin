@@ -9,7 +9,6 @@ ZSH_THEME="robbyrussell"  # Change to your preferred theme
 
 # Plugins
 plugins=(
-    git
     zsh-autosuggestions
     zsh-syntax-highlighting
     fast-syntax-highlighting
