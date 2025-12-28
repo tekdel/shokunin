@@ -56,8 +56,20 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+# Configure iwd to handle DHCP (IP assignment)
+echo "Configuring iwd for automatic IP assignment..."
+sudo mkdir -p /etc/iwd
+sudo tee /etc/iwd/main.conf > /dev/null << 'EOF'
+[General]
+EnableNetworkConfiguration=true
+
+[Network]
+NameResolvingService=systemd
+EOF
+
 # Enable iwd service
 sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
+sudo systemctl enable systemd-resolved || echo "Note: systemctl may fail in chroot"
 
 echo "Essential packages installed successfully!"
 echo "Note: Using iwd for WiFi management (managed via impala TUI)"
