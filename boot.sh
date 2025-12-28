@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -409,6 +409,12 @@ for service in "\${ENABLE_SERVICES[@]}"; do
         systemctl enable "\$service" || warn "Could not enable \$service"
     fi
 done
+
+# Install Hyprland session file for SDDM
+log "Installing Hyprland session file for SDDM..."
+if [ -f "/root/installer/dotfiles/hyprland.desktop" ]; then
+    cp /root/installer/dotfiles/hyprland.desktop /usr/share/wayland-sessions/
+fi
 
 # Copy installer to user's projects folder
 log "Creating projects directory..."
