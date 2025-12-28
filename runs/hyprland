@@ -40,8 +40,20 @@ sudo pacman -S --needed --noconfirm \
 sudo pacman -S --needed --noconfirm \
     sddm
 
+# Install minimal SDDM theme
+paru -S --needed --noconfirm --skipreview \
+    where-is-my-sddm-theme-git
+
+# Configure SDDM to use minimal theme
+echo "Configuring SDDM theme..."
+sudo mkdir -p /etc/sddm.conf.d
+cat <<EOF | sudo tee /etc/sddm.conf.d/theme.conf
+[Theme]
+Current=where_is_my_sddm_theme
+EOF
+
 # Enable SDDM for graphical login
 sudo systemctl enable sddm
 
 echo "Hyprland installed successfully!"
-echo "Note: SDDM display manager enabled for graphical login"
+echo "Note: SDDM display manager with minimal theme enabled"
