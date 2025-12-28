@@ -21,6 +21,7 @@ sudo pacman -S --needed --noconfirm \
     rsync \
     openssh \
     networkmanager \
+    iwd \
     impala \
     bluetui \
     inetutils \
@@ -28,6 +29,8 @@ sudo pacman -S --needed --noconfirm \
     pciutils \
     plymouth \
     gnome-keyring \
-    seahorse
+    seahorse \
+    power-profiles-daemon \
+    bolt
 
 echo "Essential packages installed successfully!"

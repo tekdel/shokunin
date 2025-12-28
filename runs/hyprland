@@ -20,6 +20,7 @@ sudo pacman -S --needed --noconfirm \
     grim \
     slurp \
     swappy \
+    satty \
     wl-clipboard \
     cliphist \
     brightnessctl \
