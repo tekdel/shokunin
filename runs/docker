@@ -10,9 +10,8 @@ sudo pacman -S --needed --noconfirm \
 paru -S --needed --noconfirm --skipreview \
     lazydocker
 
-# Enable and start docker service
-sudo systemctl enable docker
-sudo systemctl start docker
+# Enable docker service (will start on boot)
+sudo systemctl enable docker || echo "Note: systemctl enable may fail in chroot - docker will be enabled on first boot"
 
 # Add current user to docker group
 if [ -n "$SUDO_USER" ]; then

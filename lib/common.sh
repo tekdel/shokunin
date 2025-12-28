@@ -184,9 +184,9 @@ install_aur_helper() {
     fi
 
     log "Building and installing paru (this may take a few minutes)..."
-    if ! sudo -u "$user" bash -c 'cd /tmp/paru && makepkg -si --noconfirm'; then
-        error "Failed to build/install paru"
-    fi
+    # Note: "Failed to connect to bus/scope" warnings are expected in chroot (no systemd)
+    # We check if paru is installed after regardless of makepkg exit code
+    sudo -u "$user" bash -c 'cd /tmp/paru && makepkg -si --noconfirm' || true
 
     # Clean up
     rm -rf /tmp/paru

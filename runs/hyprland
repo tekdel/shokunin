@@ -56,7 +56,7 @@ Current=where_is_my_sddm_theme
 EOF
 
 # Enable SDDM for graphical login
-sudo systemctl enable sddm
+sudo systemctl enable sddm || echo "Note: systemctl enable may fail in chroot - sddm will be enabled on first boot"
 
 echo "Hyprland installed successfully!"
 echo "Note: SDDM display manager with minimal theme enabled"

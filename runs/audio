@@ -16,13 +16,9 @@ sudo pacman -S --needed --noconfirm \
     pulsemixer \
     alsa-utils
 
-# Enable PipeWire services for current user
-echo "Enabling PipeWire services..."
-systemctl --user enable --now pipewire.socket
-systemctl --user enable --now pipewire-pulse.socket
-systemctl --user enable --now wireplumber.service
+# Note: PipeWire user services are auto-enabled via systemd user presets
+# They will start automatically on first login
 
-# Test audio system
 echo "Audio system installed successfully!"
 echo ""
 echo "Audio controls:"

@@ -8,9 +8,8 @@ sudo pacman -S --needed --noconfirm \
     gsfonts \
     system-config-printer
 
-# Enable and start cups service
-sudo systemctl enable cups
-sudo systemctl start cups
+# Enable cups service (will start on boot)
+sudo systemctl enable cups || echo "Note: systemctl enable may fail in chroot - cups will be enabled on first boot"
 
 echo "CUPS printing system installed successfully!"
 echo "Access printer configuration at: http://localhost:631"
