@@ -228,9 +228,9 @@ extract() {
     fi
 }
 
-# Quick search
-search() {
-    grep -r "$1" .
+# Quick file content search
+findin() {
+    ripgrep "$1" . 2>/dev/null || grep -r "$1" .
 }
 
 # ============================================================================
