@@ -162,25 +162,41 @@ EOF
 install_aur_helper() {
     local user=$1
 
+    if [ -z "$user" ]; then
+        error "install_aur_helper: username not provided"
+    fi
+
+    log "Checking if paru is already installed..."
     if command_exists paru; then
-        info "paru already installed"
+        info "paru already installed, skipping"
         return 0
     fi
 
-    log "Installing paru (AUR helper)..."
+    log "Installing paru (AUR helper) for user: $user"
+
+    # Clean up any previous failed attempts
+    rm -rf /tmp/paru
 
     # Install as regular user, not root
-    sudo -u "$user" bash <<'EOF'
-set -e
-cd /tmp
-git clone https://aur.archlinux.org/paru.git
-cd paru
-makepkg -si --noconfirm
-cd ..
-rm -rf paru
-EOF
+    log "Cloning paru from AUR..."
+    if ! sudo -u "$user" git clone https://aur.archlinux.org/paru.git /tmp/paru; then
+        error "Failed to clone paru repository"
+    fi
 
-    success "paru installed"
+    log "Building and installing paru (this may take a few minutes)..."
+    if ! sudo -u "$user" bash -c 'cd /tmp/paru && makepkg -si --noconfirm'; then
+        error "Failed to build/install paru"
+    fi
+
+    # Clean up
+    rm -rf /tmp/paru
+
+    # Verify installation
+    if command_exists paru; then
+        success "paru installed successfully"
+    else
+        error "paru installation failed - command not found after install"
+    fi
 }
 
 # Wait for a block device to appear (with timeout)

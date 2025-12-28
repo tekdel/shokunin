@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.5.0"
+VERSION="1.5.1"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -337,9 +337,18 @@ fi
 # Install paru (AUR helper)
 if ! should_skip "packages"; then
     # Enable passwordless sudo temporarily for package installation
-    log "Configuring temporary passwordless sudo for installation..."
+    log "Configuring temporary passwordless sudo for $USERNAME..."
     echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/temp-install
     chmod 440 /etc/sudoers.d/temp-install
+
+    # Verify sudoers file was created correctly
+    log "Sudoers entry created:"
+    cat /etc/sudoers.d/temp-install
+
+    # Verify syntax
+    if ! visudo -c -f /etc/sudoers.d/temp-install >/dev/null 2>&1; then
+        warn "Sudoers syntax check failed"
+    fi
 
     install_aur_helper "$USERNAME"
 
