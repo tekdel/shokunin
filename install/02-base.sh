@@ -8,9 +8,16 @@ check_root
 
 log "Installing base system..."
 
+# Verify /mnt is mounted
+if ! mountpoint -q /mnt; then
+    error "/mnt is not mounted - run 01-disk.sh first"
+fi
+
 # Update mirrorlist if reflector is available
 if command_exists reflector; then
     update_mirrors
+else
+    warn "reflector not available - using default mirrors"
 fi
 
 # Sync time
@@ -18,25 +25,45 @@ sync_time
 
 # Install base system
 log "Running pacstrap (this may take a while)..."
-pacstrap /mnt \
-    base \
-    linux \
-    linux-firmware \
-    base-devel \
-    networkmanager \
-    git \
-    vim \
-    sudo \
-    reflector \
-    efibootmgr \
+PACKAGES=(
+    base
+    linux
+    linux-firmware
+    base-devel
+    networkmanager
+    git
+    vim
+    sudo
+    reflector
+    efibootmgr
     cryptsetup
+)
+
+log "Installing packages: ${PACKAGES[*]}"
+if ! pacstrap /mnt "${PACKAGES[@]}"; then
+    error "pacstrap failed - check internet connection and package names"
+fi
+success "Base packages installed"
 
 # Generate fstab
 log "Generating fstab..."
-genfstab -U /mnt >> /mnt/etc/fstab
+if ! genfstab -U /mnt >> /mnt/etc/fstab; then
+    error "Failed to generate fstab"
+fi
+
+# Verify fstab has content
+if [ ! -s /mnt/etc/fstab ]; then
+    error "fstab is empty - something went wrong with genfstab"
+fi
+
+# Show generated fstab for debugging
+log "Generated fstab:"
+cat /mnt/etc/fstab
 
 # Copy installer to new system
 log "Copying installer to new system..."
-cp -r "$SCRIPT_DIR/.." /mnt/root/installer
+if ! cp -r "$SCRIPT_DIR/.." /mnt/root/installer; then
+    error "Failed to copy installer to /mnt/root/installer"
+fi
 
 success "Base system installed!"

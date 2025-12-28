@@ -183,9 +183,78 @@ EOF
     success "paru installed"
 }
 
+# Wait for a block device to appear (with timeout)
+wait_for_device() {
+    local device=$1
+    local timeout=${2:-30}
+    local elapsed=0
+
+    log "Waiting for device $device..."
+    while [ ! -b "$device" ] && [ $elapsed -lt $timeout ]; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ ! -b "$device" ]; then
+        error "Device $device did not appear after ${timeout}s"
+    fi
+    success "Device $device is ready"
+}
+
+# Wait for device mapper device to appear
+wait_for_mapper() {
+    local name=$1
+    local timeout=${2:-30}
+    wait_for_device "/dev/mapper/$name" "$timeout"
+}
+
+# Validate timezone exists
+validate_timezone() {
+    local tz=$1
+    if [ ! -f "/usr/share/zoneinfo/$tz" ]; then
+        error "Invalid timezone: $tz (file not found: /usr/share/zoneinfo/$tz)"
+    fi
+}
+
+# Validate locale format
+validate_locale() {
+    local locale=$1
+    if [ -z "$locale" ]; then
+        warn "LOCALE not set, defaulting to en_US.UTF-8"
+        echo "en_US.UTF-8"
+        return
+    fi
+    echo "$locale"
+}
+
+# Safe sed with verification
+safe_sed() {
+    local pattern=$1
+    local file=$2
+    local description=$3
+
+    if [ ! -f "$file" ]; then
+        error "File not found for sed: $file"
+    fi
+
+    local before=$(cat "$file")
+    sed -i "$pattern" "$file"
+    local after=$(cat "$file")
+
+    if [ "$before" = "$after" ]; then
+        warn "sed pattern '$pattern' made no changes to $file"
+        if [ -n "$description" ]; then
+            warn "Expected to: $description"
+        fi
+        return 1
+    fi
+    return 0
+}
+
 # Export all functions
 export -f log error warn info success
 export -f run_script check_root check_not_root command_exists
 export -f install_if_missing prompt prompt_password
 export -f in_chroot check_arch sync_time update_mirrors
 export -f enable_multilib install_aur_helper
+export -f wait_for_device wait_for_mapper validate_timezone validate_locale safe_sed

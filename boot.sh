@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.4.3"
+VERSION="1.5.0"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -150,35 +150,54 @@ echo -e "${GREEN}System Configuration${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# Disk selection - auto-detect VM (vda) vs real hardware (sda)
-warn "Available disks:"
-lsblk -d -n -o NAME,SIZE,TYPE | grep disk
+# Disk selection - interactive menu
+echo -e "${YELLOW}Select installation disk:${NC}"
 echo ""
 
-# Auto-detect disk device
-if [ -b "/dev/vda" ]; then
-    # Running in VM (QEMU/KVM)
-    DISK="/dev/vda"
-    DISK_EXAMPLE="/dev/vda"
-elif [ -b "/dev/sda" ]; then
-    # Real hardware
-    DISK="/dev/sda"
-    DISK_EXAMPLE="/dev/sda"
-elif [ -b "/dev/nvme0n1" ]; then
-    # NVMe disk
-    DISK="/dev/nvme0n1"
-    DISK_EXAMPLE="/dev/nvme0n1"
-else
-    # Fallback - let user specify
-    DISK_EXAMPLE="/dev/sda or /dev/vda"
+# Get list of available disks (excluding loop devices, CD-ROMs, etc.)
+mapfile -t DISKS < <(lsblk -d -n -o NAME,SIZE,TYPE,MODEL | grep disk | awk '{print "/dev/"$1}')
+
+if [ ${#DISKS[@]} -eq 0 ]; then
+    error "No disks found!"
 fi
 
-DISK=$(prompt "Enter disk to install to (e.g., $DISK_EXAMPLE)" "$DISK")
+# Display disk menu
+i=1
+for disk in "${DISKS[@]}"; do
+    # Get disk info
+    DISK_INFO=$(lsblk -d -n -o SIZE,MODEL "$disk" 2>/dev/null | xargs)
+    echo -e "  ${GREEN}$i)${NC} $disk - $DISK_INFO"
+    ((i++))
+done
+echo ""
 
-# Verify disk
+# Auto-select if only one disk
+if [ ${#DISKS[@]} -eq 1 ]; then
+    DISK="${DISKS[0]}"
+    log "Only one disk available, auto-selecting: $DISK"
+else
+    # Let user choose
+    while true; do
+        read -p "Enter disk number [1-${#DISKS[@]}]: " disk_choice </dev/tty
+        if [[ "$disk_choice" =~ ^[0-9]+$ ]] && [ "$disk_choice" -ge 1 ] && [ "$disk_choice" -le ${#DISKS[@]} ]; then
+            DISK="${DISKS[$((disk_choice-1))]}"
+            break
+        else
+            warn "Invalid selection. Please enter a number between 1 and ${#DISKS[@]}"
+        fi
+    done
+fi
+
+# Verify disk exists
 if [ ! -b "$DISK" ]; then
     error "Disk $DISK not found!"
 fi
+
+# Show selected disk info
+echo ""
+log "Selected disk: $DISK"
+lsblk "$DISK"
+echo ""
 
 # Hostname
 HOSTNAME=$(prompt "Enter hostname" "$HOSTNAME")
@@ -264,9 +283,15 @@ if ! should_skip "base"; then
     checkpoint "base"
 fi
 
-# Save passwords to files for chroot (env vars don't reliably pass through)
+# Save variables to files for chroot (heredoc with single quotes doesn't expand vars)
+log "Saving configuration for chroot..."
+mkdir -p /mnt/root/installer
 echo -n "$USER_PASSWORD" > /mnt/root/installer/.user_password
 echo -n "$ROOT_PASSWORD" > /mnt/root/installer/.root_password
+echo -n "$USERNAME" > /mnt/root/installer/.username
+echo -n "$HOSTNAME" > /mnt/root/installer/.hostname
+echo -n "$TIMEZONE" > /mnt/root/installer/.timezone
+echo -n "$MINIMAL_INSTALL" > /mnt/root/installer/.minimal_install
 chmod 600 /mnt/root/installer/.user_password /mnt/root/installer/.root_password
 
 # Phase 2: System configuration (run inside chroot)
@@ -278,15 +303,15 @@ cd /root/installer
 source ./lib/common.sh
 source ./config/system.conf
 
-# Import variables from parent environment
-export HOSTNAME="$HOSTNAME"
-export USERNAME="$USERNAME"
-export TIMEZONE="$TIMEZONE"
-export MINIMAL_INSTALL="$MINIMAL_INSTALL"
-
-# Read passwords from files (more reliable than env vars)
+# Read variables from files (heredoc with single quotes doesn't expand vars)
+export USERNAME="$(cat /root/installer/.username)"
+export HOSTNAME="$(cat /root/installer/.hostname)"
+export TIMEZONE="$(cat /root/installer/.timezone)"
+export MINIMAL_INSTALL="$(cat /root/installer/.minimal_install)"
 export USER_PASSWORD="$(cat /root/installer/.user_password)"
 export ROOT_PASSWORD="$(cat /root/installer/.root_password)"
+
+log "Configuration loaded: USERNAME=$USERNAME, HOSTNAME=$HOSTNAME"
 
 # Configure initramfs with encryption support BEFORE bootloader
 if ! should_skip "bootloader"; then
@@ -431,8 +456,11 @@ fi
 
 chown -R $USERNAME:$USERNAME /home/$USERNAME/projects
 
-# Clean up password files
+# Clean up sensitive configuration files
+log "Cleaning up temporary configuration files..."
 rm -f /root/installer/.user_password /root/installer/.root_password
+rm -f /root/installer/.username /root/installer/.hostname
+rm -f /root/installer/.timezone /root/installer/.minimal_install
 
 success "Installation complete!"
 
