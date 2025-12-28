@@ -20,7 +20,6 @@ sudo pacman -S --needed --noconfirm \
     tar \
     rsync \
     openssh \
-    networkmanager \
     iwd \
     impala \
     bluetui \
@@ -34,3 +33,4 @@ sudo pacman -S --needed --noconfirm \
     bolt
 
 echo "Essential packages installed successfully!"
+echo "Note: Using iwd for WiFi management (managed via impala TUI)"
