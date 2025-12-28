@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Shokunin
+Description=Minimal password prompt for Shokunin installer
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/shokunin
+ScriptFile=/usr/share/plymouth/themes/shokunin/shokunin.script

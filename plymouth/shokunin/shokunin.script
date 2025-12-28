@@ -1,0 +1,80 @@
+# Shokunin Plymouth Theme - Minimal password prompt
+# Simple, clean, no-frills boot screen
+
+# Screen and window setup
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# Background - solid dark color
+Window.SetBackgroundTopColor(0.11, 0.12, 0.13);     # #1c1e22
+Window.SetBackgroundBottomColor(0.11, 0.12, 0.13);  # #1c1e22
+
+# Create prompt text
+prompt_text = NULL;
+prompt_sprite = NULL;
+
+# Create password entry display
+password_text = NULL;
+password_sprite = NULL;
+
+# Password dialogue callback
+fun on_password_prompt(prompt, bullets) {
+    # Clear previous prompt
+    if (prompt_sprite != NULL) {
+        prompt_sprite.SetOpacity(0);
+    }
+    if (password_sprite != NULL) {
+        password_sprite.SetOpacity(0);
+    }
+
+    # Show prompt text
+    if (prompt != NULL) {
+        prompt_image = Image.Text(prompt, 1, 1, 1);  # White text
+        prompt_sprite = Sprite(prompt_image);
+        prompt_sprite.SetX(screen_width / 2 - prompt_image.GetWidth() / 2);
+        prompt_sprite.SetY(screen_height / 2 - 50);
+        prompt_sprite.SetZ(10000);
+    }
+
+    # Show password bullets
+    bullet_string = "";
+    for (i = 0; i < bullets; i++) {
+        bullet_string += "•";
+    }
+
+    if (bullets > 0) {
+        password_image = Image.Text(bullet_string, 1, 1, 1);  # White bullets
+        password_sprite = Sprite(password_image);
+        password_sprite.SetX(screen_width / 2 - password_image.GetWidth() / 2);
+        password_sprite.SetY(screen_height / 2);
+        password_sprite.SetZ(10000);
+    }
+}
+
+# Register the password callback
+Plymouth.SetDisplayPasswordFunction(on_password_prompt);
+
+# Message display for boot messages
+message_sprite = NULL;
+
+fun on_message(text) {
+    if (message_sprite != NULL)
+        message_sprite.SetOpacity(0);
+
+    if (text != NULL) {
+        message_image = Image.Text(text, 0.7, 0.7, 0.7);  # Light gray
+        message_sprite = Sprite(message_image);
+        message_sprite.SetX(screen_width / 2 - message_image.GetWidth() / 2);
+        message_sprite.SetY(screen_height - 100);
+        message_sprite.SetZ(9999);
+    }
+}
+
+Plymouth.SetMessageFunction(on_message);
+
+# Refresh handler (called many times per second)
+fun refresh_callback() {
+    # Nothing to animate - static display
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
