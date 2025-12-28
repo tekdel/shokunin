@@ -34,7 +34,8 @@ paru -S --needed --noconfirm --skipreview \
 # Wallpaper and theming
 sudo pacman -S --needed --noconfirm \
     swaybg \
-    waypaper
+    waypaper \
+    adwaita-cursors
 
 # Display manager (graphical login)
 sudo pacman -S --needed --noconfirm \
