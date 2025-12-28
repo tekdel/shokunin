@@ -416,10 +416,19 @@ if [ -f "/root/installer/dotfiles/hyprland.desktop" ]; then
     cp /root/installer/dotfiles/hyprland.desktop /usr/share/wayland-sessions/
 fi
 
-# Copy installer to user's projects folder
-log "Creating projects directory..."
+# Clone installer to user's projects folder as git repository
+log "Creating projects directory and cloning repository..."
 mkdir -p /home/$USERNAME/projects
-cp -r /root/installer /home/$USERNAME/projects/shokunin
+
+# Clone from GitHub to get proper git repository
+if sudo -u $USERNAME git clone "$REPO_URL" /home/$USERNAME/projects/shokunin 2>/dev/null; then
+    success "Repository cloned to ~/projects/shokunin"
+else
+    # Fallback: copy if clone fails (offline install or custom repo)
+    log "Git clone failed, copying installer instead..."
+    cp -r /root/installer /home/$USERNAME/projects/shokunin
+fi
+
 chown -R $USERNAME:$USERNAME /home/$USERNAME/projects
 
 # Clean up password files
