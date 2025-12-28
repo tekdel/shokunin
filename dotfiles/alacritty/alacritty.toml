@@ -48,3 +48,19 @@ style = { shape = "Block", blinking = "On" }
 
 [terminal.shell]
 program = "/bin/zsh"
+
+# Keybindings
+[[keyboard.bindings]]
+key = "K"
+mods = "Alt|Shift"
+action = "IncreaseFontSize"
+
+[[keyboard.bindings]]
+key = "J"
+mods = "Alt|Shift"
+action = "DecreaseFontSize"
+
+[[keyboard.bindings]]
+key = "0"
+mods = "Alt"
+action = "ResetFontSize"
