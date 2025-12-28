@@ -78,6 +78,11 @@ if [ -d /sys/firmware/efi ]; then
 
     # Create EFI boot entry
     if command -v efibootmgr >/dev/null 2>&1; then
+        # Ensure efivars is mounted (required for efibootmgr in chroot)
+        if [ -d /sys/firmware/efi/efivars ] && ! mountpoint -q /sys/firmware/efi/efivars; then
+            mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+        fi
+
         # Remove old Limine entries
         efibootmgr | grep "Limine" | cut -d' ' -f1 | sed 's/Boot//;s/*//' | xargs -I {} efibootmgr -b {} -B 2>/dev/null || true
 
