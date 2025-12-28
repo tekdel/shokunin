@@ -1,21 +1,36 @@
-/* Waybar styling */
+/* Waybar styling - Omarchy-inspired minimal theme */
+
+@import "theme.css";
 
 * {
     font-family: "JetBrainsMono Nerd Font";
-    font-size: 13px;
+    font-size: 12px;
+    border: none;
+    border-radius: 0;
+    min-height: 0;
 }
 
 window#waybar {
-    background-color: rgba(30, 30, 46, 0.9);
+    background-color: rgba(30, 30, 46, 0.95);
     color: #cdd6f4;
-    border-bottom: 3px solid rgba(137, 180, 250, 0.5);
 }
 
+.modules-left {
+    margin-left: 8px;
+}
+
+.modules-right {
+    margin-right: 8px;
+}
+
+/* Workspaces */
 #workspaces button {
-    padding: 0 8px;
-    background-color: transparent;
+    all: initial;
+    padding: 0 6px;
+    margin: 0 1.5px;
+    min-width: 9px;
     color: #cdd6f4;
-    border-bottom: 3px solid transparent;
+    background: transparent;
 }
 
 #workspaces button:hover {
@@ -23,27 +38,51 @@ window#waybar {
 }
 
 #workspaces button.active {
-    background-color: rgba(137, 180, 250, 0.3);
-    border-bottom: 3px solid #89b4fa;
-}
-
-#window {
     color: #89b4fa;
 }
 
-#clock,
-#battery,
-#cpu,
-#memory,
-#network,
-#pulseaudio,
-#tray {
-    padding: 0 10px;
-    margin: 0 4px;
-    background-color: rgba(69, 71, 90, 0.5);
-    border-radius: 8px;
+#workspaces button.empty {
+    opacity: 0.5;
 }
 
+/* Window title */
+#window {
+    color: #89b4fa;
+    margin-left: 8px;
+}
+
+/* Clock */
+#clock {
+    margin: 0 8px;
+    color: #cdd6f4;
+}
+
+/* Right side modules - icon style */
+#cpu,
+#memory,
+#battery,
+#pulseaudio,
+#network,
+#bluetooth {
+    min-width: 12px;
+    margin: 0 7px;
+    padding: 0;
+}
+
+/* Tray */
+#tray {
+    margin-right: 16px;
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+}
+
+/* Battery states */
 #battery.charging {
     color: #a6e3a1;
 }
@@ -54,12 +93,46 @@ window#waybar {
 
 #battery.critical:not(.charging) {
     color: #f38ba8;
+    animation: blink 0.5s linear infinite alternate;
 }
 
+@keyframes blink {
+    to {
+        color: #ffffff;
+    }
+}
+
+/* Network states */
+#network.disconnected {
+    color: #f38ba8;
+}
+
+#network.ethernet {
+    color: #a6e3a1;
+}
+
+/* Bluetooth states */
+#bluetooth.disabled {
+    color: #6c7086;
+}
+
+#bluetooth.connected {
+    color: #89b4fa;
+}
+
+/* Audio states */
 #pulseaudio.muted {
     color: #f38ba8;
 }
 
-#network.disconnected {
-    color: #f38ba8;
+/* Tooltips */
+tooltip {
+    background: rgba(30, 30, 46, 0.95);
+    border: 1px solid #45475a;
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: #cdd6f4;
+    padding: 4px;
 }

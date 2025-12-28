@@ -1,12 +1,12 @@
 {
     "layer": "top",
     "position": "top",
-    "height": 30,
+    "height": 26,
     "spacing": 4,
 
     "modules-left": ["hyprland/workspaces", "hyprland/window"],
     "modules-center": ["clock"],
-    "modules-right": ["bluetooth", "network", "pulseaudio", "cpu", "memory", "battery", "tray"],
+    "modules-right": ["tray", "bluetooth", "network", "pulseaudio", "cpu", "memory", "battery"],
 
     "hyprland/workspaces": {
         "format": "{icon}",
@@ -17,6 +17,11 @@
             "3": "󰲤",
             "4": "󰲦",
             "5": "󰲨",
+            "6": "󰲪",
+            "7": "󰲬",
+            "8": "󰲮",
+            "9": "󰲰",
+            "10": "󰿬",
             "active": "",
             "default": ""
         }
@@ -30,67 +35,80 @@
 
     "clock": {
         "format": "󰥔 {:%H:%M}",
-        "format-alt": "󰃭 {:%d/%m/%Y}",
+        "format-alt": "󰃭 {:%A, %d %B %Y}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>"
     },
 
     "cpu": {
         "format": "󰻠 {usage}%",
         "interval": 2,
-        "tooltip": false
+        "tooltip": true,
+        "on-click": "alacritty -e btop"
     },
 
     "memory": {
-        "format": "󰍛 {}%",
-        "interval": 2
+        "format": "󰍛 {percentage}%",
+        "interval": 2,
+        "tooltip-format": "RAM: {used:0.1f}GB / {total:0.1f}GB",
+        "on-click": "alacritty -e btop"
     },
 
     "battery": {
         "states": {
-            "warning": 30,
-            "critical": 15
+            "warning": 20,
+            "critical": 10
         },
-        "format": "{icon} {capacity}%",
-        "format-charging": "󰂄 {capacity}%",
-        "format-plugged": "󰚥 {capacity}%",
-        "format-icons": ["󰂃", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
+        "format": "{icon}",
+        "format-charging": "{icon}",
+        "format-plugged": "󰂅",
+        "format-full": "󰂅",
+        "format-icons": {
+            "charging": ["󰢜", "󰂆", "󰂇", "󰂈", "󰢝", "󰂉", "󰢞", "󰂊", "󰂋", "󰂅"],
+            "default": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
+        },
+        "tooltip-format": "{capacity}% - {timeTo}\n{power:.1f}W",
+        "on-click": "alacritty -e btop"
     },
 
     "network": {
-        "format-wifi": "󰖩 {essid}",
-        "format-ethernet": "󰈀 {ipaddr}",
-        "format-disconnected": "󰖪 Disconnected",
-        "tooltip-format": "{ifname}: {ipaddr}/{cidr}\n󰕒 {bandwidthDownBits} 󰕒 {bandwidthUpBits}",
-        "on-click": "impala"
+        "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
+        "format-wifi": "{icon}",
+        "format-ethernet": "󰀂",
+        "format-disconnected": "󰤮",
+        "tooltip-format-wifi": "{essid} ({signalStrength}%)\n{ipaddr}/{cidr}",
+        "tooltip-format-ethernet": "{ifname}: {ipaddr}/{cidr}",
+        "tooltip-format-disconnected": "Disconnected",
+        "on-click": "alacritty -e impala"
     },
 
     "bluetooth": {
-        "format": "󰂯",
+        "format": "",
         "format-disabled": "󰂲",
-        "format-connected": "󰂱 {num_connections}",
-        "tooltip-format": "{controller_alias}\t{controller_address}",
-        "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{device_enumerate}",
-        "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
-        "on-click": "bluetui"
+        "format-connected": "󰂱",
+        "format-connected-battery": "󰂱 {device_battery_percentage}%",
+        "tooltip-format": "{controller_alias}\n{status}",
+        "tooltip-format-connected": "{controller_alias}\n{num_connections} connected\n\n{device_enumerate}",
+        "tooltip-format-enumerate-connected": "{device_alias}",
+        "tooltip-format-enumerate-connected-battery": "{device_alias} ({device_battery_percentage}%)",
+        "on-click": "alacritty -e bluetui"
     },
 
     "pulseaudio": {
-        "format": "{icon} {volume}%",
-        "format-muted": "󰖁 Muted",
+        "format": "{icon}",
+        "format-muted": "󰖁",
         "format-icons": {
             "headphone": "󰋋",
-            "hands-free": "󰋎",
             "headset": "󰋎",
-            "phone": "󰄜",
-            "portable": "󰄜",
-            "car": "󰄋",
             "default": ["󰕿", "󰖀", "󰕾"]
         },
-        "on-click": "pamixer -t"
+        "tooltip-format": "{volume}% - {desc}",
+        "on-click": "pamixer -t",
+        "on-click-right": "alacritty -e pulsemixer",
+        "scroll-step": 5
     },
 
     "tray": {
-        "icon-size": 16,
-        "spacing": 10
+        "icon-size": 14,
+        "spacing": 8
     }
 }
