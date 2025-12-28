@@ -1,0 +1,239 @@
+#!/bin/bash
+# update - Update system packages and dotfiles
+# Usage:
+#   ./update              - Update everything (packages + dotfiles)
+#   ./update packages     - Update only packages
+#   ./update dotfiles     - Update only dotfiles
+#   ./update --dry        - Dry run (show what would update)
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+DRY_RUN=false
+CATEGORIES=()
+UPDATE_PACKAGES=false
+UPDATE_DOTFILES=false
+
+# Parse arguments
+for arg in "$@"; do
+    case $arg in
+        --dry)
+            DRY_RUN=true
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS] [CATEGORY...]"
+            echo ""
+            echo "Update packages and/or dotfiles on existing system"
+            echo ""
+            echo "Options:"
+            echo "  --dry       Dry run (show what would update without changing anything)"
+            echo "  --help      Show this help message"
+            echo ""
+            echo "Categories:"
+            echo "  packages    Update packages (delegates to ./run)"
+            echo "  dotfiles    Synchronize dotfiles from dotfiles/ to ~/ and ~/.config/"
+            echo ""
+            echo "Examples:"
+            echo "  $0                    # Update everything (packages + dotfiles)"
+            echo "  $0 packages           # Update only packages"
+            echo "  $0 dotfiles           # Update only dotfiles"
+            echo "  $0 --dry              # Dry run for everything"
+            echo "  $0 --dry dotfiles     # Dry run for dotfiles only"
+            exit 0
+            ;;
+        packages|dotfiles)
+            CATEGORIES+=("$arg")
+            ;;
+        *)
+            echo -e "${YELLOW}Warning: Unknown argument '$arg' (ignoring)${NC}"
+            ;;
+    esac
+done
+
+# If no categories specified, update everything
+if [ ${#CATEGORIES[@]} -eq 0 ]; then
+    UPDATE_PACKAGES=true
+    UPDATE_DOTFILES=true
+else
+    # Check which categories were requested
+    for category in "${CATEGORIES[@]}"; do
+        if [[ "$category" == "packages" ]]; then
+            UPDATE_PACKAGES=true
+        elif [[ "$category" == "dotfiles" ]]; then
+            UPDATE_DOTFILES=true
+        fi
+    done
+fi
+
+# Header
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}DRY RUN MODE${NC} - No changes will be made"
+else
+    echo -e "${GREEN}Updating system${NC}"
+fi
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+#
+# PACKAGES UPDATE
+#
+if [ "$UPDATE_PACKAGES" = true ]; then
+    echo -e "${GREEN}▶ Updating packages${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    if [ "$DRY_RUN" = true ]; then
+        bash "$SCRIPT_DIR/run" --dry
+    else
+        bash "$SCRIPT_DIR/run"
+    fi
+
+    echo ""
+fi
+
+#
+# DOTFILES UPDATE
+#
+if [ "$UPDATE_DOTFILES" = true ]; then
+    echo -e "${GREEN}▶ Synchronizing dotfiles${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    DOTFILES_DIR="$SCRIPT_DIR/dotfiles"
+
+    # Check if dotfiles directory exists
+    if [ ! -d "$DOTFILES_DIR" ]; then
+        echo -e "${YELLOW}Warning: dotfiles/ directory not found${NC}"
+        exit 1
+    fi
+
+    # Function to sync a file
+    sync_file() {
+        local src=$1
+        local dest=$2
+
+        if [ "$DRY_RUN" = true ]; then
+            if [ -f "$src" ]; then
+                if [ -f "$dest" ]; then
+                    echo -e "${BLUE}[WOULD UPDATE]${NC} $dest"
+                else
+                    echo -e "${BLUE}[WOULD CREATE]${NC} $dest"
+                fi
+            fi
+        else
+            if [ -f "$src" ]; then
+                mkdir -p "$(dirname "$dest")"
+                cp "$src" "$dest"
+                echo -e "${GREEN}✓${NC} Synced: $dest"
+            fi
+        fi
+    }
+
+    # Function to sync a directory
+    sync_dir() {
+        local src=$1
+        local dest=$2
+
+        if [ "$DRY_RUN" = true ]; then
+            if [ -d "$src" ]; then
+                if [ -d "$dest" ]; then
+                    echo -e "${BLUE}[WOULD UPDATE]${NC} $dest/"
+                else
+                    echo -e "${BLUE}[WOULD CREATE]${NC} $dest/"
+                fi
+            fi
+        else
+            if [ -d "$src" ]; then
+                mkdir -p "$dest"
+                cp -r "$src" "$dest"
+                echo -e "${GREEN}✓${NC} Synced: $dest/"
+            fi
+        fi
+    }
+
+    # Sync .config directories
+    if [ -d "$DOTFILES_DIR/hypr" ]; then
+        sync_dir "$DOTFILES_DIR/hypr" "$HOME/.config/hypr"
+    fi
+    if [ -d "$DOTFILES_DIR/waybar" ]; then
+        sync_dir "$DOTFILES_DIR/waybar" "$HOME/.config/waybar"
+    fi
+    if [ -d "$DOTFILES_DIR/alacritty" ]; then
+        sync_dir "$DOTFILES_DIR/alacritty" "$HOME/.config/alacritty"
+    fi
+    if [ -d "$DOTFILES_DIR/nvim" ]; then
+        sync_dir "$DOTFILES_DIR/nvim" "$HOME/.config/nvim"
+    fi
+
+    # Sync home directory files
+    sync_file "$DOTFILES_DIR/bash/.bashrc" "$HOME/.bashrc"
+    sync_file "$DOTFILES_DIR/bash/.bash_profile" "$HOME/.bash_profile"
+    sync_file "$DOTFILES_DIR/zsh/.zshrc" "$HOME/.zshrc"
+    sync_file "$DOTFILES_DIR/zsh/.zprofile" "$HOME/.zprofile"
+    sync_file "$DOTFILES_DIR/git/.gitconfig" "$HOME/.gitconfig"
+    sync_file "$DOTFILES_DIR/git/.gitignore_global" "$HOME/.gitignore_global"
+    sync_file "$DOTFILES_DIR/.mise.toml" "$HOME/.mise.toml"
+
+    # Sync tmux config to .config/tmux/
+    if [ -f "$DOTFILES_DIR/tmux/.tmux.conf" ]; then
+        if [ "$DRY_RUN" = true ]; then
+            if [ -f "$HOME/.config/tmux/tmux.conf" ]; then
+                echo -e "${BLUE}[WOULD UPDATE]${NC} $HOME/.config/tmux/tmux.conf"
+            else
+                echo -e "${BLUE}[WOULD CREATE]${NC} $HOME/.config/tmux/tmux.conf"
+            fi
+        else
+            mkdir -p "$HOME/.config/tmux"
+            cp "$DOTFILES_DIR/tmux/.tmux.conf" "$HOME/.config/tmux/tmux.conf"
+            echo -e "${GREEN}✓${NC} Synced: $HOME/.config/tmux/tmux.conf"
+        fi
+    fi
+
+    # Sync bin directory to .local/bin
+    if [ -d "$DOTFILES_DIR/bin" ]; then
+        if [ "$DRY_RUN" = true ]; then
+            if [ -d "$HOME/.local/bin" ]; then
+                echo -e "${BLUE}[WOULD UPDATE]${NC} $HOME/.local/bin/"
+            else
+                echo -e "${BLUE}[WOULD CREATE]${NC} $HOME/.local/bin/"
+            fi
+        else
+            mkdir -p "$HOME/.local/bin"
+            cp -r "$DOTFILES_DIR/bin/"* "$HOME/.local/bin/"
+            chmod +x "$HOME/.local/bin/"*
+            echo -e "${GREEN}✓${NC} Synced: $HOME/.local/bin/"
+        fi
+    fi
+
+    # Setup global gitignore
+    if [ -f "$HOME/.gitignore_global" ] && [ ! "$DRY_RUN" = true ]; then
+        git config --global core.excludesfile ~/.gitignore_global 2>/dev/null || true
+    fi
+
+    echo ""
+fi
+
+# Summary
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}Dry run complete${NC}"
+    echo ""
+    echo "Run without --dry to apply changes:"
+    if [ "$UPDATE_PACKAGES" = true ] && [ "$UPDATE_DOTFILES" = true ]; then
+        echo "  ./update"
+    elif [ "$UPDATE_PACKAGES" = true ]; then
+        echo "  ./update packages"
+    elif [ "$UPDATE_DOTFILES" = true ]; then
+        echo "  ./update dotfiles"
+    fi
+else
+    echo -e "${GREEN}Update complete!${NC}"
+fi
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

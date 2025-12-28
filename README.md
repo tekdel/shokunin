@@ -60,6 +60,33 @@ cd ~/shokunin
 ./run hyprland terminal
 ```
 
+### Updating an Existing System
+
+After installing via `boot.sh`, use the `update` script to keep your system synchronized with the repository:
+
+```bash
+cd ~/projects/shokunin
+git pull  # Get latest changes
+
+# Preview what would change
+./update --dry
+
+# Update everything (packages + dotfiles)
+./update
+
+# Update only packages
+./update packages
+
+# Update only dotfiles
+./update dotfiles
+```
+
+The `update` script safely:
+- ✅ Updates packages via `./run`
+- ✅ Synchronizes dotfiles from `dotfiles/` to `~/.config/` and `~/`
+- ✅ Is idempotent and safe to run multiple times
+- ❌ Never touches UEFI, bootloader, disk partitioning, or encryption
+
 ## Testing in VM
 
 Before installing on real hardware, test in a VM:
