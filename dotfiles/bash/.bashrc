@@ -3,12 +3,6 @@
 # If not running interactively, don't do anything
 [[ $- != *i* ]] && return
 
-# Auto-start tmux if not already in tmux and not in SSH
-if command -v tmux >/dev/null 2>&1 && [ -z "$TMUX" ] && [ -z "$SSH_CONNECTION" ]; then
-    # Start new session or attach to existing
-    tmux attach-session -t default || tmux new-session -s default
-fi
-
 # History configuration
 HISTSIZE=10000
 HISTFILESIZE=20000
