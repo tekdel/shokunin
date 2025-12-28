@@ -20,10 +20,6 @@ sudo pacman -S --needed --noconfirm \
     clang \
     llvm
 
-# Version control
-sudo pacman -S --needed --noconfirm \
-    github-cli
-
 # Development utilities
 sudo pacman -S --needed --noconfirm \
     shellcheck \

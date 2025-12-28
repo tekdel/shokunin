@@ -19,20 +19,14 @@ sudo pacman -S --needed --noconfirm \
     fd \
     zoxide \
     starship \
-    btop \
-    dust \
-    duf \
-    procs \
-    tokei
+    btop
 
 # Other useful CLI tools
 sudo pacman -S --needed --noconfirm \
     tmux \
     tree \
     jq \
-    yq \
-    tldr \
-    the_silver_searcher
+    tldr
 
 # Install Oh My Zsh
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
