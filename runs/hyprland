@@ -26,9 +26,9 @@ sudo pacman -S --needed --noconfirm \
     playerctl \
     pamixer
 
-# Application launcher and menu
+# Application launcher (Walker - same as Omarchy)
 paru -S --needed --noconfirm --skipreview \
-    rofi-wayland
+    walker-bin
 
 # Wallpaper and theming
 sudo pacman -S --needed --noconfirm \
