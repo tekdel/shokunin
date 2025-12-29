@@ -99,6 +99,10 @@ fi
 
 # Install mise tools (Node.js, Python) if mise is available
 if command -v mise >/dev/null 2>&1; then
+    # Trust the config file first
+    if [ -f ~/.mise.toml ]; then
+        mise trust ~/.mise.toml 2>/dev/null || true
+    fi
     echo "Installing mise tools (Node.js, Python)..."
     mise install -y
     echo "✓ mise tools installed"

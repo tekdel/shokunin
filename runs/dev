@@ -24,7 +24,8 @@ sudo pacman -S --needed --noconfirm \
 # Copy mise config before installing tools
 if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
     cp "$DOTFILES_DIR/.mise.toml" ~/
-    echo "✓ .mise.toml copied"
+    mise trust ~/.mise.toml 2>/dev/null || true
+    echo "✓ .mise.toml copied and trusted"
 fi
 
 # Install languages via mise (Node.js, Python)
