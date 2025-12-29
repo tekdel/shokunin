@@ -1,0 +1,35 @@
+#!/bin/bash
+# runs/tools - Clone repos and install development tools
+
+REPO_URL="https://github.com/tekdel/shokunin.git"
+
+# Clone shokunin to ~/projects if not exists
+echo "Setting up projects directory..."
+mkdir -p ~/projects
+
+if [ ! -d ~/projects/shokunin ]; then
+    echo "Cloning shokunin repository..."
+    git clone "$REPO_URL" ~/projects/shokunin
+    echo "✓ shokunin cloned to ~/projects/shokunin"
+else
+    echo "✓ shokunin already exists at ~/projects/shokunin"
+    # Update if it's a git repo
+    if [ -d ~/projects/shokunin/.git ]; then
+        echo "Updating shokunin..."
+        cd ~/projects/shokunin && git pull origin master || true
+    fi
+fi
+
+# Install Claude Code CLI
+echo "Installing Claude Code..."
+if command -v claude &>/dev/null; then
+    echo "✓ Claude Code already installed"
+else
+    # Use the official install script (installs native binary)
+    curl -fsSL https://claude.ai/install.sh | bash
+    echo "✓ Claude Code installed"
+fi
+
+echo ""
+echo "Tools setup complete!"
+echo "Run 'claude' to start Claude Code"
