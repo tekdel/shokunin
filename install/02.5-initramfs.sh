@@ -25,6 +25,7 @@ fi
 log "Adding encryption support to initramfs..."
 
 # Define the required hooks
+# Note: plymouth and plymouth-encrypt hooks are added by 05-plymouth.sh
 REQUIRED_HOOKS="HOOKS=(base udev keyboard autodetect microcode modconf kms keymap consolefont block encrypt filesystems fsck)"
 
 # Check if HOOKS line exists

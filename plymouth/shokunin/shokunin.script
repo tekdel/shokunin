@@ -1,5 +1,5 @@
 # Shokunin Plymouth Theme - Minimal centered password input
-# Gruvbox dark theme colors
+# Gruvbox dark theme colors - completely silent boot
 
 # Screen setup
 screen_width = Window.GetWidth();
@@ -9,7 +9,7 @@ screen_height = Window.GetHeight();
 Window.SetBackgroundTopColor(0.16, 0.16, 0.16);     # #282828
 Window.SetBackgroundBottomColor(0.16, 0.16, 0.16);  # #282828
 
-# Password prompt label
+# Password prompt sprites
 prompt_sprite = NULL;
 bullet_sprite = NULL;
 
@@ -41,14 +41,28 @@ fun DisplayPasswordPrompt(prompt, bullets) {
 
 Plymouth.SetDisplayPasswordFunction(DisplayPasswordPrompt);
 
-# Hide all boot messages
+# Hide all boot messages - return nothing to suppress
 fun HideMessage(text) {
 }
-
 Plymouth.SetMessageFunction(HideMessage);
 
-# Hide boot status
-fun HideStatus(status) {
+# Hide boot progress/status
+fun HideProgress(duration, progress) {
 }
+Plymouth.SetBootProgressFunction(HideProgress);
 
-Plymouth.SetBootProgressFunction(HideStatus);
+# Hide update status
+fun HideUpdate(status) {
+}
+Plymouth.SetUpdateStatusFunction(HideUpdate);
+
+# Hide question prompts (only show password)
+fun HideQuestion(prompt, entry) {
+    return "";
+}
+Plymouth.SetDisplayQuestionFunction(HideQuestion);
+
+# Refresh callback - do nothing
+fun Refresh() {
+}
+Plymouth.SetRefreshFunction(Refresh);
