@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.7.3"
+VERSION="1.7.4"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -458,9 +458,15 @@ mkdir -p /home/$USERNAME/projects
 if sudo -u $USERNAME git clone "$REPO_URL" /home/$USERNAME/projects/shokunin 2>/dev/null; then
     success "Repository cloned to ~/projects/shokunin"
 else
-    # Fallback: copy if clone fails (offline install or custom repo)
-    log "Git clone failed, copying installer instead..."
+    # Fallback: copy and init as git repo if clone fails (offline install)
+    log "Git clone failed (likely no network in chroot), copying and initializing..."
     cp -r /root/installer /home/$USERNAME/projects/shokunin
+    cd /home/$USERNAME/projects/shokunin
+    sudo -u $USERNAME git init
+    sudo -u $USERNAME git remote add origin "$REPO_URL"
+    sudo -u $USERNAME git add -A
+    sudo -u $USERNAME git commit -m "Initial commit from installer" 2>/dev/null || true
+    log "Run 'git pull origin master' after reboot to sync with upstream"
 fi
 
 chown -R $USERNAME:$USERNAME /home/$USERNAME/projects
