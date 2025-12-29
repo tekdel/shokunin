@@ -21,6 +21,9 @@ sudo pacman -S --needed --noconfirm \
     rust \
     rustup
 
+# Refresh shell's command cache so mise is found
+hash -r
+
 # Copy mise config before installing tools
 if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
     cp "$DOTFILES_DIR/.mise.toml" ~/
