@@ -99,10 +99,12 @@ if [ -f "$DOTFILES_DIR/git/.gitignore_global" ]; then
     echo "✓ .gitignore_global updated"
 fi
 
-# Mise config
+# Mise config (XDG location)
 if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
-    cp "$DOTFILES_DIR/.mise.toml" ~/
-    echo "✓ .mise.toml updated"
+    mkdir -p ~/.config/mise
+    cp "$DOTFILES_DIR/.mise.toml" ~/.config/mise/config.toml
+    rm -f ~/.mise.toml  # Remove old location
+    echo "✓ mise config updated"
 fi
 
 # Local bin scripts
@@ -115,8 +117,8 @@ fi
 # Install mise tools (Node.js, Python) if mise is available
 if command -v mise >/dev/null 2>&1; then
     # Trust the config file first
-    if [ -f ~/.mise.toml ]; then
-        mise trust ~/.mise.toml 2>/dev/null || true
+    if [ -f ~/.config/mise/config.toml ]; then
+        mise trust ~/.config/mise/config.toml 2>/dev/null || true
     fi
     echo "Installing mise tools (Node.js, Python)..."
     # Skip GPG verification (keyservers are unreliable)

@@ -12,33 +12,43 @@ sudo pacman -S --needed --noconfirm \
     clang \
     llvm
 
-# Development utilities
+# Development utilities (rustup instead of rust - rustup manages toolchains)
 sudo pacman -S --needed --noconfirm \
     shellcheck \
     shfmt \
     mise \
     go \
-    rust \
     rustup
 
 # Refresh shell's command cache so mise is found
 hash -r
 
-# Copy mise config before installing tools
+# Initialize rustup if not already done
+if command -v rustup &>/dev/null && ! rustup show active-toolchain &>/dev/null; then
+    echo "Initializing Rust toolchain via rustup..."
+    rustup default stable
+fi
+
+# Copy mise config to XDG location
+mkdir -p ~/.config/mise
 if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
-    cp "$DOTFILES_DIR/.mise.toml" ~/
-    mise trust ~/.mise.toml 2>/dev/null || true
-    echo "✓ .mise.toml copied and trusted"
+    cp "$DOTFILES_DIR/.mise.toml" ~/.config/mise/config.toml
+    mise trust ~/.config/mise/config.toml 2>/dev/null || true
+    # Remove old location if exists
+    rm -f ~/.mise.toml
+    echo "✓ mise config copied to ~/.config/mise/config.toml"
 fi
 
 # Install languages via mise (Node.js, Python)
 echo "Installing Node.js and Python via mise..."
-# Skip GPG verification (keyservers are unreliable)
 mise settings set node.gpg_verify false
 mise install node@lts -y
 mise install python@3.12 -y
 mise use --global node@lts
 mise use --global python@3.12
+
+# Activate mise for current shell so npm is available
+eval "$(mise activate bash)"
 
 # Install tree-sitter-cli for Neovim
 echo "Installing tree-sitter-cli for Neovim..."
