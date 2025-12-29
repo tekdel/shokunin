@@ -168,16 +168,25 @@ fun progress_callback(duration, progress) {
 Plymouth.SetBootProgressFunction(progress_callback);
 
 fun quit_callback() {
+    # Hide everything for clean transition to login
+    prompt_sprite.SetOpacity(0);
+    bullet_sprite.SetOpacity(0);
+    progress_bg_sprite.SetOpacity(0);
+    progress_fill_sprite.SetOpacity(0);
 }
 
 Plymouth.SetQuitFunction(quit_callback);
 
-# Hide boot messages
+# Hide all text output - messages, status, etc.
 fun display_message_callback(text) {
 }
 
 fun hide_message_callback(text) {
 }
 
+fun status_callback(text) {
+}
+
 Plymouth.SetDisplayMessageFunction(display_message_callback);
 Plymouth.SetHideMessageFunction(hide_message_callback);
+Plymouth.SetUpdateStatusFunction(status_callback);
