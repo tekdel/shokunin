@@ -1,4 +1,4 @@
-/* Waybar styling - minimal */
+/* Waybar styling - Gruvbox Dark Medium */
 
 * {
     font-family: "JetBrainsMono Nerd Font", monospace;
@@ -9,34 +9,34 @@
 }
 
 window#waybar {
-    background-color: #1e1e2e;
-    color: #cdd6f4;
+    background-color: #282828;
+    color: #ebdbb2;
 }
 
 /* Workspaces */
 #workspaces button {
     padding: 0 8px;
-    color: #6c7086;
+    color: #928374;
     background: transparent;
 }
 
 #workspaces button:hover {
-    background: #313244;
+    background: #3c3836;
 }
 
 #workspaces button.active {
-    color: #cdd6f4;
-    background: #313244;
+    color: #ebdbb2;
+    background: #3c3836;
 }
 
 #workspaces button.empty {
-    color: #45475a;
+    color: #504945;
 }
 
 /* Clock */
 #clock {
     padding: 0 12px;
-    color: #cdd6f4;
+    color: #ebdbb2;
 }
 
 /* Right modules */
@@ -46,49 +46,49 @@ window#waybar {
 #pulseaudio,
 #tray {
     padding: 0 10px;
-    color: #cdd6f4;
+    color: #ebdbb2;
 }
 
 /* Battery states */
 #battery.charging {
-    color: #a6e3a1;
+    color: #b8bb26;
 }
 
 #battery.warning:not(.charging) {
-    color: #f9e2af;
+    color: #fabd2f;
 }
 
 #battery.critical:not(.charging) {
-    color: #f38ba8;
+    color: #fb4934;
 }
 
 /* Network */
 #network.disconnected {
-    color: #f38ba8;
+    color: #fb4934;
 }
 
 /* Bluetooth */
 #bluetooth.disabled,
 #bluetooth.off {
-    color: #6c7086;
+    color: #928374;
 }
 
 #bluetooth.connected {
-    color: #89b4fa;
+    color: #83a598;
 }
 
 /* Audio */
 #pulseaudio.muted {
-    color: #f38ba8;
+    color: #fb4934;
 }
 
 /* Tooltips */
 tooltip {
-    background: #1e1e2e;
-    border: 1px solid #313244;
+    background: #282828;
+    border: 1px solid #3c3836;
 }
 
 tooltip label {
-    color: #cdd6f4;
+    color: #ebdbb2;
     padding: 4px;
 }

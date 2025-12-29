@@ -38,6 +38,13 @@ if [ -d "$DOTFILES_DIR/nvim" ]; then
     echo "✓ Neovim config updated"
 fi
 
+# btop
+if [ -d "$DOTFILES_DIR/btop" ]; then
+    mkdir -p ~/.config/btop
+    cp -r "$DOTFILES_DIR/btop/"* ~/.config/btop/
+    echo "✓ btop config updated"
+fi
+
 # Tmux
 if [ -f "$DOTFILES_DIR/tmux/.tmux.conf" ]; then
     mkdir -p ~/.config/tmux
