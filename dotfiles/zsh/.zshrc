@@ -62,53 +62,6 @@ if command -v bat >/dev/null 2>&1; then
     export MANPAGER="sh -c 'col -bx | bat -l man -p'"
 fi
 
-# Common aliases
-alias l='ls -CF'
-alias ..='cd ..'
-alias ...='cd ../..'
-alias ....='cd ../../..'
-
-# Git aliases (additional to Oh My Zsh git plugin)
-alias gs='git status'
-alias ga='git add'
-alias gc='git commit'
-alias gp='git push'
-alias gpl='git pull'
-alias gl='git log --oneline --graph --decorate'
-alias gd='git diff'
-alias gco='git checkout'
-
-# Safety aliases
-alias rm='rm -i'
-alias cp='cp -i'
-alias mv='mv -i'
-
-# Package management
-alias update='sudo pacman -Syu'
-alias install='sudo pacman -S'
-alias remove='sudo pacman -Rns'
-alias search='pacman -Ss'
-alias orphans='sudo pacman -Rns $(pacman -Qtdq)'
-
-# Docker aliases
-alias dps='docker ps'
-alias dpsa='docker ps -a'
-alias di='docker images'
-alias dex='docker exec -it'
-alias dlog='docker logs -f'
-alias dcu='docker-compose up -d'
-alias dcd='docker-compose down'
-alias dcl='docker-compose logs -f'
-
-# System info
-alias sysinfo='fastfetch'
-alias cpu='btop'
-alias disk='duf'
-alias space='dust'
-
-# Quick edit
-alias zshrc='${=EDITOR} ~/.zshrc'
-alias zshreload='source ~/.zshrc'
 
 # ============================================================================
 # Tool Integrations
