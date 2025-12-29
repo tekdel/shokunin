@@ -174,6 +174,10 @@ install_aur_helper() {
 
     log "Installing paru (AUR helper) for user: $user"
 
+    # Pre-install build dependencies to avoid sudo prompts during makepkg
+    log "Installing paru build dependencies..."
+    pacman -S --needed --noconfirm rust git base-devel
+
     # Clean up any previous failed attempts
     rm -rf /tmp/paru
 
@@ -186,7 +190,8 @@ install_aur_helper() {
     log "Building and installing paru (this may take a few minutes)..."
     # Note: "Failed to connect to bus/scope" warnings are expected in chroot (no systemd)
     # We check if paru is installed after regardless of makepkg exit code
-    sudo -u "$user" bash -c 'cd /tmp/paru && makepkg -si --noconfirm' || true
+    # Using -i only (not -s) since deps are pre-installed
+    sudo -u "$user" bash -c 'cd /tmp/paru && makepkg -i --noconfirm' || true
 
     # Clean up
     rm -rf /tmp/paru

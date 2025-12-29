@@ -1,5 +1,10 @@
 # .zshrc - Zsh configuration with Oh My Zsh
 
+# Force tmux - if not in tmux, start a new session
+if [[ -z "$TMUX" ]] && [[ -n "$DISPLAY" || -n "$WAYLAND_DISPLAY" ]]; then
+    exec tmux new-session
+fi
+
 # Path to Oh My Zsh installation
 export ZSH="$HOME/.oh-my-zsh"
 
