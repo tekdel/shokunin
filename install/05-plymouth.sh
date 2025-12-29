@@ -34,12 +34,11 @@ fi
 # Backup mkinitcpio.conf
 cp /etc/mkinitcpio.conf /etc/mkinitcpio.conf.backup
 
-# Add Plymouth hooks for graphical boot
-# - plymouth must come AFTER udev but BEFORE encrypt
-# - plymouth-encrypt replaces encrypt for graphical password prompt
+# Add Plymouth hook for graphical boot
+# plymouth must come AFTER udev but BEFORE encrypt
+# DO NOT use plymouth-encrypt (deprecated) - use plymouth + encrypt
 log "Adding Plymouth to mkinitcpio hooks..."
 sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
-sed -i 's/ encrypt / plymouth-encrypt /' /etc/mkinitcpio.conf
 
 # Set custom Plymouth theme and rebuild initramfs
 log "Setting Shokunin Plymouth theme..."

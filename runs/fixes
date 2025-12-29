@@ -90,14 +90,19 @@ if [ -d "$PLYMOUTH_SRC" ]; then
     sudo cp "$PLYMOUTH_SRC/shokunin.plymouth" /usr/share/plymouth/themes/shokunin/
     sudo cp "$PLYMOUTH_SRC/shokunin.script" /usr/share/plymouth/themes/shokunin/
 
-    # Update mkinitcpio hooks: add plymouth, replace encrypt with plymouth-encrypt
-    if ! grep -q "plymouth" /etc/mkinitcpio.conf; then
-        echo "Adding plymouth hooks to mkinitcpio..."
-        sudo sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
+    # Update mkinitcpio hooks: add plymouth BEFORE encrypt
+    # DO NOT use plymouth-encrypt (deprecated and broken)
+
+    # Fix broken plymouth-encrypt if it was applied
+    if grep -q "plymouth-encrypt" /etc/mkinitcpio.conf; then
+        echo "Fixing broken plymouth-encrypt (reverting to encrypt)..."
+        sudo sed -i 's/plymouth-encrypt/encrypt/' /etc/mkinitcpio.conf
     fi
-    if grep -q " encrypt " /etc/mkinitcpio.conf && ! grep -q "plymouth-encrypt" /etc/mkinitcpio.conf; then
-        echo "Replacing encrypt with plymouth-encrypt..."
-        sudo sed -i 's/ encrypt / plymouth-encrypt /' /etc/mkinitcpio.conf
+
+    # Add plymouth hook if not present
+    if ! grep -q " plymouth " /etc/mkinitcpio.conf; then
+        echo "Adding plymouth hook to mkinitcpio..."
+        sudo sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
     fi
 
     # Update kernel cmdline in limine.conf
