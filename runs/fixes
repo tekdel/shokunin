@@ -42,6 +42,7 @@ echo "Enabling services..."
 sudo systemctl enable --now iwd || true
 sudo systemctl enable --now systemd-resolved || true
 sudo systemctl enable --now bluetooth || true
+sudo systemctl enable --now power-profiles-daemon || true
 echo "✓ Services enabled"
 
 # Restart iwd to apply changes

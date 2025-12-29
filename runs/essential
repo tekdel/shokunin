@@ -67,9 +67,10 @@ EnableNetworkConfiguration=true
 NameResolvingService=systemd
 EOF
 
-# Enable iwd service
+# Enable services
 sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable systemd-resolved || echo "Note: systemctl may fail in chroot"
+sudo systemctl enable bluetooth || echo "Note: systemctl may fail in chroot"
 
 echo "Essential packages installed successfully!"
 echo "Note: Using iwd for WiFi management (managed via impala TUI)"
