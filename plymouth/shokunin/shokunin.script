@@ -1,68 +1,183 @@
-# Shokunin Plymouth Theme - Minimal centered password input
-# Gruvbox dark theme colors - completely silent boot
-
-# Screen setup
-screen_width = Window.GetWidth();
-screen_height = Window.GetHeight();
+# Shokunin Plymouth Theme - Minimal password input with progress bar
+# Gruvbox dark theme colors
 
 # Gruvbox dark background
 Window.SetBackgroundTopColor(0.16, 0.16, 0.16);     # #282828
 Window.SetBackgroundBottomColor(0.16, 0.16, 0.16);  # #282828
 
-# Password prompt sprites
-prompt_sprite = NULL;
-bullet_sprite = NULL;
+# Progress bar settings
+global.fake_progress_limit = 0.7;
+global.fake_progress_duration = 15.0;
+global.fake_progress = 0.0;
+global.real_progress = 0.0;
+global.fake_progress_active = 0;
+global.animation_frame = 0;
+global.password_shown = 0;
+global.max_progress = 0.0;
 
-fun DisplayPasswordPrompt(prompt, bullets) {
-    # Clear previous sprites
-    if (prompt_sprite) prompt_sprite.SetOpacity(0);
-    if (bullet_sprite) bullet_sprite.SetOpacity(0);
+# Progress bar dimensions
+progress_bar_width = 300;
+progress_bar_height = 4;
+progress_bar_x = Window.GetWidth() / 2 - progress_bar_width / 2;
+progress_bar_y = Window.GetHeight() / 2 + 60;
+
+# Create progress bar background (dark gray)
+progress_bg_image = Image.Text("", 0.3, 0.3, 0.3);
+for (i = 0; i < progress_bar_width; i++) {
+    progress_bg_image = progress_bg_image.Scale(progress_bar_width, progress_bar_height);
+}
+progress_bg_sprite = Sprite();
+progress_bg_sprite.SetPosition(progress_bar_x, progress_bar_y, 1);
+progress_bg_sprite.SetOpacity(0);
+
+# Create progress bar fill (Gruvbox yellow #d79921)
+progress_fill_sprite = Sprite();
+progress_fill_sprite.SetPosition(progress_bar_x, progress_bar_y, 2);
+progress_fill_sprite.SetOpacity(0);
+
+# Password prompt sprites
+prompt_sprite = Sprite();
+bullet_sprite = Sprite();
+
+fun update_progress_bar(progress) {
+    if (progress > global.max_progress) {
+        global.max_progress = progress;
+        width = Math.Int(progress_bar_width * progress);
+        if (width < 1) width = 1;
+
+        # Create filled bar image (Gruvbox yellow)
+        bar_image = Image.Text("█", 0.84, 0.60, 0.13);
+        for (j = 0; j < width; j++) {
+            bar_image = bar_image.Scale(width, progress_bar_height);
+        }
+        progress_fill_sprite.SetImage(bar_image);
+    }
+}
+
+fun show_progress_bar() {
+    # Draw background bar
+    bg_image = Image.Text("█", 0.3, 0.3, 0.3);
+    bg_image = bg_image.Scale(progress_bar_width, progress_bar_height);
+    progress_bg_sprite.SetImage(bg_image);
+    progress_bg_sprite.SetOpacity(1);
+    progress_fill_sprite.SetOpacity(1);
+}
+
+fun hide_progress_bar() {
+    progress_bg_sprite.SetOpacity(0);
+    progress_fill_sprite.SetOpacity(0);
+}
+
+fun show_password_dialog() {
+    prompt_sprite.SetOpacity(1);
+    bullet_sprite.SetOpacity(1);
+}
+
+fun hide_password_dialog() {
+    prompt_sprite.SetOpacity(0);
+    bullet_sprite.SetOpacity(0);
+}
+
+fun start_fake_progress() {
+    if (global.max_progress == 0.0) {
+        global.fake_progress = 0.0;
+        global.real_progress = 0.0;
+        update_progress_bar(0.0);
+    }
+    global.fake_progress_active = 1;
+    global.animation_frame = 0;
+}
+
+fun stop_fake_progress() {
+    global.fake_progress_active = 0;
+}
+
+fun refresh_callback() {
+    global.animation_frame++;
+
+    if (global.fake_progress_active == 1) {
+        elapsed_time = global.animation_frame / 50.0;
+        time_ratio = elapsed_time / global.fake_progress_duration;
+        if (time_ratio > 1.0) time_ratio = 1.0;
+
+        # Ease-out quadratic
+        eased_ratio = 1 - ((1 - time_ratio) * (1 - time_ratio));
+        global.fake_progress = eased_ratio * global.fake_progress_limit;
+        update_progress_bar(global.fake_progress);
+    }
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun display_normal_callback() {
+    hide_password_dialog();
+
+    mode = Plymouth.GetMode();
+    if ((mode == "boot" || mode == "resume") && global.password_shown == 1) {
+        show_progress_bar();
+        start_fake_progress();
+    }
+}
+
+fun display_password_callback(prompt, bullets) {
+    global.password_shown = 1;
+
+    stop_fake_progress();
+    hide_progress_bar();
+    global.max_progress = 0.0;
+    global.fake_progress = 0.0;
+    global.real_progress = 0.0;
 
     # Show prompt text centered
     prompt_image = Image.Text(prompt, 0.92, 0.86, 0.70);  # Gruvbox fg #ebdbb2
-    prompt_sprite = Sprite(prompt_image);
-    prompt_sprite.SetX(screen_width / 2 - prompt_image.GetWidth() / 2);
-    prompt_sprite.SetY(screen_height / 2 - 50);
+    prompt_sprite.SetImage(prompt_image);
+    prompt_sprite.SetX(Window.GetWidth() / 2 - prompt_image.GetWidth() / 2);
+    prompt_sprite.SetY(Window.GetHeight() / 2 - 50);
     prompt_sprite.SetZ(10000);
+    prompt_sprite.SetOpacity(1);
 
-    # Show password bullets centered
+    # Show password bullets
     if (bullets > 0) {
         bullet_string = "";
         for (i = 0; i < bullets; i++) {
             bullet_string += "●";
         }
         bullet_image = Image.Text(bullet_string, 0.92, 0.86, 0.70, 1, "Sans 24");
-        bullet_sprite = Sprite(bullet_image);
-        bullet_sprite.SetX(screen_width / 2 - bullet_image.GetWidth() / 2);
-        bullet_sprite.SetY(screen_height / 2);
+        bullet_sprite.SetImage(bullet_image);
+        bullet_sprite.SetX(Window.GetWidth() / 2 - bullet_image.GetWidth() / 2);
+        bullet_sprite.SetY(Window.GetHeight() / 2);
         bullet_sprite.SetZ(10000);
+        bullet_sprite.SetOpacity(1);
+    } else {
+        bullet_sprite.SetOpacity(0);
     }
 }
 
-Plymouth.SetDisplayPasswordFunction(DisplayPasswordPrompt);
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
+Plymouth.SetDisplayPasswordFunction(display_password_callback);
 
-# Hide all boot messages - return nothing to suppress
-fun HideMessage(text) {
-}
-Plymouth.SetMessageFunction(HideMessage);
+fun progress_callback(duration, progress) {
+    global.real_progress = progress;
 
-# Hide boot progress/status
-fun HideProgress(duration, progress) {
+    if (progress > global.fake_progress_limit) {
+        stop_fake_progress();
+        update_progress_bar(progress);
+    }
 }
-Plymouth.SetBootProgressFunction(HideProgress);
 
-# Hide update status
-fun HideUpdate(status) {
-}
-Plymouth.SetUpdateStatusFunction(HideUpdate);
+Plymouth.SetBootProgressFunction(progress_callback);
 
-# Hide question prompts (only show password)
-fun HideQuestion(prompt, entry) {
-    return "";
+fun quit_callback() {
 }
-Plymouth.SetDisplayQuestionFunction(HideQuestion);
 
-# Refresh callback - do nothing
-fun Refresh() {
+Plymouth.SetQuitFunction(quit_callback);
+
+# Hide boot messages
+fun display_message_callback(text) {
 }
-Plymouth.SetRefreshFunction(Refresh);
+
+fun hide_message_callback(text) {
+}
+
+Plymouth.SetDisplayMessageFunction(display_message_callback);
+Plymouth.SetHideMessageFunction(hide_message_callback);
