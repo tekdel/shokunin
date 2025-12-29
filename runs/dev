@@ -30,10 +30,16 @@ fi
 
 # Install languages via mise (Node.js, Python)
 echo "Installing Node.js and Python via mise..."
+# Skip GPG verification (keyservers are unreliable)
+mise settings set node.gpg_verify false
 mise install node@lts -y
 mise install python@3.12 -y
 mise use --global node@lts
 mise use --global python@3.12
+
+# Install tree-sitter-cli for Neovim
+echo "Installing tree-sitter-cli for Neovim..."
+npm install -g tree-sitter-cli
 
 echo "Development tools installed successfully!"
 echo "Node.js and Python managed by mise"

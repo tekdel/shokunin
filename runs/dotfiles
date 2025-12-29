@@ -104,6 +104,8 @@ if command -v mise >/dev/null 2>&1; then
         mise trust ~/.mise.toml 2>/dev/null || true
     fi
     echo "Installing mise tools (Node.js, Python)..."
+    # Skip GPG verification (keyservers are unreliable)
+    mise settings set node.gpg_verify false
     # Explicitly install tools
     mise install node@lts -y
     mise install python@3.12 -y
