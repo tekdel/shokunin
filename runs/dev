@@ -1,16 +1,8 @@
 #!/bin/bash
 # runs/dev - Development tools and languages
 
-# Programming languages
-sudo pacman -S --needed --noconfirm \
-    python \
-    python-pip \
-    python-pipx \
-    nodejs \
-    npm \
-    go \
-    rust \
-    rustup
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOTFILES_DIR="$SCRIPT_DIR/../dotfiles"
 
 # Build tools
 sudo pacman -S --needed --noconfirm \
@@ -24,6 +16,20 @@ sudo pacman -S --needed --noconfirm \
 sudo pacman -S --needed --noconfirm \
     shellcheck \
     shfmt \
-    mise
+    mise \
+    go \
+    rust \
+    rustup
+
+# Copy mise config before installing tools
+if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
+    cp "$DOTFILES_DIR/.mise.toml" ~/
+    echo "✓ .mise.toml copied"
+fi
+
+# Install languages via mise (Node.js, Python)
+echo "Installing Node.js and Python via mise..."
+mise install -y
 
 echo "Development tools installed successfully!"
+echo "Node.js and Python managed by mise"
