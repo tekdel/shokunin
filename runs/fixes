@@ -115,6 +115,17 @@ if [ -d "$PLYMOUTH_SRC" ]; then
         fi
     done
 
+    # Add SDDM drop-in to wait for Plymouth quit (smooth transition)
+    echo "Configuring SDDM to wait for Plymouth..."
+    sudo mkdir -p /etc/systemd/system/sddm.service.d
+    sudo tee /etc/systemd/system/sddm.service.d/plymouth.conf > /dev/null << 'EOF'
+[Unit]
+After=plymouth-quit-wait.service
+Wants=plymouth-quit-wait.service
+EOF
+    sudo systemctl daemon-reload
+    echo "✓ SDDM configured for smooth Plymouth transition"
+
     # Set Plymouth theme and regenerate initramfs
     echo "Setting Plymouth theme and regenerating initramfs..."
     sudo plymouth-set-default-theme -R shokunin

@@ -40,6 +40,15 @@ cp /etc/mkinitcpio.conf /etc/mkinitcpio.conf.backup
 log "Adding Plymouth to mkinitcpio hooks..."
 sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
 
+# Add SDDM drop-in to wait for Plymouth quit (smooth transition)
+log "Configuring SDDM to wait for Plymouth..."
+mkdir -p /etc/systemd/system/sddm.service.d
+cat > /etc/systemd/system/sddm.service.d/plymouth.conf << 'EOF'
+[Unit]
+After=plymouth-quit-wait.service
+Wants=plymouth-quit-wait.service
+EOF
+
 # Set custom Plymouth theme and rebuild initramfs
 log "Setting Shokunin Plymouth theme..."
 plymouth-set-default-theme -R shokunin 2>/dev/null || {
