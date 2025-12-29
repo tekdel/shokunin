@@ -51,13 +51,8 @@ mise use --global python@3.12
 eval "$(mise activate bash)"
 hash -r
 
-# Install tree-sitter-cli for Neovim (via cargo - more reliable than npm)
-echo "Installing tree-sitter-cli for Neovim..."
-if command -v cargo &>/dev/null; then
-    cargo install tree-sitter-cli
-else
-    echo "Warning: cargo not available, skipping tree-sitter-cli"
-fi
+# Install tree-sitter-cli for Neovim (official repos)
+sudo pacman -S --needed --noconfirm tree-sitter-cli
 
 echo "Development tools installed successfully!"
 echo "Node.js and Python managed by mise"
