@@ -1,0 +1,20 @@
+# Kanshi monitor profiles
+# Automatically switches display configuration on hotplug
+
+# Profile: External monitor only (LG UltraFine 5K)
+profile external {
+    output "LG Electronics LG UltraFine" enable mode 5120x2880@60Hz position 0,0 scale 1.333333
+    output eDP-1 disable
+}
+
+# Profile: Laptop only (no external connected)
+profile laptop {
+    output eDP-1 enable mode preferred position 0,0 scale 1
+}
+
+# Profile: Dual monitors (both connected, laptop to the right)
+# Uncomment if you want to use both monitors simultaneously
+# profile dual {
+#     output "LG Electronics LG UltraFine" enable mode 5120x2880@60Hz position 0,0 scale 1.333333
+#     output eDP-1 enable mode preferred position 3840,0 scale 1
+# }

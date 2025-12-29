@@ -45,6 +45,13 @@ if [ -d "$DOTFILES_DIR/btop" ]; then
     echo "✓ btop config updated"
 fi
 
+# Kanshi (monitor hotplug)
+if [ -d "$DOTFILES_DIR/kanshi" ]; then
+    mkdir -p ~/.config/kanshi
+    cp -r "$DOTFILES_DIR/kanshi/"* ~/.config/kanshi/
+    echo "✓ Kanshi config updated"
+fi
+
 # Tmux
 if [ -f "$DOTFILES_DIR/tmux/.tmux.conf" ]; then
     mkdir -p ~/.config/tmux

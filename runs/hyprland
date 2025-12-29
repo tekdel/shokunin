@@ -26,7 +26,8 @@ sudo pacman -S --needed --noconfirm \
     brightnessctl \
     playerctl \
     pamixer \
-    socat
+    socat \
+    kanshi
 
 # Application launcher (Walker - same as Omarchy)
 paru -S --needed --noconfirm --skipreview \
