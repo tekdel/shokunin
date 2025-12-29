@@ -1,7 +1,7 @@
 /* Waybar styling - minimal */
 
 * {
-    font-family: "JetBrainsMono Nerd Font", "Font Awesome 6 Free", monospace;
+    font-family: "JetBrainsMono Nerd Font", monospace;
     font-size: 13px;
     border: none;
     border-radius: 0;
