@@ -1,0 +1,53 @@
+#!/bin/bash
+# runs/fixes - Apply system fixes (polkit, iwd DHCP, etc.)
+
+echo "Applying system fixes..."
+
+# Fix polkit rules for iwd and bluetooth
+echo "Configuring polkit rules..."
+sudo mkdir -p /etc/polkit-1/rules.d
+sudo tee /etc/polkit-1/rules.d/50-net-wifi-bluetooth.rules > /dev/null << 'EOF'
+// Allow wheel group members to control iwd (WiFi) without password
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("net.connman.iwd.") == 0 &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+
+// Allow wheel group members to control bluetooth without password
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.bluez.") == 0 &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+echo "✓ Polkit rules configured"
+
+# Fix iwd DHCP
+echo "Configuring iwd for DHCP..."
+sudo mkdir -p /etc/iwd
+sudo tee /etc/iwd/main.conf > /dev/null << 'EOF'
+[General]
+EnableNetworkConfiguration=true
+
+[Network]
+NameResolvingService=systemd
+EOF
+echo "✓ iwd DHCP configured"
+
+# Enable services
+echo "Enabling services..."
+sudo systemctl enable --now iwd || true
+sudo systemctl enable --now systemd-resolved || true
+sudo systemctl enable --now bluetooth || true
+echo "✓ Services enabled"
+
+# Restart iwd to apply changes
+echo "Restarting iwd..."
+sudo systemctl restart iwd || true
+
+echo ""
+echo "System fixes applied!"
+echo "Log out and back in for all changes to take effect."

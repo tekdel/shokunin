@@ -1,0 +1,95 @@
+#!/bin/bash
+# runs/dotfiles - Update dotfiles and configs from repository
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOTFILES_DIR="$SCRIPT_DIR/../dotfiles"
+
+echo "Updating dotfiles from repository..."
+
+# Create config directories
+mkdir -p ~/.config/hypr
+mkdir -p ~/.config/waybar
+mkdir -p ~/.config/alacritty
+mkdir -p ~/.config/nvim
+mkdir -p ~/.config/tmux
+mkdir -p ~/.local/bin
+
+# Hyprland
+if [ -d "$DOTFILES_DIR/hypr" ]; then
+    cp -r "$DOTFILES_DIR/hypr/"* ~/.config/hypr/
+    echo "✓ Hyprland config updated"
+fi
+
+# Waybar
+if [ -d "$DOTFILES_DIR/waybar" ]; then
+    cp -r "$DOTFILES_DIR/waybar/"* ~/.config/waybar/
+    echo "✓ Waybar config updated"
+fi
+
+# Alacritty
+if [ -d "$DOTFILES_DIR/alacritty" ]; then
+    cp -r "$DOTFILES_DIR/alacritty/"* ~/.config/alacritty/
+    echo "✓ Alacritty config updated"
+fi
+
+# Neovim
+if [ -d "$DOTFILES_DIR/nvim" ]; then
+    cp -r "$DOTFILES_DIR/nvim/"* ~/.config/nvim/
+    echo "✓ Neovim config updated"
+fi
+
+# Tmux
+if [ -f "$DOTFILES_DIR/tmux/.tmux.conf" ]; then
+    mkdir -p ~/.config/tmux
+    cp "$DOTFILES_DIR/tmux/.tmux.conf" ~/.config/tmux/tmux.conf
+    echo "✓ Tmux config updated"
+fi
+
+# Shell configs
+if [ -f "$DOTFILES_DIR/zsh/.zshrc" ]; then
+    cp "$DOTFILES_DIR/zsh/.zshrc" ~/
+    echo "✓ .zshrc updated"
+fi
+
+if [ -f "$DOTFILES_DIR/zsh/.zprofile" ]; then
+    cp "$DOTFILES_DIR/zsh/.zprofile" ~/
+    echo "✓ .zprofile updated"
+fi
+
+if [ -f "$DOTFILES_DIR/bash/.bashrc" ]; then
+    cp "$DOTFILES_DIR/bash/.bashrc" ~/
+    echo "✓ .bashrc updated"
+fi
+
+if [ -f "$DOTFILES_DIR/bash/.bash_profile" ]; then
+    cp "$DOTFILES_DIR/bash/.bash_profile" ~/
+    echo "✓ .bash_profile updated"
+fi
+
+# Git config
+if [ -f "$DOTFILES_DIR/git/.gitconfig" ]; then
+    cp "$DOTFILES_DIR/git/.gitconfig" ~/
+    echo "✓ .gitconfig updated"
+fi
+
+if [ -f "$DOTFILES_DIR/git/.gitignore_global" ]; then
+    cp "$DOTFILES_DIR/git/.gitignore_global" ~/
+    echo "✓ .gitignore_global updated"
+fi
+
+# Mise config
+if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
+    cp "$DOTFILES_DIR/.mise.toml" ~/
+    echo "✓ .mise.toml updated"
+fi
+
+# Local bin scripts
+if [ -d "$DOTFILES_DIR/bin" ]; then
+    cp -r "$DOTFILES_DIR/bin/"* ~/.local/bin/
+    chmod +x ~/.local/bin/*
+    echo "✓ Local bin scripts updated"
+fi
+
+echo ""
+echo "Dotfiles updated successfully!"
+echo "Run 'hyprctl reload' or log out/in for changes to take effect."
