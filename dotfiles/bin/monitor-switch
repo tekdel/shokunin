@@ -1,18 +1,40 @@
 #!/bin/bash
 # Monitor switch script - manual switch between laptop and external monitor
+# Always ensures at least one monitor is enabled
 
 LAPTOP="eDP-1"
+EXTERNAL_DESC="desc:LG Electronics LG UltraFine 901NTDV6P994"
+
+# Force laptop mode if passed as argument (recovery)
+if [[ "$1" == "--laptop" || "$1" == "-l" ]]; then
+    hyprctl keyword monitor "$LAPTOP,1920x1200,0x0,1"
+    hyprctl dispatch dpms on "$LAPTOP"
+    hyprctl dispatch workspace 1
+    notify-send -t 3000 "Monitor" "Forced laptop screen on"
+    exit 0
+fi
+
+# SAFETY: Always enable laptop first to ensure we have a display
+hyprctl keyword monitor "$LAPTOP,1920x1200,0x0,1"
+
+# Small delay to let the monitor come up
+sleep 0.3
 
 # Check if external monitor is connected
 if hyprctl monitors all | grep -q "LG UltraFine"; then
-    # External connected - use external, disable laptop
-    hyprctl keyword monitor "desc:LG Electronics LG UltraFine 901NTDV6P994,3840x2160,0x0,1"
-    hyprctl keyword monitor "$LAPTOP,disable"
-    hyprctl dispatch workspace 1
-    notify-send -t 3000 "Monitor" "LG UltraFine enabled, laptop disabled"
+    # External connected - configure external, then disable laptop
+    hyprctl keyword monitor "$EXTERNAL_DESC,3840x2160,0x0,1"
+    sleep 0.2
+    # Only disable laptop after confirming external is working
+    if hyprctl monitors | grep -q "LG UltraFine"; then
+        hyprctl keyword monitor "$LAPTOP,disable"
+        hyprctl dispatch workspace 1
+        notify-send -t 3000 "Monitor" "LG UltraFine enabled"
+    else
+        notify-send -t 3000 "Monitor" "External failed, keeping laptop"
+    fi
 else
-    # No external - enable laptop
-    hyprctl keyword monitor "$LAPTOP,1920x1200,0x0,1"
+    # No external - laptop already enabled above
     hyprctl dispatch workspace 1
     notify-send -t 3000 "Monitor" "Laptop screen enabled"
 fi
