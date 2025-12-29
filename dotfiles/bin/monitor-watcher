@@ -1,0 +1,17 @@
+#!/bin/bash
+# Monitor watcher - listens for Hyprland monitor events and runs monitor-switch
+
+SOCKET="/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+
+# Wait for socket to exist
+while [ ! -S "$SOCKET" ]; do
+    sleep 1
+done
+
+# Listen for monitor events
+socat -U - UNIX-CONNECT:"$SOCKET" | while read -r line; do
+    if [[ "$line" == monitoradded* ]] || [[ "$line" == monitorremoved* ]]; then
+        sleep 1  # Brief delay for monitor to settle
+        ~/.local/bin/monitor-switch
+    fi
+done

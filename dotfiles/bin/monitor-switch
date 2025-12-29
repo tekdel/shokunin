@@ -9,9 +9,9 @@ if hyprctl monitors all | grep -q "LG UltraFine"; then
     # External connected - disable laptop, enable external
     hyprctl keyword monitor "$EXTERNAL,5120x2880@60,0x0,1.333333"
     hyprctl keyword monitor "$LAPTOP,disable"
-    notify-send "Monitor" "LG UltraFine enabled, laptop disabled"
+    notify-send -t 3000 "Monitor" "LG UltraFine enabled, laptop disabled"
 else
     # No external - enable laptop
     hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
-    notify-send "Monitor" "Laptop screen enabled"
+    notify-send -t 3000 "Monitor" "Laptop screen enabled"
 fi

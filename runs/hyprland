@@ -25,7 +25,8 @@ sudo pacman -S --needed --noconfirm \
     cliphist \
     brightnessctl \
     playerctl \
-    pamixer
+    pamixer \
+    socat
 
 # Application launcher (Walker - same as Omarchy)
 paru -S --needed --noconfirm --skipreview \
