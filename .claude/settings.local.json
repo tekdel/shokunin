@@ -11,7 +11,15 @@
       "WebFetch(domain:github.com)",
       "WebSearch",
       "Bash(chmod:*)",
-      "WebFetch(domain:wiki.hypr.land)"
+      "WebFetch(domain:wiki.hypr.land)",
+      "Bash(cat:*)",
+      "Bash(git restore:*)",
+      "Bash(curl:*)",
+      "WebFetch(domain:filipmikina.com)",
+      "Bash(kanshi:*)",
+      "WebFetch(domain:wiki.archlinux.org)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(git reset:*)"
     ]
   }
 }

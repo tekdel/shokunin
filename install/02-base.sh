@@ -37,6 +37,14 @@ PACKAGES=(
     efibootmgr
     cryptsetup
     terminus-font
+    # Microcode (loaded early in boot)
+    amd-ucode
+    intel-ucode
+    # Graphics drivers (needed for Plymouth and Wayland)
+    mesa
+    vulkan-radeon
+    vulkan-intel
+    libva-mesa-driver
 )
 
 log "Installing packages: ${PACKAGES[*]}"
