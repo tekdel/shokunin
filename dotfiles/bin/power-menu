@@ -1,0 +1,24 @@
+#!/bin/bash
+# power-menu - Simple power menu using walker
+
+OPTIONS="Lock\nLogout\nSuspend\nReboot\nShutdown"
+
+CHOICE=$(echo -e "$OPTIONS" | walker --dmenu --placeholder "Power Menu")
+
+case "$CHOICE" in
+    Lock)
+        hyprlock
+        ;;
+    Logout)
+        hyprctl dispatch exit
+        ;;
+    Suspend)
+        systemctl suspend
+        ;;
+    Reboot)
+        systemctl reboot
+        ;;
+    Shutdown)
+        systemctl poweroff
+        ;;
+esac
