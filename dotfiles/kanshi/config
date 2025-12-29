@@ -1,6 +1,5 @@
 # Kanshi monitor profiles
 # Automatically switches display configuration on hotplug
-# Match by monitor name so it works on any port
 
 profile external {
     output "LG Electronics LG UltraFine 901NTDV6P994" mode 3840x2160 position 0,0 scale 1
@@ -9,4 +8,5 @@ profile external {
 
 profile laptop {
     output eDP-1 enable mode 1920x1200 position 0,0 scale 1
+    exec hyprctl dispatch dpms on eDP-1
 }
