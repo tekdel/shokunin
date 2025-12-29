@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.7.4"
+VERSION="1.7.5"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -349,6 +349,9 @@ if ! should_skip "packages"; then
     if ! visudo -c -f /etc/sudoers.d/temp-install >/dev/null 2>&1; then
         warn "Sudoers syntax check failed"
     fi
+
+    # Enable multilib for 32-bit graphics libraries
+    enable_multilib
 
     install_aur_helper "$USERNAME"
 

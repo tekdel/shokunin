@@ -1,6 +1,24 @@
 #!/bin/bash
 # runs/essential - Essential system packages
 
+# Graphics drivers (AMD + Intel for Lenovo Z13 and Framework laptops)
+sudo pacman -S --needed --noconfirm \
+    mesa \
+    vulkan-radeon \
+    vulkan-intel \
+    libva-mesa-driver \
+    libva-intel-driver \
+    intel-media-driver \
+    lib32-mesa \
+    lib32-vulkan-radeon \
+    lib32-vulkan-intel
+
+# AMD firmware (for Lenovo Z13 and AMD Framework)
+sudo pacman -S --needed --noconfirm \
+    linux-firmware \
+    amd-ucode \
+    intel-ucode
+
 sudo pacman -S --needed --noconfirm \
     base-devel \
     git \

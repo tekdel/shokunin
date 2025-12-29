@@ -3,6 +3,35 @@
 
 echo "Applying system fixes..."
 
+# Enable multilib repository for 32-bit libraries
+if ! grep -q "^\[multilib\]" /etc/pacman.conf; then
+    echo "Enabling multilib repository..."
+    sudo sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf
+    sudo pacman -Sy
+    echo "✓ Multilib enabled"
+fi
+
+# Install graphics drivers (AMD + Intel)
+echo "Installing graphics drivers..."
+sudo pacman -S --needed --noconfirm \
+    mesa \
+    vulkan-radeon \
+    vulkan-intel \
+    libva-mesa-driver \
+    libva-intel-driver \
+    intel-media-driver \
+    linux-firmware \
+    amd-ucode \
+    intel-ucode
+
+# Install 32-bit graphics libraries (for Steam, Wine, etc.)
+sudo pacman -S --needed --noconfirm \
+    lib32-mesa \
+    lib32-vulkan-radeon \
+    lib32-vulkan-intel 2>/dev/null || echo "Note: lib32 packages require multilib repo"
+
+echo "✓ Graphics drivers installed"
+
 # Fix locale if not generated
 if ! locale -a 2>/dev/null | grep -q "en_US.utf8"; then
     echo "Generating en_US.UTF-8 locale..."
