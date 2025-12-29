@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="1.8.5"
+VERSION="1.8.6"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -366,73 +366,7 @@ if ! should_skip "packages"; then
     echo "packages" > /root/.install_checkpoint
 fi
 
-# Copy dotfiles
-if [ -d "/root/installer/dotfiles" ]; then
-    log "Copying dotfiles..."
-
-    # Create .config directory structure
-    mkdir -p /home/$USERNAME/.config
-
-    # Copy config directories
-    if [ -d "/root/installer/dotfiles/hypr" ]; then
-        cp -r /root/installer/dotfiles/hypr /home/$USERNAME/.config/
-    fi
-    if [ -d "/root/installer/dotfiles/waybar" ]; then
-        cp -r /root/installer/dotfiles/waybar /home/$USERNAME/.config/
-    fi
-    if [ -d "/root/installer/dotfiles/alacritty" ]; then
-        cp -r /root/installer/dotfiles/alacritty /home/$USERNAME/.config/
-    fi
-    if [ -d "/root/installer/dotfiles/nvim" ]; then
-        cp -r /root/installer/dotfiles/nvim /home/$USERNAME/.config/
-    fi
-
-    # Copy home directory files
-    if [ -f "/root/installer/dotfiles/bash/.bashrc" ]; then
-        cp /root/installer/dotfiles/bash/.bashrc /home/$USERNAME/
-    fi
-    if [ -f "/root/installer/dotfiles/bash/.bash_profile" ]; then
-        cp /root/installer/dotfiles/bash/.bash_profile /home/$USERNAME/
-    fi
-    if [ -f "/root/installer/dotfiles/zsh/.zshrc" ]; then
-        cp /root/installer/dotfiles/zsh/.zshrc /home/$USERNAME/
-    fi
-    if [ -f "/root/installer/dotfiles/git/.gitconfig" ]; then
-        cp /root/installer/dotfiles/git/.gitconfig /home/$USERNAME/
-    fi
-    if [ -f "/root/installer/dotfiles/tmux/.tmux.conf" ]; then
-        cp /root/installer/dotfiles/tmux/.tmux.conf /home/$USERNAME/
-    fi
-    if [ -f "/root/installer/dotfiles/.mise.toml" ]; then
-        cp /root/installer/dotfiles/.mise.toml /home/$USERNAME/
-    fi
-    if [ -f "/root/installer/dotfiles/zsh/.zprofile" ]; then
-        cp /root/installer/dotfiles/zsh/.zprofile /home/$USERNAME/
-    fi
-
-    # Copy bin directory to .local/bin
-    if [ -d "/root/installer/dotfiles/bin" ]; then
-        mkdir -p /home/$USERNAME/.local/bin
-        cp -r /root/installer/dotfiles/bin/* /home/$USERNAME/.local/bin/
-        chmod +x /home/$USERNAME/.local/bin/*
-    fi
-
-    # Configure tmux to use .config directory
-    if [ -f "/home/$USERNAME/.tmux.conf" ]; then
-        mkdir -p /home/$USERNAME/.config/tmux
-        mv /home/$USERNAME/.tmux.conf /home/$USERNAME/.config/tmux/tmux.conf
-    fi
-
-    # Setup global gitignore
-    if [ -f "/root/installer/dotfiles/git/.gitignore_global" ]; then
-        cp /root/installer/dotfiles/git/.gitignore_global /home/$USERNAME/
-        git config --global core.excludesfile ~/.gitignore_global
-    fi
-
-    # Fix permissions
-    chown -R $USERNAME:$USERNAME /home/$USERNAME
-    success "Dotfiles installed"
-fi
+# Note: Dotfiles are copied by runs/90-dotfiles during ./run
 
 # Configure Plymouth if installed
 if pacman -Q plymouth >/dev/null 2>&1; then
@@ -479,7 +413,7 @@ echo -e "  ${GREEN}reboot${NC}"
 echo ""
 echo -e "After reboot:"
 echo -e "  1. Log in with username: ${GREEN}$USERNAME${NC}"
-echo -e "  2. Start Hyprland: ${GREEN}Hyprland${NC}"
-echo -e "  3. Manage packages: ${GREEN}cd ~/shokunin && ./run${NC}"
+echo -e "  2. Hyprland starts automatically via SDDM"
+echo -e "  3. Manage packages: ${GREEN}cd ~/projects/shokunin && ./run${NC}"
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
