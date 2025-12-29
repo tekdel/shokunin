@@ -67,10 +67,28 @@ EnableNetworkConfiguration=true
 NameResolvingService=systemd
 EOF
 
+# Configure systemd-networkd for ethernet (DHCP)
+echo "Configuring systemd-networkd for ethernet..."
+sudo mkdir -p /etc/systemd/network
+sudo tee /etc/systemd/network/20-wired.network > /dev/null << 'EOF'
+[Match]
+Name=en*
+Name=eth*
+
+[Network]
+DHCP=yes
+DNS=1.1.1.1
+DNS=8.8.8.8
+
+[DHCPv4]
+RouteMetric=100
+EOF
+
 # Enable services
 sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
+sudo systemctl enable systemd-networkd || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable systemd-resolved || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable bluetooth || echo "Note: systemctl may fail in chroot"
 
 echo "Essential packages installed successfully!"
-echo "Note: Using iwd for WiFi management (managed via impala TUI)"
+echo "Note: Using iwd for WiFi, systemd-networkd for ethernet"

@@ -30,7 +30,6 @@ PACKAGES=(
     linux
     linux-firmware
     base-devel
-    networkmanager
     git
     vim
     sudo
