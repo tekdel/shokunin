@@ -79,6 +79,43 @@ if ! pacman-key --list-keys &>/dev/null 2>&1; then
     echo "✓ Keyring fixed"
 fi
 
+# Fix Plymouth for silent boot
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLYMOUTH_SRC="$SCRIPT_DIR/../plymouth/shokunin"
+if [ -d "$PLYMOUTH_SRC" ]; then
+    echo "Configuring Plymouth for silent boot..."
+
+    # Install Plymouth theme
+    sudo mkdir -p /usr/share/plymouth/themes/shokunin
+    sudo cp "$PLYMOUTH_SRC/shokunin.plymouth" /usr/share/plymouth/themes/shokunin/
+    sudo cp "$PLYMOUTH_SRC/shokunin.script" /usr/share/plymouth/themes/shokunin/
+
+    # Update mkinitcpio hooks: add plymouth, replace encrypt with plymouth-encrypt
+    if ! grep -q "plymouth" /etc/mkinitcpio.conf; then
+        echo "Adding plymouth hooks to mkinitcpio..."
+        sudo sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
+    fi
+    if grep -q " encrypt " /etc/mkinitcpio.conf && ! grep -q "plymouth-encrypt" /etc/mkinitcpio.conf; then
+        echo "Replacing encrypt with plymouth-encrypt..."
+        sudo sed -i 's/ encrypt / plymouth-encrypt /' /etc/mkinitcpio.conf
+    fi
+
+    # Update kernel cmdline in limine.conf
+    for LIMINE_CONF in /boot/limine.conf /boot/EFI/BOOT/limine.conf; do
+        if [ -f "$LIMINE_CONF" ]; then
+            if ! grep -q "plymouth.nolog" "$LIMINE_CONF"; then
+                echo "Adding plymouth.nolog to kernel cmdline..."
+                sudo sed -i 's/splash$/splash plymouth.nolog/' "$LIMINE_CONF"
+            fi
+        fi
+    done
+
+    # Set Plymouth theme and regenerate initramfs
+    echo "Setting Plymouth theme and regenerating initramfs..."
+    sudo plymouth-set-default-theme -R shokunin
+    echo "✓ Plymouth configured for silent boot"
+fi
+
 # Enable services
 echo "Enabling services..."
 sudo systemctl enable --now iwd || true
