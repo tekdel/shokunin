@@ -1,17 +1,21 @@
 #!/bin/bash
-# Monitor switch script - disable laptop when external connected
+# Monitor switch script - switch between laptop and external monitor
 
 LAPTOP="eDP-1"
 EXTERNAL="desc:LG Electronics LG UltraFine"
 
 # Check if external monitor is connected
 if hyprctl monitors all | grep -q "LG UltraFine"; then
-    # External connected - disable laptop, enable external
+    # External connected - configure external as primary, laptop off to the side
     hyprctl keyword monitor "$EXTERNAL,5120x2880@60,0x0,1.333333"
-    hyprctl keyword monitor "$LAPTOP,disable"
-    notify-send -t 3000 "Monitor" "LG UltraFine enabled, laptop disabled"
+    hyprctl keyword monitor "$LAPTOP,preferred,5120x0,1"
+    # Move all workspaces to external
+    for i in {1..10}; do
+        hyprctl dispatch moveworkspacetomonitor "$i $EXTERNAL" 2>/dev/null
+    done
+    notify-send -t 3000 "Monitor" "LG UltraFine enabled"
 else
-    # No external - enable laptop
-    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    # No external - enable laptop at primary position
+    hyprctl keyword monitor "$LAPTOP,preferred,0x0,1"
     notify-send -t 3000 "Monitor" "Laptop screen enabled"
 fi

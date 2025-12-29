@@ -1,17 +1,31 @@
 #!/bin/bash
 # Monitor watcher - listens for Hyprland monitor events and runs monitor-switch
 
-SOCKET="/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+SOCKET="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+
+# Fallback socket path
+if [ ! -S "$SOCKET" ]; then
+    SOCKET="/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+fi
 
 # Wait for socket to exist
-while [ ! -S "$SOCKET" ]; do
+count=0
+while [ ! -S "$SOCKET" ] && [ $count -lt 30 ]; do
     sleep 1
+    count=$((count + 1))
 done
+
+if [ ! -S "$SOCKET" ]; then
+    notify-send -t 5000 "Monitor Watcher" "Could not find Hyprland socket"
+    exit 1
+fi
 
 # Listen for monitor events
 socat -U - UNIX-CONNECT:"$SOCKET" | while read -r line; do
-    if [[ "$line" == monitoradded* ]] || [[ "$line" == monitorremoved* ]]; then
-        sleep 1  # Brief delay for monitor to settle
-        ~/.local/bin/monitor-switch
-    fi
+    case "$line" in
+        monitoradded*|monitorremoved*)
+            sleep 2  # Wait for monitor to settle
+            ~/.local/bin/monitor-switch
+            ;;
+    esac
 done
