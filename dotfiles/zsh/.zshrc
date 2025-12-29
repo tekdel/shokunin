@@ -12,7 +12,6 @@ plugins=(
     zsh-autosuggestions
     zsh-syntax-highlighting
     fast-syntax-highlighting
-    you-should-use
     docker
     sudo
     colored-man-pages
