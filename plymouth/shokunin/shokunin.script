@@ -1,80 +1,54 @@
-# Shokunin Plymouth Theme - Minimal with input box
-# Shows a centered input box with asterisks for password
+# Shokunin Plymouth Theme - Minimal centered password input
+# Gruvbox dark theme colors
 
-# Screen and window setup
+# Screen setup
 screen_width = Window.GetWidth();
 screen_height = Window.GetHeight();
 
-# Background - solid dark color
-Window.SetBackgroundTopColor(0.11, 0.12, 0.13);     # #1c1e22
-Window.SetBackgroundBottomColor(0.11, 0.12, 0.13);  # #1c1e22
+# Gruvbox dark background
+Window.SetBackgroundTopColor(0.16, 0.16, 0.16);     # #282828
+Window.SetBackgroundBottomColor(0.16, 0.16, 0.16);  # #282828
 
-# Input box dimensions
-box_width = 400;
-box_height = 50;
-box_x = screen_width / 2 - box_width / 2;
-box_y = screen_height / 2 - box_height / 2;
+# Password prompt label
+prompt_sprite = NULL;
+bullet_sprite = NULL;
 
-# Create input box background (dark gray)
-box_image = Image(box_width, box_height);
-box_image.SetBackgroundColor(0.15, 0.15, 0.15);  # Slightly lighter than background
+fun DisplayPasswordPrompt(prompt, bullets) {
+    # Clear previous sprites
+    if (prompt_sprite) prompt_sprite.SetOpacity(0);
+    if (bullet_sprite) bullet_sprite.SetOpacity(0);
 
-# Create input box border (white outline)
-for (i = 0; i < box_width; i++) {
-    box_image.SetPixelColor(i, 0, 1, 1, 1);           # Top border
-    box_image.SetPixelColor(i, box_height - 1, 1, 1, 1);  # Bottom border
-}
-for (i = 0; i < box_height; i++) {
-    box_image.SetPixelColor(0, i, 1, 1, 1);           # Left border
-    box_image.SetPixelColor(box_width - 1, i, 1, 1, 1);  # Right border
-}
+    # Show prompt text centered
+    prompt_image = Image.Text(prompt, 0.92, 0.86, 0.70);  # Gruvbox fg #ebdbb2
+    prompt_sprite = Sprite(prompt_image);
+    prompt_sprite.SetX(screen_width / 2 - prompt_image.GetWidth() / 2);
+    prompt_sprite.SetY(screen_height / 2 - 50);
+    prompt_sprite.SetZ(10000);
 
-# Display the input box
-box_sprite = Sprite(box_image);
-box_sprite.SetX(box_x);
-box_sprite.SetY(box_y);
-box_sprite.SetZ(9999);
-
-# Password text display (asterisks inside the box)
-password_sprite = NULL;
-
-# Password dialogue callback
-fun on_password_prompt(prompt, bullets) {
-    # Clear previous password display
-    if (password_sprite != NULL) {
-        password_sprite.SetOpacity(0);
-    }
-
-    # Show asterisks inside the input box
+    # Show password bullets centered
     if (bullets > 0) {
-        asterisk_string = "";
+        bullet_string = "";
         for (i = 0; i < bullets; i++) {
-            asterisk_string += "*";
+            bullet_string += "●";
         }
-
-        password_image = Image.Text(asterisk_string, 1, 1, 1);  # White asterisks
-        password_sprite = Sprite(password_image);
-
-        # Position asterisks inside the box (left-aligned with padding)
-        password_sprite.SetX(box_x + 15);  # 15px padding from left edge
-        password_sprite.SetY(box_y + (box_height - password_image.GetHeight()) / 2);  # Vertically centered
-        password_sprite.SetZ(10000);
+        bullet_image = Image.Text(bullet_string, 0.92, 0.86, 0.70, 1, "Sans 24");
+        bullet_sprite = Sprite(bullet_image);
+        bullet_sprite.SetX(screen_width / 2 - bullet_image.GetWidth() / 2);
+        bullet_sprite.SetY(screen_height / 2);
+        bullet_sprite.SetZ(10000);
     }
 }
 
-# Register the password callback
-Plymouth.SetDisplayPasswordFunction(on_password_prompt);
+Plymouth.SetDisplayPasswordFunction(DisplayPasswordPrompt);
 
-# Ignore all boot messages (no text display)
-fun on_message(text) {
-    # Do nothing - no messages displayed
+# Hide all boot messages
+fun HideMessage(text) {
 }
 
-Plymouth.SetMessageFunction(on_message);
+Plymouth.SetMessageFunction(HideMessage);
 
-# Refresh handler (called many times per second)
-fun refresh_callback() {
-    # Nothing to animate - static display
+# Hide boot status
+fun HideStatus(status) {
 }
 
-Plymouth.SetRefreshFunction(refresh_callback);
+Plymouth.SetBootProgressFunction(HideStatus);

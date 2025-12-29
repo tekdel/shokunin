@@ -97,6 +97,13 @@ if [ -d "$DOTFILES_DIR/bin" ]; then
     echo "✓ Local bin scripts updated"
 fi
 
+# Install mise tools (Node.js, Python) if mise is available
+if command -v mise >/dev/null 2>&1; then
+    echo "Installing mise tools (Node.js, Python)..."
+    mise install -y
+    echo "✓ mise tools installed"
+fi
+
 echo ""
 echo "Dotfiles updated successfully!"
 echo "Run 'hyprctl reload' or log out/in for changes to take effect."
