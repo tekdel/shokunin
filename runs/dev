@@ -30,7 +30,10 @@ fi
 
 # Install languages via mise (Node.js, Python)
 echo "Installing Node.js and Python via mise..."
-mise install -y
+mise install node@lts -y
+mise install python@3.12 -y
+mise use --global node@lts
+mise use --global python@3.12
 
 echo "Development tools installed successfully!"
 echo "Node.js and Python managed by mise"

@@ -35,10 +35,14 @@ if ! locale-gen; then
 fi
 echo "LANG=$LOCALE" > /etc/locale.conf
 
-# Set keymap
+# Set keymap and console font
 KEYMAP="${KEYMAP:-us}"
-log "Setting keymap to $KEYMAP..."
-echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
+FONT="${FONT:-ter-v18n}"
+log "Setting keymap to $KEYMAP and font to $FONT..."
+cat > /etc/vconsole.conf <<EOF
+KEYMAP=$KEYMAP
+FONT=$FONT
+EOF
 
 # Set hostname
 if [ -z "$HOSTNAME" ]; then

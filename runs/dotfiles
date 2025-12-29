@@ -104,7 +104,11 @@ if command -v mise >/dev/null 2>&1; then
         mise trust ~/.mise.toml 2>/dev/null || true
     fi
     echo "Installing mise tools (Node.js, Python)..."
-    mise install -y
+    # Explicitly install tools
+    mise install node@lts -y
+    mise install python@3.12 -y
+    mise use --global node@lts
+    mise use --global python@3.12
     echo "✓ mise tools installed"
 fi
 

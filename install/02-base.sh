@@ -37,6 +37,7 @@ PACKAGES=(
     reflector
     efibootmgr
     cryptsetup
+    terminus-font
 )
 
 log "Installing packages: ${PACKAGES[*]}"

@@ -45,6 +45,29 @@ NameResolvingService=systemd
 EOF
 echo "✓ iwd DHCP configured"
 
+# Fix console font for mkinitcpio
+if ! pacman -Q terminus-font &>/dev/null; then
+    echo "Installing terminus-font..."
+    sudo pacman -S --noconfirm terminus-font
+fi
+if ! grep -q "^FONT=" /etc/vconsole.conf 2>/dev/null; then
+    echo "Configuring console font..."
+    if grep -q "^KEYMAP=" /etc/vconsole.conf 2>/dev/null; then
+        # Add FONT to existing vconsole.conf
+        echo "FONT=ter-v18n" | sudo tee -a /etc/vconsole.conf > /dev/null
+    else
+        # Create vconsole.conf with both settings
+        sudo tee /etc/vconsole.conf > /dev/null << 'EOF'
+KEYMAP=us
+FONT=ter-v18n
+EOF
+    fi
+    echo "✓ Console font configured"
+    echo "Regenerating initramfs..."
+    sudo mkinitcpio -P
+    echo "✓ Initramfs regenerated"
+fi
+
 # Enable services
 echo "Enabling services..."
 sudo systemctl enable --now iwd || true
