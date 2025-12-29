@@ -68,6 +68,17 @@ EOF
     echo "✓ Initramfs regenerated"
 fi
 
+# Fix pacman keyring if corrupted
+if ! pacman-key --list-keys &>/dev/null 2>&1; then
+    echo "Fixing pacman keyring..."
+    sudo rm -f /var/lib/pacman/db.lck
+    sudo rm -rf /etc/pacman.d/gnupg
+    sudo pacman-key --init
+    sudo pacman-key --populate archlinux
+    sudo pacman -Sy --noconfirm archlinux-keyring
+    echo "✓ Keyring fixed"
+fi
+
 # Enable services
 echo "Enabling services..."
 sudo systemctl enable --now iwd || true
