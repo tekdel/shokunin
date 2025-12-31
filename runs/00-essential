@@ -102,6 +102,15 @@ DNS=8.8.8.8
 RouteMetric=100
 EOF
 
+# Configure systemd-resolved with fallback DNS (for WiFi via iwd)
+echo "Configuring systemd-resolved with fallback DNS..."
+sudo mkdir -p /etc/systemd/resolved.conf.d
+sudo tee /etc/systemd/resolved.conf.d/dns.conf > /dev/null << 'EOF'
+[Resolve]
+DNS=1.1.1.1 8.8.8.8
+FallbackDNS=1.0.0.1 8.8.4.4
+EOF
+
 # Enable services
 sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable systemd-networkd || echo "Note: systemctl may fail in chroot"

@@ -1,119 +1,16 @@
 #!/bin/bash
-# runs/fixes - Apply system fixes (polkit, iwd DHCP, etc.)
+# runs/99-fixes - Apply system fixes for existing installations
+# Note: Most configuration is now handled by 00-essential and install/* scripts
+# This script only contains fixes that might be needed on older systems
 
 echo "Applying system fixes..."
 
-# Enable multilib repository for 32-bit libraries
+# Enable multilib repository for 32-bit libraries (Steam, Wine, etc.)
 if ! grep -q "^\[multilib\]" /etc/pacman.conf; then
     echo "Enabling multilib repository..."
     sudo sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf
     sudo pacman -Sy
     echo "✓ Multilib enabled"
-fi
-
-# Install graphics drivers (AMD + Intel)
-echo "Installing graphics drivers..."
-sudo pacman -S --needed --noconfirm \
-    mesa \
-    vulkan-radeon \
-    vulkan-intel \
-    libva-mesa-driver \
-    libva-intel-driver \
-    intel-media-driver \
-    linux-firmware \
-    amd-ucode \
-    intel-ucode
-
-# Install 32-bit graphics libraries (for Steam, Wine, etc.)
-sudo pacman -S --needed --noconfirm \
-    lib32-mesa \
-    lib32-vulkan-radeon \
-    lib32-vulkan-intel 2>/dev/null || echo "Note: lib32 packages require multilib repo"
-
-echo "✓ Graphics drivers installed"
-
-# Fix locale if not generated
-if ! locale -a 2>/dev/null | grep -q "en_US.utf8"; then
-    echo "Generating en_US.UTF-8 locale..."
-    sudo sed -i 's/#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
-    sudo locale-gen
-    echo "✓ Locale generated"
-fi
-
-# Fix polkit rules for iwd and bluetooth
-echo "Configuring polkit rules..."
-sudo mkdir -p /etc/polkit-1/rules.d
-sudo tee /etc/polkit-1/rules.d/50-net-wifi-bluetooth.rules > /dev/null << 'EOF'
-// Allow wheel group members to control iwd (WiFi) without password
-polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("net.connman.iwd.") == 0 &&
-        subject.isInGroup("wheel")) {
-        return polkit.Result.YES;
-    }
-});
-
-// Allow wheel group members to control bluetooth without password
-polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("org.bluez.") == 0 &&
-        subject.isInGroup("wheel")) {
-        return polkit.Result.YES;
-    }
-});
-EOF
-echo "✓ Polkit rules configured"
-
-# Fix iwd DHCP
-echo "Configuring iwd for DHCP..."
-sudo mkdir -p /etc/iwd
-sudo tee /etc/iwd/main.conf > /dev/null << 'EOF'
-[General]
-EnableNetworkConfiguration=true
-
-[Network]
-NameResolvingService=systemd
-EOF
-echo "✓ iwd DHCP configured"
-
-# Fix ethernet via systemd-networkd
-echo "Configuring systemd-networkd for ethernet..."
-sudo mkdir -p /etc/systemd/network
-sudo tee /etc/systemd/network/20-wired.network > /dev/null << 'EOF'
-[Match]
-Name=en*
-Name=eth*
-
-[Network]
-DHCP=yes
-DNS=1.1.1.1
-DNS=8.8.8.8
-
-[DHCPv4]
-RouteMetric=100
-EOF
-sudo systemctl enable --now systemd-networkd || true
-echo "✓ Ethernet configured"
-
-# Fix console font for mkinitcpio
-if ! pacman -Q terminus-font &>/dev/null; then
-    echo "Installing terminus-font..."
-    sudo pacman -S --noconfirm terminus-font
-fi
-if ! grep -q "^FONT=" /etc/vconsole.conf 2>/dev/null; then
-    echo "Configuring console font..."
-    if grep -q "^KEYMAP=" /etc/vconsole.conf 2>/dev/null; then
-        # Add FONT to existing vconsole.conf
-        echo "FONT=ter-v18n" | sudo tee -a /etc/vconsole.conf > /dev/null
-    else
-        # Create vconsole.conf with both settings
-        sudo tee /etc/vconsole.conf > /dev/null << 'EOF'
-KEYMAP=us
-FONT=ter-v18n
-EOF
-    fi
-    echo "✓ Console font configured"
-    echo "Regenerating initramfs..."
-    sudo mkinitcpio -P
-    echo "✓ Initramfs regenerated"
 fi
 
 # Fix pacman keyring if corrupted
@@ -127,71 +24,13 @@ if ! pacman-key --list-keys &>/dev/null 2>&1; then
     echo "✓ Keyring fixed"
 fi
 
-# Fix Plymouth for silent boot
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLYMOUTH_SRC="$SCRIPT_DIR/../plymouth/shokunin"
-if [ -d "$PLYMOUTH_SRC" ]; then
-    echo "Configuring Plymouth for silent boot..."
-
-    # Install Plymouth theme
-    sudo mkdir -p /usr/share/plymouth/themes/shokunin
-    sudo cp "$PLYMOUTH_SRC/shokunin.plymouth" /usr/share/plymouth/themes/shokunin/
-    sudo cp "$PLYMOUTH_SRC/shokunin.script" /usr/share/plymouth/themes/shokunin/
-
-    # Update mkinitcpio hooks: add plymouth BEFORE encrypt
-    # DO NOT use plymouth-encrypt (deprecated and broken)
-
-    # Fix broken plymouth-encrypt if it was applied
-    if grep -q "plymouth-encrypt" /etc/mkinitcpio.conf; then
-        echo "Fixing broken plymouth-encrypt (reverting to encrypt)..."
-        sudo sed -i 's/plymouth-encrypt/encrypt/' /etc/mkinitcpio.conf
-    fi
-
-    # Add plymouth hook if not present
-    if ! grep -q " plymouth " /etc/mkinitcpio.conf; then
-        echo "Adding plymouth hook to mkinitcpio..."
-        sudo sed -i 's/^HOOKS=(base udev /HOOKS=(base udev plymouth /' /etc/mkinitcpio.conf
-    fi
-
-    # Update kernel cmdline in limine.conf
-    for LIMINE_CONF in /boot/limine.conf /boot/EFI/BOOT/limine.conf; do
-        if [ -f "$LIMINE_CONF" ]; then
-            if ! grep -q "plymouth.nolog" "$LIMINE_CONF"; then
-                echo "Adding plymouth.nolog to kernel cmdline..."
-                sudo sed -i 's/splash$/splash plymouth.nolog/' "$LIMINE_CONF"
-            fi
-        fi
-    done
-
-    # Add SDDM drop-in to wait for Plymouth quit (smooth transition)
-    echo "Configuring SDDM to wait for Plymouth..."
-    sudo mkdir -p /etc/systemd/system/sddm.service.d
-    sudo tee /etc/systemd/system/sddm.service.d/plymouth.conf > /dev/null << 'EOF'
-[Unit]
-After=plymouth-quit-wait.service
-Wants=plymouth-quit-wait.service
-EOF
-    sudo systemctl daemon-reload
-    echo "✓ SDDM configured for smooth Plymouth transition"
-
-    # Set Plymouth theme and regenerate initramfs
-    echo "Setting Plymouth theme and regenerating initramfs..."
-    sudo plymouth-set-default-theme -R shokunin
-    echo "✓ Plymouth configured for silent boot"
+# Fix broken plymouth-encrypt if it was applied on older installations
+if grep -q "plymouth-encrypt" /etc/mkinitcpio.conf 2>/dev/null; then
+    echo "Fixing broken plymouth-encrypt (reverting to encrypt)..."
+    sudo sed -i 's/plymouth-encrypt/encrypt/' /etc/mkinitcpio.conf
+    sudo mkinitcpio -P
+    echo "✓ Plymouth hooks fixed"
 fi
-
-# Enable services
-echo "Enabling services..."
-sudo systemctl enable --now iwd || true
-sudo systemctl enable --now systemd-resolved || true
-sudo systemctl enable --now bluetooth || true
-sudo systemctl enable --now power-profiles-daemon || true
-echo "✓ Services enabled"
-
-# Restart iwd to apply changes
-echo "Restarting iwd..."
-sudo systemctl restart iwd || true
 
 echo ""
 echo "System fixes applied!"
-echo "Log out and back in for all changes to take effect."
