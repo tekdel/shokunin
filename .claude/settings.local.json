@@ -19,7 +19,9 @@
       "Bash(kanshi:*)",
       "WebFetch(domain:wiki.archlinux.org)",
       "WebFetch(domain:api.github.com)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(xargs ls:*)",
+      "Bash(ls:*)"
     ]
   }
 }
