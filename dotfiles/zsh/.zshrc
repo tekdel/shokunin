@@ -44,9 +44,9 @@ source $ZSH/oh-my-zsh.sh
 # User Configuration
 # ============================================================================
 
-# History configuration
-HISTSIZE=100000
-SAVEHIST=100000
+# History configuration (shared across all tmux panes via SHARE_HISTORY)
+HISTSIZE=1000000
+SAVEHIST=1000000
 setopt HIST_IGNORE_ALL_DUPS
 setopt HIST_FIND_NO_DUPS
 setopt SHARE_HISTORY
