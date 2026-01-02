@@ -5,7 +5,7 @@ return {
     version = false,
     opts = {
       debug = false,
-      provider = 'claude',
+      provider = 'ollama',
       auto_suggestions_provider = nil,
 
       providers = {
@@ -30,7 +30,12 @@ return {
 
         -- Ollama Config
         ollama = {
-          model = 'qwen3:1.7b',
+          model = 'llama3.2:latest',
+          timeout = 30000,
+          extra_request_body = {
+            temperature = 0.75,
+            max_tokens = 200000,
+          },
         },
       },
     },

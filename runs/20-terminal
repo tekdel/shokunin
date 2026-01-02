@@ -19,7 +19,9 @@ sudo pacman -S --needed --noconfirm \
     fd \
     zoxide \
     starship \
-    btop
+    bat \
+    eza \
+    delta
 
 # Other useful CLI tools
 sudo pacman -S --needed --noconfirm \
