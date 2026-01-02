@@ -5,15 +5,20 @@
 paru -S --needed --noconfirm --skipreview \
     zen-browser-bin
 
-# File manager
+# File manager and thumbnails
 sudo pacman -S --needed --noconfirm \
     nautilus \
-    file-roller
+    file-roller \
+    ffmpegthumbnailer
 
 # Media
 sudo pacman -S --needed --noconfirm \
     mpv \
     imv
+
+# Screen recording (Wayland)
+sudo pacman -S --needed --noconfirm \
+    wf-recorder
 
 # PDF viewer
 sudo pacman -S --needed --noconfirm \

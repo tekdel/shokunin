@@ -171,6 +171,9 @@ if [ "$UPDATE_DOTFILES" = true ]; then
     if [ -d "$DOTFILES_DIR/nvim" ]; then
         sync_dir "$DOTFILES_DIR/nvim" "$HOME/.config/nvim"
     fi
+    if [ -d "$DOTFILES_DIR/swappy" ]; then
+        sync_dir "$DOTFILES_DIR/swappy" "$HOME/.config/swappy"
+    fi
 
     # Sync home directory files
     sync_file "$DOTFILES_DIR/bash/.bashrc" "$HOME/.bashrc"

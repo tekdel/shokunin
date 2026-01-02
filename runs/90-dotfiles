@@ -60,6 +60,17 @@ if [ -d "$DOTFILES_DIR/kanshi" ]; then
     echo "✓ Kanshi config updated"
 fi
 
+# Swappy (screenshot editor)
+if [ -d "$DOTFILES_DIR/swappy" ]; then
+    mkdir -p ~/.config/swappy
+    cp -r "$DOTFILES_DIR/swappy/"* ~/.config/swappy/
+    echo "✓ Swappy config updated"
+fi
+
+# Create media directories
+mkdir -p ~/pictures/screenshots
+mkdir -p ~/videos/recordings
+
 # Tmux
 if [ -f "$DOTFILES_DIR/tmux/.tmux.conf" ]; then
     mkdir -p ~/.config/tmux

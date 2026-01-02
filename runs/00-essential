@@ -52,6 +52,16 @@ sudo pacman -S --needed --noconfirm \
     power-profiles-daemon \
     bolt
 
+# USB automounting and filesystem support
+sudo pacman -S --needed --noconfirm \
+    udisks2 \
+    gvfs \
+    gvfs-mtp \
+    gvfs-smb \
+    gvfs-nfs \
+    ntfs-3g \
+    exfatprogs
+
 # Configure polkit to allow wheel group to manage iwd and bluetooth
 echo "Configuring polkit rules for iwd and bluetooth..."
 sudo mkdir -p /etc/polkit-1/rules.d
@@ -111,11 +121,30 @@ DNS=1.1.1.1 8.8.8.8
 FallbackDNS=1.0.0.1 8.8.4.4
 EOF
 
+# Configure fast shutdown (5 second timeout instead of 90s default)
+echo "Configuring fast shutdown..."
+sudo mkdir -p /etc/systemd/system.conf.d
+sudo tee /etc/systemd/system.conf.d/fast-shutdown.conf > /dev/null << 'EOF'
+[Manager]
+DefaultTimeoutStopSec=5s
+EOF
+
+# Configure lid close to suspend (laptop)
+echo "Configuring lid close behavior..."
+sudo mkdir -p /etc/systemd/logind.conf.d
+sudo tee /etc/systemd/logind.conf.d/lid.conf > /dev/null << 'EOF'
+[Login]
+HandleLidSwitch=suspend
+HandleLidSwitchExternalPower=suspend
+HandleLidSwitchDocked=ignore
+EOF
+
 # Enable services
 sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable systemd-networkd || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable systemd-resolved || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable bluetooth || echo "Note: systemctl may fail in chroot"
+sudo systemctl enable udisks2 || echo "Note: systemctl may fail in chroot"
 
 echo "Essential packages installed successfully!"
 echo "Note: Using iwd for WiFi, systemd-networkd for ethernet"

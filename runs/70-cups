@@ -1,15 +1,42 @@
 #!/bin/bash
-# runs/cups - Printing support
+# runs/cups - Printing support with network printer discovery
 
 sudo pacman -S --needed --noconfirm \
     cups \
     cups-pdf \
+    cups-browsed \
     ghostscript \
     gsfonts \
-    system-config-printer
+    system-config-printer \
+    avahi \
+    nss-mdns
 
-# Enable cups service (will start on boot)
-sudo systemctl enable cups || echo "Note: systemctl enable may fail in chroot - cups will be enabled on first boot"
+# Configure Avahi for network printer discovery
+echo "Configuring Avahi for printer discovery..."
 
-echo "CUPS printing system installed successfully!"
+# Update nsswitch.conf for mDNS resolution (.local domains)
+if ! grep -q "mdns_minimal" /etc/nsswitch.conf; then
+    echo "Adding mDNS to nsswitch.conf..."
+    sudo sed -i 's/^hosts:.*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files dns/' /etc/nsswitch.conf
+fi
+
+# Configure cups-browsed for remote printer discovery
+sudo mkdir -p /etc/cups
+if ! grep -q "BrowseRemoteProtocols" /etc/cups/cups-browsed.conf 2>/dev/null; then
+    echo "Configuring cups-browsed for remote printers..."
+    sudo tee -a /etc/cups/cups-browsed.conf > /dev/null << 'EOF'
+
+# Auto-discover network printers
+BrowseRemoteProtocols dnssd cups
+CreateRemoteCUPSPrinterQueues Yes
+EOF
+fi
+
+# Enable services
+sudo systemctl enable cups || echo "Note: systemctl enable may fail in chroot"
+sudo systemctl enable cups-browsed || echo "Note: systemctl enable may fail in chroot"
+sudo systemctl enable avahi-daemon || echo "Note: systemctl enable may fail in chroot"
+
+echo "CUPS printing system installed with network discovery!"
 echo "Access printer configuration at: http://localhost:631"
+echo "Network printers will be auto-discovered via Avahi/mDNS"
