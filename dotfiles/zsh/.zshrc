@@ -45,8 +45,8 @@ source $ZSH/oh-my-zsh.sh
 # ============================================================================
 
 # History configuration
-HISTSIZE=10000
-SAVEHIST=10000
+HISTSIZE=100000
+SAVEHIST=100000
 setopt HIST_IGNORE_ALL_DUPS
 setopt HIST_FIND_NO_DUPS
 setopt SHARE_HISTORY
