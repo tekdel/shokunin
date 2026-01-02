@@ -139,6 +139,9 @@ HandleLidSwitchExternalPower=suspend
 HandleLidSwitchDocked=ignore
 EOF
 
+# Enable SSD TRIM timer (weekly trim for SSD health)
+sudo systemctl enable fstrim.timer || echo "Note: systemctl may fail in chroot"
+
 # Enable services
 sudo systemctl enable iwd || echo "Note: systemctl may fail in chroot"
 sudo systemctl enable systemd-networkd || echo "Note: systemctl may fail in chroot"
