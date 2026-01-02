@@ -1,229 +1,264 @@
-# Arch Linux Minimal Installer
+# Shokunin
 
-Automated Arch Linux installation with Hyprland, full-disk encryption, and your dotfiles.
+Automated Arch Linux installer with Hyprland, full-disk encryption, and a complete development environment.
 
-**One command installs everything:** disk partitioning, base system, Hyprland, and all your packages.
+**One command takes you from bare metal to a fully configured system.**
 
 ## Features
 
-- **Automated installation** - One command from bare metal to working system
-- **Modular design** - Each component in its own script
-- **Full-disk encryption** - LUKS2 encryption (required)
-- **Your dotfiles included** - Everything in one repository
-- **Easy to maintain** - Add packages by editing simple scripts
-- **VM testing** - Test safely before installing on real hardware
-
-## What's Included
-
-- **Window Manager:** Hyprland with Waybar, Rofi, and Mako
-- **Terminal:** Alacritty with modern CLI tools
-- **Shell:** Zsh with Oh My Zsh
-- **Browser:** Zen Browser
-- **Boot:** Limine bootloader with Plymouth splash screen
-- **Kernels:** Both stable and LTS kernels
-- **Development:** Neovim, mise, Git, Docker
-- **Your dotfiles:** Hyprland, Waybar, Alacritty, tmux, and more
+- **Full-disk LUKS2 encryption** with encrypted swap
+- **Hyprland** tiling window manager (Wayland)
+- **Complete development environment** out of the box
+- **Laptop optimized** - lid close, power management, brightness
+- **Network printer discovery** via Avahi/mDNS
+- **USB automounting** with NTFS/exFAT support
+- **Screenshot & screen recording** built-in
+- **Modular design** - easy to customize
 
 ## Quick Start
 
-### Installation (From Arch ISO)
-
-1. **Boot Arch ISO**
-2. **Connect to internet** (if needed)
-3. **Run installer:**
+### Fresh Installation (From Arch ISO)
 
 ```bash
+# 1. Boot Arch ISO and connect to internet
+# 2. Run:
 curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
 ```
 
-4. **Answer prompts:**
-   - Disk to use (auto-detected)
-   - Hostname
-   - Username & password
-   - Encryption password
-   - Timezone (default: America/Los_Angeles)
-   - Swap size (default: 32GB)
+You'll be prompted for:
+- Disk to install on
+- Hostname, username, passwords
+- Encryption password
+- Timezone and swap size
 
-5. **Wait 20-30 minutes**
-6. **Reboot and enjoy!**
+Installation takes ~20-30 minutes. Reboot and enjoy!
 
-### On Existing System
-
-```bash
-git clone https://github.com/tekdel/shokunin ~/shokunin
-cd ~/shokunin
-
-# Install everything
-./run
-
-# Or install specific components
-./run hyprland terminal
-```
-
-### Updating an Existing System
-
-After installing via `boot.sh`, use the `update` script to keep your system synchronized with the repository:
+### Update Existing System
 
 ```bash
 cd ~/projects/shokunin
-git pull  # Get latest changes
-
-# Preview what would change
-./update --dry
-
-# Update everything (packages + dotfiles)
-./update
-
-# Update only packages
-./update packages
-
-# Update only dotfiles
-./update dotfiles
+git pull
+./update           # Update everything
+./update dotfiles  # Update configs only
+./update --dry     # Preview changes
 ```
 
-The `update` script safely:
-- ✅ Updates packages via `./run`
-- ✅ Synchronizes dotfiles from `dotfiles/` to `~/.config/` and `~/`
-- ✅ Is idempotent and safe to run multiple times
-- ❌ Never touches UEFI, bootloader, disk partitioning, or encryption
+## What's Installed
 
-## Testing in VM
+### Desktop Environment
 
-Before installing on real hardware, test in a VM:
+| Tool | Description | Keybinding |
+|------|-------------|------------|
+| **Hyprland** | Tiling Wayland compositor | - |
+| **Waybar** | Status bar | - |
+| **Walker** | Application launcher | `Super+R` |
+| **Mako** | Notifications | - |
+| **Hyprlock** | Screen locker | `Super+L` |
+| **Hypridle** | Idle manager (auto-lock, suspend) | - |
+| **Kanshi** | Monitor hotplug | - |
 
-```bash
-# Install UEFI firmware
-sudo pacman -S edk2-ovmf
+### Terminal & Shell
 
-# Start VM
-./test-vm.sh install
+| Tool | Description |
+|------|-------------|
+| **Alacritty** | GPU-accelerated terminal |
+| **Zsh** | Shell with Oh-My-Zsh |
+| **tmux** | Terminal multiplexer |
+| **Starship** | Shell prompt |
+| **fzf** | Fuzzy finder |
+| **ripgrep** | Fast grep |
+| **fd** | Fast find |
+| **bat** | cat with syntax highlighting |
+| **eza** | Modern ls |
+| **zoxide** | Smart cd |
 
-# Inside VM - same command as real hardware
-curl -fsSL https://raw.githubusercontent.com/tekdel/shokunin/master/boot.sh | bash
+### Development
 
-# After installation
-./test-vm.sh boot
+| Tool | Description |
+|------|-------------|
+| **Neovim** | Editor (Kickstart + lazy.nvim) |
+| **mise** | Version manager (Node.js, Python) |
+| **Docker** | Containers + docker-compose |
+| **lazydocker** | Docker TUI |
+| **lazygit** | Git TUI |
+| **Git** | Version control |
+| **GCC/Clang** | C/C++ compilers |
+| **Rust** | Via rustup |
+| **Go** | Golang |
 
-# Clean up
-./test-vm.sh clean
-```
+### Applications
 
-## Managing Your System
+| Tool | Description |
+|------|-------------|
+| **Zen Browser** | Privacy-focused browser |
+| **Nautilus** | File manager |
+| **mpv** | Video player |
+| **imv** | Image viewer |
+| **Zathura** | PDF viewer |
+| **KeePassXC** | Password manager |
+| **Spotify** | Music |
+| **DBeaver** | Database client |
+
+### System
+
+| Feature | Implementation |
+|---------|----------------|
+| **Bootloader** | Limine with Plymouth splash |
+| **Networking** | systemd-networkd (Ethernet) |
+| **DNS** | systemd-resolved (1.1.1.1, 8.8.8.8) |
+| **Audio** | PipeWire + WirePlumber |
+| **Bluetooth** | BlueZ + bluetui (TUI) |
+| **WiFi** | iwd + impala (TUI) |
+| **Printing** | CUPS + Avahi (network discovery) |
+| **USB** | udisks2 + gvfs (automount) |
+| **Filesystems** | NTFS, exFAT support |
+| **Thumbnails** | ffmpegthumbnailer |
+
+## Keybindings
+
+### Window Management
+
+| Key | Action |
+|-----|--------|
+| `Super+Return` | Open terminal |
+| `Super+Q` | Close window |
+| `Super+R` | App launcher |
+| `Super+E` | File manager |
+| `Super+F` | Fullscreen |
+| `Super+V` | Toggle floating |
+| `Super+1-0` | Switch workspace |
+| `Super+Shift+1-0` | Move window to workspace |
+| `Super+H/J/K/L` | Move focus (vim keys) |
+
+### System
+
+| Key | Action |
+|-----|--------|
+| `Super+L` | Lock screen |
+| `Super+Shift+E` | Power menu |
+| `Super+Shift+B` | Open browser |
+| `Super+Shift+A` | Audio mixer |
+| `Super+C` | Clipboard history |
+
+### Media
+
+| Key | Action |
+|-----|--------|
+| `Print` | Screenshot (select area) |
+| `Shift+Print` | Screenshot (fullscreen) |
+| `Super+Print` | Screenshot to clipboard |
+| `Super+Shift+R` | Toggle screen recording |
+| `XF86Audio*` | Volume controls |
+| `XF86MonBrightness*` | Brightness controls |
+
+### Files
+
+| Location | Content |
+|----------|---------|
+| `~/pictures/screenshots/` | Screenshots |
+| `~/videos/recordings/` | Screen recordings |
+
+## Hardware Support
+
+Optimized for:
+- **Lenovo ThinkPad Z13** (AMD Ryzen)
+- **Framework Laptop** (Intel/AMD)
+
+Includes drivers for:
+- AMD graphics (mesa, vulkan-radeon)
+- Intel graphics (vulkan-intel, intel-media-driver)
+- 32-bit libraries for Steam/Wine
+
+## System Behavior
+
+| Event | Action |
+|-------|--------|
+| Lid close | Suspend |
+| Idle 5 min | Lock screen |
+| Idle 6 min | Display off |
+| Idle 15 min | Suspend |
+| Shutdown | 5 second timeout |
+| CapsLock | Remapped to Escape |
+
+## Customization
 
 ### Adding Packages
 
 ```bash
 # Edit the appropriate script
-vim runs/terminal
+vim runs/40-apps
 
-# Add your package
-# Install it
-./run terminal
+# Add your package and run
+./run
 ```
 
-### Creating New Categories
-
-```bash
-# Create new script
-cat > runs/gaming <<'EOF'
-#!/bin/bash
-sudo pacman -S --needed --noconfirm steam
-EOF
-
-chmod +x runs/gaming
-./run gaming
-```
-
-### Updating Dotfiles
+### Modifying Configs
 
 ```bash
 # Edit dotfiles
 vim dotfiles/hypr/hyprland.conf
 
 # Apply changes
-cp -r dotfiles/hypr ~/.config/
+./update dotfiles
 
 # Reload Hyprland
 hyprctl reload
-
-# Commit
-git add dotfiles/
-git commit -m "Update config"
-git push
 ```
 
-## Package Categories
+### Creating New Categories
 
-| Script | Purpose |
-|--------|---------|
-| `essential` | Core system packages |
-| `hyprland` | Window manager and components |
-| `terminal` | CLI tools and shell |
-| `docker` | Container tools |
-| `cups` | Printing support |
-| `dev` | Development tools |
-| `apps` | Applications |
-| `fonts` | Fonts |
-
-## Customization
-
-### Before Installation
-
-1. Fork this repository
-2. Edit `config/system.conf` for defaults
-3. Edit `runs/*` scripts to add/remove packages
-4. Add your dotfiles to `dotfiles/`
-5. Update REPO_URL in `boot.sh` to your fork
-6. Test in VM
+```bash
+cat > runs/45-gaming <<'EOF'
+#!/bin/bash
+sudo pacman -S --needed --noconfirm steam lutris
+EOF
+chmod +x runs/45-gaming
+./run
+```
 
 ## Repository Structure
 
 ```
-.
-├── boot.sh              # Installation entry point
-├── run                  # Package manager
-├── test-vm.sh           # VM testing
-│
-├── config/
-│   └── system.conf      # System defaults
-│
-├── install/             # Installation scripts
-│   ├── 01-disk.sh       # Disk partitioning
-│   ├── 02-base.sh       # Base system
-│   ├── 03-bootloader.sh # Bootloader
-│   └── 04-users.sh      # User creation
-│
-├── runs/                # Package scripts
-│   ├── essential
-│   ├── hyprland
-│   ├── terminal
-│   └── ...
-│
-└── dotfiles/            # Your configs
-    ├── hypr/
-    ├── waybar/
-    ├── nvim/
-    └── ...
+shokunin/
+├── boot.sh           # Main installer
+├── run               # Package manager
+├── update            # System updater
+├── install/          # Installation scripts (disk, base, bootloader, users)
+├── runs/             # Package scripts (00-essential, 10-hyprland, etc.)
+├── dotfiles/         # Configuration files
+│   ├── hypr/         # Hyprland config
+│   ├── waybar/       # Status bar
+│   ├── alacritty/    # Terminal
+│   ├── nvim/         # Neovim
+│   ├── swappy/       # Screenshot config
+│   └── bin/          # Custom scripts
+└── plymouth/         # Boot splash theme
+```
+
+## Testing in VM
+
+```bash
+./test-vm.sh install  # Create VM and boot ISO
+./test-vm.sh boot     # Boot installed system
+./test-vm.sh clean    # Clean up
 ```
 
 ## Troubleshooting
 
-**Installation fails:**
-- Check disk path with `lsblk`
-- Verify UEFI firmware for VM: `sudo pacman -S edk2-ovmf`
+| Problem | Solution |
+|---------|----------|
+| Installation fails | Check disk with `lsblk`, verify UEFI mode |
+| No WiFi | Run `iwctl` to connect manually |
+| Hyprland won't start | Check `journalctl -xe` |
+| No sound | Run `systemctl --user restart pipewire` |
+| USB not mounting | Check `systemctl status udisks2` |
 
-**Package installation fails:**
-- Check internet connection
-- Update mirrors: `sudo pacman -Sy`
+## Credits
 
-**Hyprland won't start:**
-- Check logs: `journalctl -xe`
-- Verify config: `ls ~/.config/hypr/`
+This project draws inspiration from:
+- **Omarchy** by DHH/Basecamp - for the opinionated Arch + Hyprland approach
+- **ThePrimeagen** - for tmux-sessionizer and terminal workflow ideas
 
 ## License
 
 MIT
-
----
-
-**Questions?** The scripts are simple bash - just read them!
