@@ -1,11 +1,12 @@
 #!/bin/bash
 # Monitor switch script - simple and reliable
+# Supports Z13 (1920x1200), Framework 13 2.2K (2256x1504), and Framework 13 2.8K (2880x1920)
 
 LAPTOP="eDP-1"
 
-# Force laptop on (recovery mode)
+# Force laptop on (recovery mode) - auto-detects resolution
 if [[ "$1" == "-l" ]]; then
-    hyprctl keyword monitor "$LAPTOP,1920x1200,0x0,1"
+    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
     exit 0
 fi
 
@@ -16,7 +17,7 @@ if hyprctl monitors all | grep -q "LG UltraFine"; then
     hyprctl keyword monitor "$LAPTOP,disable"
     notify-send -t 3000 "Monitor" "External"
 else
-    # Laptop only
-    hyprctl keyword monitor "$LAPTOP,1920x1200,0x0,1"
+    # Laptop only - auto-detects resolution
+    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
     notify-send -t 3000 "Monitor" "Laptop"
 fi

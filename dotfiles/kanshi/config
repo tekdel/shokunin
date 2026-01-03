@@ -1,10 +1,28 @@
 # Kanshi monitor profiles
+# Supports multiple laptop displays:
+# - Lenovo ThinkPad Z13 Gen 1: 1920x1200
+# - Framework 13 2.2K: 2256x1504
+# - Framework 13 2.8K: 2880x1920
 
 profile external {
     output "LG Electronics LG UltraFine 901NTDV6P994" mode 3840x2160 position 0,0 scale 1
     output eDP-1 disable
 }
 
+# Generic laptop profile - uses preferred mode (auto-detects resolution)
 profile laptop {
-    output eDP-1 enable mode 1920x1200 position 0,0 scale 1
+    output eDP-1 enable
+}
+
+# Specific profiles for known displays (optional, kanshi will auto-select)
+profile z13 {
+    output eDP-1 mode 1920x1200@60Hz position 0,0 scale 1
+}
+
+profile framework_2_2k {
+    output eDP-1 mode 2256x1504@60Hz position 0,0 scale 1
+}
+
+profile framework_2_8k {
+    output eDP-1 mode 2880x1920@120Hz position 0,0 scale 1
 }
