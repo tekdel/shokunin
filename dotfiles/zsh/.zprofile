@@ -32,5 +32,5 @@ export _JAVA_AWT_WM_NONREPARENTING=1
 
 # Auto-start Hyprland on TTY1 if not already running
 if [ "$(tty)" = "/dev/tty1" ] && ! pgrep -x Hyprland >/dev/null 2>&1; then
-    exec Hyprland
+    exec start-hyprland
 fi

@@ -118,6 +118,18 @@ if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
     echo "✓ mise config updated"
 fi
 
+# Rclone config (without tokens - run 'rclone config reconnect gdrive' to authenticate)
+if [ -d "$DOTFILES_DIR/rclone" ]; then
+    mkdir -p ~/.config/rclone
+    # Only copy if no existing config (don't overwrite authenticated config)
+    if [ ! -f ~/.config/rclone/rclone.conf ]; then
+        cp -r "$DOTFILES_DIR/rclone/"* ~/.config/rclone/
+        echo "✓ Rclone config template installed (run 'rclone config reconnect gdrive' to authenticate)"
+    else
+        echo "✓ Rclone config already exists (skipped)"
+    fi
+fi
+
 # Local bin scripts
 if [ -d "$DOTFILES_DIR/bin" ]; then
     cp -r "$DOTFILES_DIR/bin/"* ~/.local/bin/

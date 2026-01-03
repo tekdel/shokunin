@@ -118,8 +118,7 @@ fi
 # PATH
 # ============================================================================
 
-# Add local bin to PATH
-export PATH="$HOME/.local/bin:$PATH"
+# Add bin directories to PATH
 export PATH="$HOME/bin:$PATH"
 
 # Go
