@@ -145,7 +145,10 @@ Graphics drivers installed:
 - **Always bump version** in BOTH files with every commit:
   - `VERSION`
   - `boot.sh` (VERSION variable)
-- **No Claude references** in commit messages - do not mention AI assistance
+- **No Claude references** in commit messages:
+  - Do NOT include "Generated with Claude Code" emoji lines
+  - Do NOT include "Co-Authored-By: Claude" lines
+  - Do NOT mention AI assistance anywhere in the commit message
 - Write clear, descriptive commit messages focused on what changed
 
 ### Testing
