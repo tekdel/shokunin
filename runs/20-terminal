@@ -28,7 +28,8 @@ sudo pacman -S --needed --noconfirm \
     tmux \
     tree \
     jq \
-    tldr
+    tldr \
+    rclone
 
 # Install Oh My Zsh
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
