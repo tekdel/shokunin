@@ -1,28 +1,28 @@
 # Kanshi monitor profiles
-# Supports multiple laptop displays:
-# - Lenovo ThinkPad Z13 Gen 1: 1920x1200
-# - Framework 13 2.2K: 2256x1504
-# - Framework 13 2.8K: 2880x1920
+# Use output descriptions to match specific laptop panels
+# Run 'hyprctl monitors' to find your panel description
 
 profile external {
     output "LG Electronics LG UltraFine 901NTDV6P994" mode 3840x2160 position 0,0 scale 1
     output eDP-1 disable
 }
 
-# Generic laptop profile - uses preferred mode (auto-detects resolution)
-profile laptop {
-    output eDP-1 position 0,0 scale 1
+# Framework 13 2.2K (BOE 0x0BCA panel)
+profile framework_2_2k {
+    output "BOE 0x0BCA" mode 2256x1504@60Hz position 0,0 scale 1
 }
 
-# Specific profiles for known displays (optional, kanshi will auto-select)
+# Framework 13 2.8K panel (add description when known)
+profile framework_2_8k {
+    output eDP-1 mode 2880x1920@120Hz position 0,0 scale 1
+}
+
+# Lenovo ThinkPad Z13 Gen 1 (add panel description when known)
 profile z13 {
     output eDP-1 mode 1920x1200@60Hz position 0,0 scale 1
 }
 
-profile framework_2_2k {
-    output eDP-1 mode 2256x1504@60Hz position 0,0 scale 1
-}
-
-profile framework_2_8k {
-    output eDP-1 mode 2880x1920@120Hz position 0,0 scale 1
+# Fallback for unknown laptops - uses preferred (native) resolution
+profile laptop {
+    output eDP-1 position 0,0 scale 1
 }
