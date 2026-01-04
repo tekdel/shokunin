@@ -11,7 +11,7 @@ profile external {
 
 # Generic laptop profile - uses preferred mode (auto-detects resolution)
 profile laptop {
-    output eDP-1 enable
+    output eDP-1 position 0,0 scale 1
 }
 
 # Specific profiles for known displays (optional, kanshi will auto-select)
