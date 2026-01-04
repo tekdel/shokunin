@@ -31,7 +31,8 @@
         "format-full": "󰁹 Full",
         "format-icons": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
         "tooltip-format": "{timeTo}\n{power:.1f}W",
-        "on-click": "alacritty -e btop"
+        "on-click": "alacritty -e btop",
+        "on-click-right": "~/.local/bin/power-profile"
     },
 
     "network": {

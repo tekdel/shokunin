@@ -1,0 +1,25 @@
+#!/bin/bash
+# power-profile - Switch power profiles using walker
+
+CURRENT=$(powerprofilesctl get)
+PROFILES=$(powerprofilesctl list | grep -E '^\s+\w' | awk '{print $1}' | tr -d ':')
+
+# Mark current profile
+OPTIONS=""
+while IFS= read -r profile; do
+    if [[ "$profile" == "$CURRENT" ]]; then
+        OPTIONS+="$profile (current)\n"
+    else
+        OPTIONS+="$profile\n"
+    fi
+done <<< "$PROFILES"
+
+CHOICE=$(echo -e "$OPTIONS" | walker --dmenu --placeholder "Power Profile")
+
+# Extract profile name (remove " (current)" suffix if present)
+PROFILE=$(echo "$CHOICE" | sed 's/ (current)$//')
+
+if [[ -n "$PROFILE" && "$PROFILE" != "$CURRENT" ]]; then
+    powerprofilesctl set "$PROFILE"
+    notify-send "Power Profile" "Switched to $PROFILE"
+fi
