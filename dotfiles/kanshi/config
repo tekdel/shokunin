@@ -9,7 +9,7 @@ profile external {
 
 # Framework 13 2.2K (BOE 0x0BCA panel)
 profile framework_2_2k {
-    output "BOE 0x0BCA" mode 2256x1504@60Hz position 0,0 scale 1
+    output "BOE 0x0BCA*" mode 2256x1504@60Hz position 0,0 scale 1
 }
 
 # Framework 13 2.8K panel (add description when known)
