@@ -21,7 +21,16 @@
       "WebFetch(domain:api.github.com)",
       "Bash(git reset:*)",
       "Bash(xargs ls:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(mise settings:*)",
+      "Bash(mise doctor:*)",
+      "Bash(mise ls:*)",
+      "Bash(mise current:*)",
+      "Bash(/usr/bin/mise current:*)",
+      "Bash(/usr/bin/mise ls:*)",
+      "Bash(MISE_CONFIG_FILE=/home/andrei/projects/new-backend/.node-version mise current:*)",
+      "Bash(mise:*)",
+      "Bash(echo:*)"
     ]
   }
 }

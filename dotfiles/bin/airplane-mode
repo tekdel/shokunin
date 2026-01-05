@@ -1,0 +1,17 @@
+#!/bin/bash
+# airplane-mode - Toggle airplane mode with notification
+
+# Check current state (if any device is unblocked, we're not in airplane mode)
+if rfkill list | grep -q "Soft blocked: no"; then
+    # Currently off, turn on airplane mode (block all)
+    rfkill block all
+    notify-send -i airplane-mode-symbolic \
+        -h string:x-canonical-private-synchronous:airplane \
+        "Airplane Mode" "Enabled - WiFi and Bluetooth disabled"
+else
+    # Currently on, turn off airplane mode (unblock all)
+    rfkill unblock all
+    notify-send -i network-wireless-symbolic \
+        -h string:x-canonical-private-synchronous:airplane \
+        "Airplane Mode" "Disabled - WiFi and Bluetooth enabled"
+fi

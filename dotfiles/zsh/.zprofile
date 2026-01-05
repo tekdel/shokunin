@@ -3,8 +3,16 @@
 
 # Default programs
 export EDITOR="nvim"
+export VISUAL="nvim"
 export TERMINAL="alacritty"
 export BROWSER="zen-browser"
+
+# Language
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+# Less
+export LESS='-R -F -X'
 
 # XDG Base Directory
 export XDG_CONFIG_HOME="$HOME/.config"
@@ -14,15 +22,15 @@ export XDG_CACHE_HOME="$HOME/.cache"
 # Add local bin to PATH
 export PATH="$HOME/.local/bin:$PATH"
 
-# Mise (version manager)
-if command -v mise >/dev/null 2>&1; then
-    eval "$(mise activate zsh)"
-fi
+# Mise shims (version manager)
+export PATH="$HOME/.local/share/mise/shims:$PATH"
 
 # Go
-if command -v go >/dev/null 2>&1; then
-    export PATH="$PATH:$(go env GOPATH)/bin"
-fi
+export GOPATH="$HOME/go"
+export PATH="$GOPATH/bin:$PATH"
+
+# Rust
+export PATH="$HOME/.cargo/bin:$PATH"
 
 # Wayland-specific
 export MOZ_ENABLE_WAYLAND=1

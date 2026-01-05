@@ -87,9 +87,7 @@ if command -v zoxide >/dev/null 2>&1; then
 fi
 
 # Mise (version manager for languages)
-if command -v mise >/dev/null 2>&1; then
-    eval "$(mise activate zsh)"
-fi
+# Using shims mode - configured in .zprofile
 
 # fzf
 if command -v fzf >/dev/null 2>&1; then
@@ -115,33 +113,11 @@ if command -v fzf >/dev/null 2>&1; then
 fi
 
 # ============================================================================
-# PATH
+# PATH (additional - main PATH config in .zprofile)
 # ============================================================================
 
-# Add bin directories to PATH
+# Add ~/bin to PATH (in addition to ~/.local/bin from .zprofile)
 export PATH="$HOME/bin:$PATH"
-
-# Go
-export GOPATH="$HOME/go"
-export PATH="$GOPATH/bin:$PATH"
-
-# Rust
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# ============================================================================
-# Environment Variables
-# ============================================================================
-
-# Editor
-export EDITOR='nvim'
-export VISUAL='nvim'
-
-# Language
-export LANG=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
-
-# Less
-export LESS='-R -F -X'
 
 # ============================================================================
 # Custom Functions

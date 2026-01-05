@@ -107,6 +107,7 @@ if [ -f "$DOTFILES_DIR/.mise.toml" ]; then
     mkdir -p ~/.config/mise
     cp "$DOTFILES_DIR/.mise.toml" ~/.config/mise/config.toml
     rm -f ~/.mise.toml  # Remove old location
+    rm -f ~/.config/mise/settings.toml  # Remove old separate settings file
     echo "✓ mise config updated"
 fi
 

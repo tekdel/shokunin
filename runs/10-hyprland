@@ -33,7 +33,8 @@ sudo pacman -S --needed --noconfirm \
 paru -S --needed --noconfirm --skipreview \
     walker-bin \
     elephant-desktopapplications \
-    elephant-runner
+    elephant-runner \
+    swayosd-git
 
 # Wallpaper and theming
 sudo pacman -S --needed --noconfirm \
