@@ -51,6 +51,13 @@ if pacman -Q rust &>/dev/null; then
     fi
 fi
 
+# Ensure user is in docker group if docker is installed
+if command -v docker &>/dev/null && ! groups | grep -q docker; then
+    echo "Adding user to docker group..."
+    sudo usermod -aG docker "$USER"
+    echo "✓ Added $USER to docker group (log out and back in to apply)"
+fi
+
 # Fix DNS configuration for systemd-resolved
 # /etc/resolv.conf should be a symlink to systemd-resolved's stub resolver
 if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then

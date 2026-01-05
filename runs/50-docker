@@ -14,13 +14,10 @@ paru -S --needed --noconfirm --skipreview \
 sudo systemctl enable docker || echo "Note: systemctl enable may fail in chroot - docker will be enabled on first boot"
 
 # Add current user to docker group
-if [ -n "$SUDO_USER" ]; then
-    sudo usermod -aG docker "$SUDO_USER"
-    echo "User $SUDO_USER added to docker group"
-    echo "Note: Log out and back in for group changes to take effect"
-elif [ -n "$USER" ]; then
-    sudo usermod -aG docker "$USER"
-    echo "User $USER added to docker group"
+TARGET_USER="${SUDO_USER:-$USER}"
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+    sudo usermod -aG docker "$TARGET_USER"
+    echo "✓ User $TARGET_USER added to docker group"
     echo "Note: Log out and back in for group changes to take effect"
 fi
 
