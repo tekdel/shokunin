@@ -16,9 +16,9 @@ sudo pacman -S --needed --noconfirm \
     mpv \
     imv
 
-# Screen recording (GPU-accelerated with GUI, webcam + audio support)
+# Screen recording (GPU-accelerated with overlay UI, audio support)
 paru -S --needed --noconfirm --skipreview \
-    gpu-screen-recorder-gtk
+    gpu-screen-recorder-ui
 
 # PDF viewer
 sudo pacman -S --needed --noconfirm \
