@@ -20,6 +20,11 @@ sudo pacman -S --needed --noconfirm \
     go \
     rustup
 
+# Infrastructure as Code
+sudo pacman -S --needed --noconfirm \
+    terraform \
+    terragrunt
+
 # Refresh shell's command cache so mise is found
 hash -r
 
