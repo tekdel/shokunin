@@ -87,7 +87,9 @@ if command -v zoxide >/dev/null 2>&1; then
 fi
 
 # Mise (version manager for languages)
-# Using shims mode - configured in .zprofile
+if command -v mise >/dev/null 2>&1; then
+    eval "$(mise activate zsh)"
+fi
 
 # fzf
 if command -v fzf >/dev/null 2>&1; then

@@ -22,9 +22,6 @@ export XDG_CACHE_HOME="$HOME/.cache"
 # Add local bin to PATH
 export PATH="$HOME/.local/bin:$PATH"
 
-# Mise shims (version manager)
-export PATH="$HOME/.local/share/mise/shims:$PATH"
-
 # Go
 export GOPATH="$HOME/go"
 export PATH="$GOPATH/bin:$PATH"

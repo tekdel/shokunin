@@ -30,7 +30,8 @@
       "Bash(/usr/bin/mise ls:*)",
       "Bash(MISE_CONFIG_FILE=/home/andrei/projects/new-backend/.node-version mise current:*)",
       "Bash(mise:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(MISE_DEBUG=1 mise current:*)"
     ]
   }
 }
