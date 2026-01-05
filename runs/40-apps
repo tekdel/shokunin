@@ -16,9 +16,9 @@ sudo pacman -S --needed --noconfirm \
     mpv \
     imv
 
-# Screen recording (Wayland)
-sudo pacman -S --needed --noconfirm \
-    wf-recorder
+# Screen recording (GPU-accelerated with GUI, webcam + audio support)
+paru -S --needed --noconfirm --skipreview \
+    gpu-screen-recorder-gtk
 
 # PDF viewer
 sudo pacman -S --needed --noconfirm \
