@@ -1,0 +1,12 @@
+[general]
+fullscreen = false
+early-exit = false
+initial-tool = "brush"
+copy-command = "wl-copy"
+output-filename = "~/pictures/screenshots/screenshot-%Y%m%d-%H%M%S.png"
+save-after-copy = true
+default-hide-toolbars = false
+
+[font]
+family = "sans-serif"
+style = "Regular"

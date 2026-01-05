@@ -1,5 +1,15 @@
 #!/bin/bash
 # Screenshot script for Hyprland
-# Takes a screenshot of selected area and opens in swappy
+# Takes a screenshot, saves automatically, and opens in satty for editing
+# Usage: screenshot [--fullscreen]
 
-grim -g "$(slurp)" - | swappy -f -
+SCREENSHOT_DIR="$HOME/pictures/screenshots"
+mkdir -p "$SCREENSHOT_DIR"
+
+FILENAME="$SCREENSHOT_DIR/screenshot-$(date '+%Y%m%d-%H%M%S').png"
+
+if [[ "$1" == "--fullscreen" ]]; then
+    grim "$FILENAME" && satty --filename "$FILENAME" --output-filename "$FILENAME"
+else
+    grim -g "$(slurp)" "$FILENAME" && satty --filename "$FILENAME" --output-filename "$FILENAME"
+fi

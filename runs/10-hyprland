@@ -19,7 +19,6 @@ sudo pacman -S --needed --noconfirm \
     mako \
     grim \
     slurp \
-    swappy \
     satty \
     wl-clipboard \
     cliphist \

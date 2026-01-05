@@ -52,11 +52,11 @@ if [ -d "$DOTFILES_DIR/kanshi" ]; then
     echo "✓ Kanshi config updated"
 fi
 
-# Swappy (screenshot editor)
-if [ -d "$DOTFILES_DIR/swappy" ]; then
-    mkdir -p ~/.config/swappy
-    cp -r "$DOTFILES_DIR/swappy/"* ~/.config/swappy/
-    echo "✓ Swappy config updated"
+# Satty (screenshot editor)
+if [ -d "$DOTFILES_DIR/satty" ]; then
+    mkdir -p ~/.config/satty
+    cp -r "$DOTFILES_DIR/satty/"* ~/.config/satty/
+    echo "✓ Satty config updated"
 fi
 
 # Create media directories
