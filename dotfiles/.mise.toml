@@ -1,5 +1,9 @@
 [settings]
 legacy_version_file = true
+idiomatic_version_file_enable_tools = ["node"]
+
+[settings.node]
+gpg_verify = false
 
 [tools]
 node = "lts"
