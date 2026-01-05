@@ -40,6 +40,8 @@ window#waybar {
 }
 
 /* Right modules */
+#cpu,
+#memory,
 #battery,
 #network,
 #bluetooth,

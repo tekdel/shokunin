@@ -2,24 +2,31 @@
 # power-profile - Switch power profiles using walker
 
 CURRENT=$(powerprofilesctl get)
-PROFILES=$(powerprofilesctl list | grep -E '^\s+\w' | awk '{print $1}' | tr -d ':')
 
-# Mark current profile
+# Define profiles with friendly names
+declare -A PROFILES=(
+    ["Power Saver"]="power-saver"
+    ["Balanced"]="balanced"
+    ["Performance"]="performance"
+)
+
+# Build options with current marker
 OPTIONS=""
-while IFS= read -r profile; do
-    if [[ "$profile" == "$CURRENT" ]]; then
-        OPTIONS+="$profile (current)\n"
+for name in "Power Saver" "Balanced" "Performance"; do
+    if [[ "${PROFILES[$name]}" == "$CURRENT" ]]; then
+        OPTIONS+="$name (current)\n"
     else
-        OPTIONS+="$profile\n"
+        OPTIONS+="$name\n"
     fi
-done <<< "$PROFILES"
+done
 
 CHOICE=$(echo -e "$OPTIONS" | walker --dmenu --placeholder "Power Profile")
 
-# Extract profile name (remove " (current)" suffix if present)
-PROFILE=$(echo "$CHOICE" | sed 's/ (current)$//')
+# Extract name (remove " (current)" suffix if present)
+NAME=$(echo "$CHOICE" | sed 's/ (current)$//')
+PROFILE="${PROFILES[$NAME]}"
 
 if [[ -n "$PROFILE" && "$PROFILE" != "$CURRENT" ]]; then
     powerprofilesctl set "$PROFILE"
-    notify-send "Power Profile" "Switched to $PROFILE"
+    notify-send "Power Profile" "Switched to $NAME"
 fi
