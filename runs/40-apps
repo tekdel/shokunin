@@ -16,9 +16,9 @@ sudo pacman -S --needed --noconfirm \
     mpv \
     imv
 
-# Screen recording (GPU-accelerated with overlay UI, audio support)
-paru -S --needed --noconfirm --skipreview \
-    gpu-screen-recorder-ui
+# Screen recording (OBS Studio - full featured with webcam, audio, scenes)
+sudo pacman -S --needed --noconfirm \
+    obs-studio
 
 # PDF viewer
 sudo pacman -S --needed --noconfirm \
