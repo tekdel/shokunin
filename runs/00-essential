@@ -121,6 +121,13 @@ DNS=1.1.1.1 8.8.8.8
 FallbackDNS=1.0.0.1 8.8.4.4
 EOF
 
+# Create symlink for /etc/resolv.conf to systemd-resolved stub resolver
+echo "Configuring /etc/resolv.conf symlink..."
+if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
+    sudo rm /etc/resolv.conf
+fi
+sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
 # Configure fast shutdown (5 second timeout instead of 90s default)
 echo "Configuring fast shutdown..."
 sudo mkdir -p /etc/systemd/system.conf.d

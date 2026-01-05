@@ -176,7 +176,13 @@ install_aur_helper() {
 
     # Pre-install build dependencies to avoid sudo prompts during makepkg
     log "Installing paru build dependencies..."
-    pacman -S --needed --noconfirm rust git base-devel
+    pacman -S --needed --noconfirm rustup git base-devel
+
+    # Initialize rustup so cargo is available for building paru
+    if ! rustup show active-toolchain &>/dev/null; then
+        log "Initializing Rust toolchain via rustup..."
+        rustup default stable
+    fi
 
     # Clean up any previous failed attempts
     rm -rf /tmp/paru

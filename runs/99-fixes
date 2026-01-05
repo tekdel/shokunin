@@ -32,5 +32,34 @@ if grep -q "plymouth-encrypt" /etc/mkinitcpio.conf 2>/dev/null; then
     echo "✓ Plymouth hooks fixed"
 fi
 
+# Fix rust/rustup conflict (rust package conflicts with rustup)
+if pacman -Q rust &>/dev/null; then
+    echo "Fixing rust/rustup conflict..."
+    sudo pacman -R --noconfirm rust
+    echo "✓ rust package removed"
+
+    # Install rustup if not present
+    if ! pacman -Q rustup &>/dev/null; then
+        sudo pacman -S --needed --noconfirm rustup
+        echo "✓ rustup installed"
+    fi
+
+    # Initialize rustup if needed
+    if ! rustup show active-toolchain &>/dev/null; then
+        rustup default stable
+        echo "✓ Rust stable toolchain initialized"
+    fi
+fi
+
+# Fix DNS configuration for systemd-resolved
+# /etc/resolv.conf should be a symlink to systemd-resolved's stub resolver
+if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
+    echo "Fixing DNS configuration (systemd-resolved)..."
+    echo "Creating symlink: /etc/resolv.conf -> /run/systemd/resolve/stub-resolv.conf"
+    sudo cp /etc/resolv.conf /etc/resolv.conf.backup
+    sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    echo "✓ DNS configuration fixed (old config backed up to /etc/resolv.conf.backup)"
+fi
+
 echo ""
 echo "System fixes applied!"

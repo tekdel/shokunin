@@ -21,7 +21,12 @@ sudo pacman -S --needed --noconfirm \
     starship \
     bat \
     eza \
-    delta
+    git-delta
+
+# Neovim dependencies
+sudo pacman -S --needed --noconfirm \
+    lua51 \
+    luarocks
 
 # Other useful CLI tools
 sudo pacman -S --needed --noconfirm \

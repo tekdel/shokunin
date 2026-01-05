@@ -275,7 +275,7 @@ require('lazy').setup({
   { -- Fuzzy Finder (files, lsp, etc)
     'nvim-telescope/telescope.nvim',
     event = 'VimEnter',
-    branch = '0.1.x',
+    branch = 'master',
     dependencies = {
       'nvim-lua/plenary.nvim',
       { -- If encountering errors, see telescope-fzf-native README for installation instructions
@@ -897,7 +897,7 @@ require('lazy').setup({
       -- [[ Configure Treesitter ]] See `:help nvim-treesitter`
 
       ---@diagnostic disable-next-line: missing-fields
-      require('nvim-treesitter.configs').setup(opts)
+      require('nvim-treesitter').setup(opts)
 
       -- There are additional nvim-treesitter modules that you can use to interact
       -- with nvim-treesitter. You should go explore a few and see what interests you:
@@ -931,7 +931,7 @@ require('lazy').setup({
       'mxsdev/nvim-dap-vscode-js',
       {
         'microsoft/vscode-js-debug',
-        build = 'npm ci --loglevel=error && npx gulp vsDebugServerBundle && mv dist out',
+        build = 'npm ci --ignore-scripts --loglevel=error && npx gulp vsDebugServerBundle && mv dist out',
       },
     },
     config = function()
@@ -1011,22 +1011,10 @@ require('lazy').setup({
       -- Install golang specific config
       require('dap-go').setup()
 
-      -- Install node specific config
-      dap.adapters['pwa-node'] = {
-        type = 'server',
-        host = '::1',
-        port = '${port}',
-        executable = {
-          -- command = "node",
-          -- -- 💀 Make sure to update this path to point to your installation
-          -- args = { "/path/to/js-debug/src/dapDebugServer.js", "${port}" },
-          command = 'js-debug-adapter',
-          args = { '${port}' },
-          outFiles = {
-            '${workspaceFolder}/**/*.(m|c|)js',
-            '!**/node_modules/**',
-          },
-        },
+      -- Install node/typescript specific config using vscode-js-debug
+      require('dap-vscode-js').setup {
+        debugger_path = vim.fn.stdpath 'data' .. '/lazy/vscode-js-debug',
+        adapters = { 'pwa-node', 'pwa-chrome', 'pwa-msedge', 'node-terminal', 'pwa-extensionHost' },
       }
 
       for _, language in ipairs { 'typescript', 'javascript' } do

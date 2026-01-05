@@ -32,18 +32,10 @@ if [ -d "$DOTFILES_DIR/alacritty" ]; then
     echo "✓ Alacritty config updated"
 fi
 
-# Neovim
+# Neovim (lazy.nvim will auto-bootstrap on first launch)
 if [ -d "$DOTFILES_DIR/nvim" ]; then
     cp -r "$DOTFILES_DIR/nvim/"* ~/.config/nvim/
-    echo "✓ Neovim config updated"
-fi
-
-# Bootstrap lazy.nvim for Neovim
-LAZY_PATH="$HOME/.local/share/nvim/lazy/lazy.nvim"
-if [ ! -d "$LAZY_PATH" ]; then
-    echo "Bootstrapping lazy.nvim..."
-    git clone --filter=blob:none --branch=stable https://github.com/folke/lazy.nvim.git "$LAZY_PATH"
-    echo "✓ lazy.nvim installed"
+    echo "✓ Neovim config updated (plugins will install on first launch)"
 fi
 
 # btop
