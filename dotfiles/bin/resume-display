@@ -1,0 +1,23 @@
+#!/bin/bash
+# Resume display after sleep/hibernate
+# Ensures at least one monitor is enabled
+
+LAPTOP="eDP-1"
+
+# Wait a moment for hardware to initialize
+sleep 1
+
+# Turn on DPMS
+hyprctl dispatch dpms on
+
+# Force laptop display on as fallback (will be overridden by kanshi/monitor-switch if external connected)
+hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+
+# Wait for monitor detection
+sleep 1
+
+# Run monitor-switch to configure the correct setup
+~/.local/bin/monitor-switch
+
+# Reload kanshi to re-apply profiles
+pkill -USR1 kanshi || kanshictl reload 2>/dev/null || true
