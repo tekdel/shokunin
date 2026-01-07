@@ -10,14 +10,14 @@ sleep 1
 # Turn on DPMS
 hyprctl dispatch dpms on
 
-# Force laptop display on as fallback (will be overridden by kanshi/monitor-switch if external connected)
-hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+# Check if any monitor is active
+ACTIVE_MONITORS=$(hyprctl monitors -j | jq 'length')
 
-# Wait for monitor detection
-sleep 1
+if [ "$ACTIVE_MONITORS" -eq 0 ]; then
+    # No monitors - force laptop on as emergency fallback
+    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    sleep 1
+fi
 
 # Run monitor-switch to configure the correct setup
 ~/.local/bin/monitor-switch
-
-# Reload kanshi to re-apply profiles
-pkill -USR1 kanshi || kanshictl reload 2>/dev/null || true
