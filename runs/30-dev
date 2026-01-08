@@ -18,7 +18,8 @@ sudo pacman -S --needed --noconfirm \
     shfmt \
     mise \
     go \
-    rustup
+    rustup \
+    redis
 
 # Infrastructure as Code
 sudo pacman -S --needed --noconfirm \

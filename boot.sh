@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="2.0.12"
+VERSION="2.0.14"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash

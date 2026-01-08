@@ -35,7 +35,8 @@ sudo pacman -S --needed --noconfirm \
 
 # Development & Database
 paru -S --needed --noconfirm --skipreview \
-    dbeaver
+    dbeaver \
+    visual-studio-code-bin
 
 # Music & Entertainment
 paru -S --needed --noconfirm --skipreview \
