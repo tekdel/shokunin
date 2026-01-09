@@ -11,13 +11,20 @@ if [[ "$1" == "-l" ]]; then
 fi
 
 # Check if external monitor is connected
-if hyprctl monitors all | grep -q "LG UltraFine"; then
+# Use 'hyprctl monitors all' to see all monitors including disabled ones
+external_connected=$(hyprctl monitors all | grep -c "LG UltraFine" || true)
+
+if [ "$external_connected" -gt 0 ]; then
     # External connected
     hyprctl keyword monitor "desc:LG Electronics LG UltraFine 901NTDV6P994,3840x2160,0x0,1"
     hyprctl keyword monitor "$LAPTOP,disable"
     notify-send -t 3000 "Monitor" "External"
 else
-    # Laptop only - auto-detects resolution
+    # Laptop only - force enable first (in case it was disabled), then configure
+    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    # Small delay to let the display initialize
+    sleep 0.3
+    # Re-apply to ensure proper configuration
     hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
     notify-send -t 3000 "Monitor" "Laptop"
 fi
