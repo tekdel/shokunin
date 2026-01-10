@@ -98,6 +98,22 @@ return {
           },
         },
       },
+      -- Rust
+      rust_analyzer = {
+        settings = {
+          ['rust-analyzer'] = {
+            checkOnSave = {
+              command = 'clippy',
+            },
+            cargo = {
+              allFeatures = true,
+            },
+            procMacro = {
+              enable = true,
+            },
+          },
+        },
+      },
       -- Markdown
       markdown_oxide = {
         root_dir = lspconfig.util.root_pattern('.git', vim.fn.getcwd()),
@@ -123,6 +139,8 @@ return {
       'eslint_d', -- JS/TS linter
       'js-debug-adapter', -- JS/TS debugger
       'delve', -- Go debugger
+      'codelldb', -- Rust/C/C++ debugger
+      'rust-analyzer', -- Rust LSP
     })
     require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
