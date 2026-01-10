@@ -9,9 +9,19 @@ profile external {
     exec notify-send -t 3000 "Monitor" "External"
 }
 
-# Laptop only - matches when external is disconnected
-# Note: Must use eDP-1 (not description) because kanshi can't match disabled outputs
-# Note: eDP-1 must be explicitly listed in 'external' profile for proper matching
+# Framework 13 2.2K (laptop only)
+profile framework {
+    output "BOE 0x0BCA*" enable mode 2256x1504@60Hz position 0,0 scale 1
+    exec notify-send -t 3000 "Monitor" "Framework Laptop"
+}
+
+# Lenovo ThinkPad Z13 Gen 1 (laptop only)
+profile z13 {
+    output "Lenovo Group Limited 0x41A6*" enable mode 1920x1200@60Hz position 0,0 scale 1
+    exec notify-send -t 3000 "Monitor" "Z13 Laptop"
+}
+
+# Fallback for other laptops
 profile laptop {
     output eDP-1 enable position 0,0
     exec notify-send -t 3000 "Monitor" "Laptop"
