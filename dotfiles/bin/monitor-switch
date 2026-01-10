@@ -10,9 +10,9 @@ if [[ "$1" == "-l" ]]; then
     exit 0
 fi
 
-# Check if external monitor is connected
-# Use 'hyprctl monitors all' to see all monitors including disabled ones
-external_connected=$(hyprctl monitors all | grep -c "LG UltraFine" || true)
+# Check if external monitor is currently active
+# Use 'hyprctl monitors' (not 'all') to only see active monitors
+external_connected=$(hyprctl monitors | grep -c "LG UltraFine" || true)
 
 if [ "$external_connected" -gt 0 ]; then
     # External connected

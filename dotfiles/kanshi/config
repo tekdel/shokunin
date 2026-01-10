@@ -1,28 +1,16 @@
 # Kanshi monitor profiles
-# Use output descriptions to match specific laptop panels
 # Run 'hyprctl monitors' to find your panel description
 
+# External monitor with laptop disabled
+# Note: eDP-1 must be listed for kanshi to match this profile when both are connected
 profile external {
     output "LG Electronics LG UltraFine 901NTDV6P994" mode 3840x2160 position 0,0 scale 1
     output eDP-1 disable
+    exec notify-send -t 3000 "Monitor" "External"
 }
 
-# Framework 13 2.2K (BOE 0x0BCA panel)
+# Framework 13 2.2K (laptop only) - matches when external is disconnected
 profile framework_2_2k {
-    output "BOE 0x0BCA*" mode 2256x1504@60Hz position 0,0 scale 1
-}
-
-# Framework 13 2.8K panel (add description when known)
-profile framework_2_8k {
-    output eDP-1 mode 2880x1920@120Hz position 0,0 scale 1
-}
-
-# Lenovo ThinkPad Z13 Gen 1 (add panel description when known)
-profile z13 {
-    output eDP-1 mode 1920x1200@60Hz position 0,0 scale 1
-}
-
-# Fallback for unknown laptops - uses preferred (native) resolution
-profile laptop {
-    output eDP-1 position 0,0 scale 1
+    output eDP-1 enable mode 2256x1504@60Hz position 0,0 scale 1
+    exec notify-send -t 3000 "Monitor" "Laptop"
 }
