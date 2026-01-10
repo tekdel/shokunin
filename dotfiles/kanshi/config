@@ -2,15 +2,14 @@
 # Run 'hyprctl monitors' to find your panel description
 
 # External monitor with laptop disabled
-# Note: eDP-1 must be listed for kanshi to match this profile when both are connected
 profile external {
     output "LG Electronics LG UltraFine 901NTDV6P994" mode 3840x2160 position 0,0 scale 1
     output eDP-1 disable
     exec notify-send -t 3000 "Monitor" "External"
 }
 
-# Framework 13 2.2K (laptop only) - matches when external is disconnected
-profile framework_2_2k {
-    output eDP-1 enable mode 2256x1504@60Hz position 0,0 scale 1
+# Laptop only - uses native resolution (works for Z13, Framework, etc.)
+profile laptop {
+    output eDP-1 enable
     exec notify-send -t 3000 "Monitor" "Laptop"
 }
