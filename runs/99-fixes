@@ -68,5 +68,14 @@ if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
     echo "✓ DNS configuration fixed (old config backed up to /etc/resolv.conf.backup)"
 fi
 
+# Set Chrome Canary as default browser (if installed)
+if [ -f /usr/share/applications/google-chrome-canary.desktop ]; then
+    echo "Setting Chrome Canary as default browser..."
+    for mime in x-scheme-handler/http x-scheme-handler/https x-scheme-handler/chrome text/html application/xhtml+xml; do
+        xdg-mime default google-chrome-canary.desktop "$mime"
+    done
+    echo "✓ Chrome Canary set as default browser"
+fi
+
 echo ""
 echo "System fixes applied!"
