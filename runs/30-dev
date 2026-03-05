@@ -24,7 +24,8 @@ sudo pacman -S --needed --noconfirm \
 # Infrastructure as Code
 sudo pacman -S --needed --noconfirm \
     terraform \
-    terragrunt
+    terragrunt \
+    aws-cli-v2
 
 # Refresh shell's command cache so mise is found
 hash -r

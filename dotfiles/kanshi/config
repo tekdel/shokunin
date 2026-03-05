@@ -1,12 +1,18 @@
 # Kanshi monitor profiles
 # Run 'hyprctl monitors' to find your panel description
 
-# External monitor with laptop disabled
-# Note: eDP-1 must be listed for kanshi to match this profile when both are connected
-profile external {
+# KTC H27P3 5K monitor with laptop disabled
+profile ktc-5k {
+    output "Shenzhen KTC Technology Group H27P3*" mode 5120x2880 position 0,0 scale 2
+    output eDP-1 disable
+    exec notify-send -t 3000 "Monitor" "KTC 5K"
+}
+
+# LG UltraFine with laptop disabled
+profile ultrafine {
     output "LG Electronics LG UltraFine 901NTDV6P994" mode 3840x2160 position 0,0 scale 1
     output eDP-1 disable
-    exec notify-send -t 3000 "Monitor" "External"
+    exec notify-send -t 3000 "Monitor" "UltraFine"
 }
 
 # Framework 13 2.2K (laptop only)

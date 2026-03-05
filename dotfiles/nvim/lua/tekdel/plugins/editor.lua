@@ -136,12 +136,6 @@ return {
   -- Detect tabstop/shiftwidth
   'tpope/vim-sleuth',
 
-  -- File tree
-  {
-    'nvim-tree/nvim-tree.lua',
-    opts = {},
-  },
-
   -- Todo comments
   {
     'folke/todo-comments.nvim',
