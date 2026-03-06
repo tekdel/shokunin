@@ -1,6 +1,10 @@
 #!/bin/bash
 # runs/apps - Optional applications
 
+# Web browser
+paru -S --needed --noconfirm --skipreview \
+    google-chrome
+
 # File manager and thumbnails
 sudo pacman -S --needed --noconfirm \
     nautilus \
