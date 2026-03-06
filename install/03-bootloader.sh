@@ -22,7 +22,7 @@ if [ -e /dev/mapper/cryptroot ]; then
     DISK=$(lsblk -no PKNAME "$CRYPT_PART" | head -1)
 
     # Kernel command line with encryption (silent boot with Plymouth)
-    CMDLINE="cryptdevice=UUID=$CRYPT_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash plymouth.nolog"
+    CMDLINE="cryptdevice=UUID=$CRYPT_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash plymouth.nolog nvidia_drm.modeset=1"
 else
     # Non-encrypted system (shouldn't happen with our setup)
     ROOT_PART=$(findmnt -n -o SOURCE /)
@@ -31,7 +31,7 @@ else
     # Get the disk device using lsblk
     DISK=$(lsblk -no PKNAME "$ROOT_PART" | head -1)
 
-    CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash plymouth.nolog"
+    CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 splash plymouth.nolog nvidia_drm.modeset=1"
 fi
 
 log "Using disk: $DISK"

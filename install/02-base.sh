@@ -45,6 +45,9 @@ PACKAGES=(
     vulkan-radeon
     vulkan-intel
     libva-mesa-driver
+    nvidia-dkms
+    nvidia-utils
+    linux-headers
 )
 
 log "Installing packages: ${PACKAGES[*]}"
