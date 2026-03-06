@@ -175,13 +175,16 @@ install_aur_helper() {
     log "Installing paru (AUR helper) for user: $user"
 
     # Pre-install build dependencies to avoid sudo prompts during makepkg
-    log "Installing paru build dependencies..."
+    log "Syncing package databases and installing paru build dependencies..."
+    pacman -Sy --noconfirm
     pacman -S --needed --noconfirm rustup git base-devel
 
     # Initialize rustup for the build user so cargo is available for building paru
-    if ! sudo -u "$user" rustup show active-toolchain &>/dev/null; then
+    local user_home
+    user_home=$(eval echo ~"$user")
+    if ! sudo -u "$user" env PATH="$user_home/.cargo/bin:$PATH" rustup show active-toolchain &>/dev/null; then
         log "Initializing Rust toolchain via rustup for $user..."
-        sudo -u "$user" rustup default stable
+        sudo -u "$user" env PATH="$user_home/.cargo/bin:$PATH" rustup default stable
     fi
 
     # Clean up any previous failed attempts
@@ -197,7 +200,8 @@ install_aur_helper() {
     # Note: "Failed to connect to bus/scope" warnings are expected in chroot (no systemd)
     # We check if paru is installed after regardless of makepkg exit code
     # Using -i only (not -s) since deps are pre-installed
-    sudo -u "$user" bash -c 'cd /tmp/paru && makepkg -i --noconfirm' || true
+    # Explicitly add cargo to PATH since sudo doesn't source user's shell profile
+    sudo -u "$user" bash -c "export PATH=\"$user_home/.cargo/bin:\$PATH\" && cd /tmp/paru && makepkg -i --noconfirm" || true
 
     # Clean up
     rm -rf /tmp/paru

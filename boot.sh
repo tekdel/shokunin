@@ -13,7 +13,7 @@ fi
 set -e
 
 # Version - increment with every commit
-VERSION="2.0.23"
+VERSION="2.0.24"
 
 # Check for minimal install flag (bootloader test mode)
 # Can be set via: ./boot.sh --minimal OR MINIMAL_INSTALL=true curl ... | bash
@@ -26,7 +26,7 @@ fi
 RESUME_FROM=""
 if [[ "$1" == "--resume-from" ]] && [[ -n "$2" ]]; then
     RESUME_FROM="$2"
-    log "Resuming from checkpoint: $RESUME_FROM"
+    echo "[*] Resuming from checkpoint: $RESUME_FROM"
 fi
 
 # Checkpoint helper function
@@ -294,6 +294,13 @@ echo -n "$TIMEZONE" > /mnt/root/installer/.timezone
 echo -n "$MINIMAL_INSTALL" > /mnt/root/installer/.minimal_install
 chmod 600 /mnt/root/installer/.user_password /mnt/root/installer/.root_password
 
+# Pass resume checkpoint into chroot
+if [ -n "$RESUME_FROM" ]; then
+    echo -n "$RESUME_FROM" > /mnt/root/installer/.resume_from
+else
+    rm -f /mnt/root/installer/.resume_from
+fi
+
 # Phase 2: System configuration (run inside chroot)
 log "Entering chroot environment..."
 arch-chroot /mnt /bin/bash <<'CHROOT_EOF'
@@ -302,6 +309,11 @@ set -e
 cd /root/installer
 source ./lib/common.sh
 source ./config/system.conf
+
+# Read resume checkpoint if saved by outer script
+if [ -f /root/installer/.resume_from ]; then
+    RESUME_FROM="$(cat /root/installer/.resume_from)"
+fi
 
 # Read variables from files (heredoc with single quotes doesn't expand vars)
 export USERNAME="$(cat /root/installer/.username)"
