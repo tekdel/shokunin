@@ -100,5 +100,29 @@ EOF
     fi
 fi
 
+# Fix MediaTek MT79xx WiFi on AMD systems (IOMMU page fault prevents firmware upload)
+if lspci | grep -qi 'mediatek.*mt79' && grep -qi 'amd' /proc/cpuinfo; then
+    LIMINE_CONF=""
+    if [ -f /boot/limine/limine.conf ]; then
+        LIMINE_CONF="/boot/limine/limine.conf"
+    elif [ -f /boot/EFI/BOOT/limine.conf ]; then
+        LIMINE_CONF="/boot/EFI/BOOT/limine.conf"
+    elif [ -f /boot/limine.conf ]; then
+        LIMINE_CONF="/boot/limine.conf"
+    fi
+
+    if [ -n "$LIMINE_CONF" ]; then
+        if grep -q 'iommu=soft' "$LIMINE_CONF"; then
+            echo "Upgrading iommu=soft to iommu=pt for MediaTek WiFi on AMD..."
+            sudo sed -i 's/iommu=soft/iommu=pt/g' "$LIMINE_CONF"
+            echo "Updated iommu=soft -> iommu=pt in $LIMINE_CONF (reboot required)"
+        elif ! grep -q 'iommu=pt' "$LIMINE_CONF"; then
+            echo "Adding iommu=pt for MediaTek WiFi on AMD..."
+            sudo sed -i 's/^\(    cmdline:.*\)/\1 iommu=pt/' "$LIMINE_CONF"
+            echo "Added iommu=pt to $LIMINE_CONF (reboot required)"
+        fi
+    fi
+fi
+
 echo ""
 echo "System fixes applied!"

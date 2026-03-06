@@ -8,6 +8,7 @@ echo "Updating dotfiles from repository..."
 
 # Create config directories
 mkdir -p ~/.config/hypr
+mkdir -p ~/.config/xdg-desktop-portal
 mkdir -p ~/.config/waybar
 mkdir -p ~/.config/alacritty
 mkdir -p ~/.config/nvim
@@ -19,6 +20,10 @@ if [ -d "$DOTFILES_DIR/hypr" ]; then
     # Copy all hypr configs except nvidia.conf (conditionally added below)
     find "$DOTFILES_DIR/hypr" -maxdepth 1 -type f ! -name "nvidia.conf" -exec cp {} ~/.config/hypr/ \;
     echo "✓ Hyprland config updated"
+
+    # Portal config for screen sharing
+    cp "$DOTFILES_DIR/hypr/xdg-portal.conf" ~/.config/xdg-desktop-portal/hyprland-portals.conf
+    echo "✓ XDG portal config updated"
 
     # Copy NVIDIA config only if an NVIDIA GPU is present
     if lspci | grep -qi 'nvidia'; then
@@ -54,6 +59,21 @@ if [ -d "$DOTFILES_DIR/btop" ]; then
     mkdir -p ~/.config/btop
     cp -r "$DOTFILES_DIR/btop/"* ~/.config/btop/
     echo "✓ btop config updated"
+fi
+
+# Fontconfig (font rendering)
+if [ -d "$DOTFILES_DIR/fontconfig" ]; then
+    mkdir -p ~/.config/fontconfig
+    cp -r "$DOTFILES_DIR/fontconfig/"* ~/.config/fontconfig/
+    fc-cache -f
+    echo "✓ Fontconfig updated"
+fi
+
+# Chrome flags (Wayland native + PipeWire screen sharing)
+if [ -d "$DOTFILES_DIR/chrome" ]; then
+    cp "$DOTFILES_DIR/chrome/chrome-flags.conf" ~/.config/chrome-flags.conf
+    cp "$DOTFILES_DIR/chrome/chrome-flags.conf" ~/.config/google-chrome-canary-flags.conf
+    echo "✓ Chrome flags updated"
 fi
 
 # Kanshi (monitor hotplug)

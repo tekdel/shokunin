@@ -34,8 +34,8 @@ sudo pacman -S --needed --noconfirm \
 # System76 firmware (only on System76 hardware)
 if sudo dmidecode -s system-manufacturer 2>/dev/null | grep -qi 'system76'; then
     echo "System76 hardware detected, installing firmware tools..."
-    paru -S --needed --noconfirm --skipreview \
-        system76-firmware
+    sudo pacman -S --needed --noconfirm system76-firmware
+    sudo systemctl enable --now system76-firmware-daemon
 fi
 
 sudo pacman -S --needed --noconfirm \

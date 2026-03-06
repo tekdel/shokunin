@@ -40,6 +40,12 @@ if lspci | grep -qi 'nvidia'; then
     log "NVIDIA GPU detected, added nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
 fi
 
+# Add iommu=soft for AMD systems with MediaTek WiFi (fixes firmware upload failure)
+if lspci | grep -qi 'mediatek.*mt79' && grep -qi 'amd' /proc/cpuinfo; then
+    CMDLINE="$CMDLINE iommu=soft"
+    log "AMD + MediaTek WiFi detected, added iommu=soft"
+fi
+
 log "Using disk: $DISK"
 
 # Validate disk was detected

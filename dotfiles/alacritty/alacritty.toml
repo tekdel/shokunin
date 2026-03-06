@@ -1,7 +1,7 @@
 # Alacritty configuration - Gruvbox Dark Medium
 
 [window]
-opacity = 0.95
+opacity = 1.0
 padding = { x = 10, y = 10 }
 
 [font]

@@ -24,6 +24,19 @@ fi
 # Early loading conflicts with Plymouth's LUKS password prompt.
 # The kms hook + nvidia_drm.modeset=1 kernel param handle NVIDIA KMS instead.
 
+# Ensure USB keyboard works at LUKS password prompt
+# xhci_hcd and usbhid must be explicitly included - the keyboard hook
+# alone may not pull them in reliably on all systems
+log "Ensuring USB keyboard modules are in initramfs..."
+if grep -q "^MODULES=" /etc/mkinitcpio.conf; then
+    # Add USB modules if not already present
+    if ! grep -q "usbhid" /etc/mkinitcpio.conf; then
+        sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 xhci_hcd usbhid)/' /etc/mkinitcpio.conf
+        # Clean up double spaces if MODULES was empty
+        sed -i 's/^MODULES=( /MODULES=(/' /etc/mkinitcpio.conf
+    fi
+fi
+
 # Configure HOOKS for encrypted system
 # encrypt hook MUST be included for LUKS encryption support
 log "Adding encryption support to initramfs..."
