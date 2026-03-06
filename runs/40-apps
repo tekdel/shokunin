@@ -1,10 +1,6 @@
 #!/bin/bash
 # runs/apps - Optional applications
 
-# Web browser (zen-browser from AUR)
-paru -S --needed --noconfirm --skipreview \
-    zen-browser-bin
-
 # File manager and thumbnails
 sudo pacman -S --needed --noconfirm \
     nautilus \
@@ -26,8 +22,8 @@ sudo pacman -S --needed --noconfirm \
     zathura-pdf-mupdf
 
 # Password manager
-sudo pacman -S --needed --noconfirm \
-    keepassxc
+paru -S --needed --noconfirm --skipreview \
+    1password
 
 # Office (uncomment if needed)
 # sudo pacman -S --needed --noconfirm \
