@@ -20,12 +20,14 @@ if [ ! -f /etc/mkinitcpio.conf.original ]; then
     cp /etc/mkinitcpio.conf /etc/mkinitcpio.conf.original
 fi
 
-# Add NVIDIA modules for early KMS
-log "Adding NVIDIA modules to initramfs..."
-if ! grep -q "^MODULES=.*nvidia" /etc/mkinitcpio.conf; then
-    sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
-    # Clean up double spaces if MODULES was empty
-    sed -i 's/MODULES=( /MODULES=(/' /etc/mkinitcpio.conf
+# Add NVIDIA modules for early KMS (only if NVIDIA GPU is present)
+if lspci | grep -qi 'nvidia'; then
+    log "NVIDIA GPU detected, adding modules to initramfs..."
+    if ! grep -q "^MODULES=.*nvidia" /etc/mkinitcpio.conf; then
+        sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
+        # Clean up double spaces if MODULES was empty
+        sed -i 's/MODULES=( /MODULES=(/' /etc/mkinitcpio.conf
+    fi
 fi
 
 # Configure HOOKS for encrypted system

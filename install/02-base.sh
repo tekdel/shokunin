@@ -45,15 +45,18 @@ PACKAGES=(
     vulkan-radeon
     vulkan-intel
     libva-mesa-driver
-    nvidia-dkms
-    nvidia-utils
-    linux-headers
 )
 
 log "Installing packages: ${PACKAGES[*]}"
 if ! pacstrap /mnt "${PACKAGES[@]}"; then
     error "pacstrap failed - check internet connection and package names"
 fi
+# Install NVIDIA drivers if NVIDIA GPU is present
+if lspci | grep -qi 'nvidia'; then
+    log "NVIDIA GPU detected, installing drivers..."
+    pacstrap /mnt nvidia-dkms nvidia-utils linux-headers
+fi
+
 success "Base packages installed"
 
 # Generate fstab

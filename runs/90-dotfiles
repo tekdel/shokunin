@@ -16,8 +16,19 @@ mkdir -p ~/.local/bin
 
 # Hyprland
 if [ -d "$DOTFILES_DIR/hypr" ]; then
-    cp -r "$DOTFILES_DIR/hypr/"* ~/.config/hypr/
+    # Copy all hypr configs except nvidia.conf (conditionally added below)
+    find "$DOTFILES_DIR/hypr" -maxdepth 1 -type f ! -name "nvidia.conf" -exec cp {} ~/.config/hypr/ \;
     echo "✓ Hyprland config updated"
+
+    # Copy NVIDIA config only if an NVIDIA GPU is present
+    if lspci | grep -qi 'nvidia'; then
+        cp "$DOTFILES_DIR/hypr/nvidia.conf" ~/.config/hypr/
+        echo "✓ NVIDIA Hyprland config enabled"
+    else
+        # Create empty file so hyprland source directive doesn't warn
+        echo "# No NVIDIA GPU detected" > ~/.config/hypr/nvidia.conf
+        echo "✓ No NVIDIA GPU detected, skipping nvidia.conf"
+    fi
 fi
 
 # Waybar
