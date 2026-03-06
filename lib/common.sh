@@ -178,10 +178,10 @@ install_aur_helper() {
     log "Installing paru build dependencies..."
     pacman -S --needed --noconfirm rustup git base-devel
 
-    # Initialize rustup so cargo is available for building paru
-    if ! rustup show active-toolchain &>/dev/null; then
-        log "Initializing Rust toolchain via rustup..."
-        rustup default stable
+    # Initialize rustup for the build user so cargo is available for building paru
+    if ! sudo -u "$user" rustup show active-toolchain &>/dev/null; then
+        log "Initializing Rust toolchain via rustup for $user..."
+        sudo -u "$user" rustup default stable
     fi
 
     # Clean up any previous failed attempts
