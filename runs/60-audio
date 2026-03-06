@@ -9,6 +9,7 @@ sudo pacman -S --needed --noconfirm \
     pipewire-jack \
     wireplumber \
     gst-plugin-pipewire \
+    pipewire-v4l2 \
     pavucontrol
 
 # Audio mixers (TUI and CLI)

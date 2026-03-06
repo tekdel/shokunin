@@ -65,6 +65,8 @@ sudo pacman -S --needed --noconfirm \
     inetutils \
     usbutils \
     pciutils \
+    v4l-utils \
+    libcamera \
     plymouth \
     gnome-keyring \
     seahorse \
