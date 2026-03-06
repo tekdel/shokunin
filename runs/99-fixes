@@ -77,5 +77,28 @@ if [ -f /usr/share/applications/google-chrome-canary.desktop ]; then
     echo "✓ Chrome Canary set as default browser"
 fi
 
+# NVIDIA fixes (only if NVIDIA GPU is present)
+if lspci | grep -qi 'nvidia'; then
+    # Configure NVIDIA for clean shutdown and suspend
+    if [ ! -f /etc/modprobe.d/nvidia.conf ]; then
+        echo "Configuring NVIDIA power management..."
+        sudo tee /etc/modprobe.d/nvidia.conf > /dev/null << 'EOF'
+options nvidia NVreg_PreserveVideoMemoryAllocations=0
+EOF
+        echo "✓ NVIDIA power management configured"
+    fi
+
+    # Enable nvidia-persistenced for faster shutdown
+    sudo systemctl enable nvidia-persistenced 2>/dev/null || true
+
+    # Remove NVIDIA modules from initramfs if present (conflicts with Plymouth)
+    if grep -q "^MODULES=.*nvidia" /etc/mkinitcpio.conf 2>/dev/null; then
+        echo "Removing NVIDIA modules from initramfs (conflicts with Plymouth)..."
+        sudo sed -i 's/ nvidia nvidia_modeset nvidia_uvm nvidia_drm//' /etc/mkinitcpio.conf
+        sudo mkinitcpio -P
+        echo "✓ NVIDIA modules removed from initramfs"
+    fi
+fi
+
 echo ""
 echo "System fixes applied!"

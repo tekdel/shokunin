@@ -36,8 +36,8 @@ fi
 
 # Add NVIDIA DRM modeset if NVIDIA GPU is present
 if lspci | grep -qi 'nvidia'; then
-    CMDLINE="$CMDLINE nvidia_drm.modeset=1"
-    log "NVIDIA GPU detected, added nvidia_drm.modeset=1"
+    CMDLINE="$CMDLINE nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
+    log "NVIDIA GPU detected, added nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
 fi
 
 log "Using disk: $DISK"

@@ -20,15 +20,9 @@ if [ ! -f /etc/mkinitcpio.conf.original ]; then
     cp /etc/mkinitcpio.conf /etc/mkinitcpio.conf.original
 fi
 
-# Add NVIDIA modules for early KMS (only if NVIDIA GPU is present)
-if lspci | grep -qi 'nvidia'; then
-    log "NVIDIA GPU detected, adding modules to initramfs..."
-    if ! grep -q "^MODULES=.*nvidia" /etc/mkinitcpio.conf; then
-        sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
-        # Clean up double spaces if MODULES was empty
-        sed -i 's/MODULES=( /MODULES=(/' /etc/mkinitcpio.conf
-    fi
-fi
+# Note: NVIDIA modules are NOT added to MODULES= here.
+# Early loading conflicts with Plymouth's LUKS password prompt.
+# The kms hook + nvidia_drm.modeset=1 kernel param handle NVIDIA KMS instead.
 
 # Configure HOOKS for encrypted system
 # encrypt hook MUST be included for LUKS encryption support
