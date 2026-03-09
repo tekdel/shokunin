@@ -23,6 +23,26 @@ if lspci | grep -qi 'nvidia'; then
         nvidia-settings \
         libva-nvidia-driver \
         linux-headers
+
+    # Pacman hook to rebuild initramfs when NVIDIA drivers update
+    # Required because NVIDIA modules are loaded early via initramfs for KMS
+    echo "Installing NVIDIA pacman hook for initramfs rebuild..."
+    sudo mkdir -p /etc/pacman.d/hooks
+    sudo tee /etc/pacman.d/hooks/nvidia.hook > /dev/null << 'EOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = nvidia-dkms
+
+[Action]
+Description = Rebuilding initramfs after NVIDIA driver update...
+Depends = mkinitcpio
+When = PostTransaction
+NeedsTargets
+Exec = /usr/bin/mkinitcpio -P
+EOF
 fi
 
 # CPU microcode and firmware

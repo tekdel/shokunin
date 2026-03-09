@@ -72,7 +72,7 @@ fi
 # Chrome flags (Wayland native + PipeWire screen sharing)
 if [ -d "$DOTFILES_DIR/chrome" ]; then
     cp "$DOTFILES_DIR/chrome/chrome-flags.conf" ~/.config/chrome-flags.conf
-    cp "$DOTFILES_DIR/chrome/chrome-flags.conf" ~/.config/google-chrome-canary-flags.conf
+    cp "$DOTFILES_DIR/chrome/chrome-flags.conf" ~/.config/chrome-canary-flags.conf
     echo "✓ Chrome flags updated"
 fi
 

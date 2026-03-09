@@ -91,12 +91,13 @@ EOF
     # Enable nvidia-persistenced for faster shutdown
     sudo systemctl enable nvidia-persistenced 2>/dev/null || true
 
-    # Remove NVIDIA modules from initramfs if present (conflicts with Plymouth)
-    if grep -q "^MODULES=.*nvidia" /etc/mkinitcpio.conf 2>/dev/null; then
-        echo "Removing NVIDIA modules from initramfs (conflicts with Plymouth)..."
-        sudo sed -i 's/ nvidia nvidia_modeset nvidia_uvm nvidia_drm//' /etc/mkinitcpio.conf
+    # Add NVIDIA modules to initramfs for early KMS (eliminates black screen between Plymouth and SDDM)
+    # Requires nvidia_drm.modeset=1 and nvidia_drm.fbdev=1 kernel params
+    if ! grep -q "^MODULES=.*nvidia" /etc/mkinitcpio.conf 2>/dev/null; then
+        echo "Adding NVIDIA modules to initramfs for early KMS..."
+        sudo sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
         sudo mkinitcpio -P
-        echo "✓ NVIDIA modules removed from initramfs"
+        echo "✓ NVIDIA early KMS enabled in initramfs"
     fi
 fi
 
