@@ -125,5 +125,12 @@ if lspci | grep -qi 'mediatek.*mt79' && grep -qi 'amd' /proc/cpuinfo; then
     fi
 fi
 
+# Disable suspend/sleep on System76 hardware (doesn't wake reliably)
+if sudo dmidecode -s system-manufacturer 2>/dev/null | grep -qi 'system76'; then
+    echo "System76 detected, disabling suspend/sleep..."
+    sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+    echo "✓ Sleep/suspend/hibernate disabled (System76)"
+fi
+
 echo ""
 echo "System fixes applied!"
