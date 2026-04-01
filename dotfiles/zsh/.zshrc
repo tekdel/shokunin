@@ -121,6 +121,10 @@ fi
 # Add ~/bin to PATH (in addition to ~/.local/bin from .zprofile)
 export PATH="$HOME/bin:$PATH"
 
+# Android SDK
+export ANDROID_HOME=$HOME/Android/Sdk
+export PATH=$PATH:$ANDROID_HOME/platform-tools:$ANDROID_HOME/tools:$ANDROID_HOME/tools/bin
+
 # ============================================================================
 # Custom Functions
 # ============================================================================
