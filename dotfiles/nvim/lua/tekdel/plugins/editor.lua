@@ -4,27 +4,100 @@ return {
   -- Treesitter for syntax highlighting and more
   {
     'nvim-treesitter/nvim-treesitter',
-    branch = 'master',
-    lazy = false,
+    branch = 'main',
     build = ':TSUpdate',
-    config = function()
-      ---@diagnostic disable-next-line: missing-fields
-      require('nvim-treesitter.configs').setup {
-        ensure_installed = {
-          'bash', 'c', 'html', 'css', 'lua', 'luadoc',
-          'markdown', 'markdown_inline', 'vim', 'vimdoc',
-          'typescript', 'javascript', 'tsx', 'json', 'yaml',
-          'rust', 'go', 'gomod', 'gosum',
-          'dockerfile', 'sql', 'prisma',
-        },
-        sync_install = false,
-        auto_install = true,
-        highlight = {
-          enable = true,
-          additional_vim_regex_highlighting = false,
-        },
-        indent = { enable = true },
-      }
+    event = { 'BufReadPost', 'BufNewFile' },
+    opts = {
+      install = {
+        'bash',
+        'c',
+        'html',
+        'css',
+        'lua',
+        'luadoc',
+        'markdown',
+        'markdown_inline',
+        'vim',
+        'vimdoc',
+        'typescript',
+        'javascript',
+        'tsx',
+        'json',
+        'yaml',
+        'rust',
+        'go',
+        'gomod',
+        'gosum',
+        'dockerfile',
+        'sql',
+        'prisma',
+      },
+    },
+    init = function()
+      vim.treesitter.language.register('tsx', 'typescriptreact')
+
+      local function start_highlight(buf, lang)
+        if not vim.treesitter.language.add(lang) then
+          return vim.notify(('Treesitter cannot load parser for language: %s'):format(lang), vim.log.levels.INFO, { title = 'Treesitter' })
+        end
+        vim.treesitter.start(buf, lang)
+      end
+
+      vim.api.nvim_create_autocmd('FileType', {
+        callback = function(args)
+          local buf = args.buf
+          if vim.bo[buf].buftype ~= '' then
+            return
+          end
+
+          local ok, ts = pcall(require, 'nvim-treesitter')
+          if not ok then
+            return
+          end
+
+          local ft = vim.bo[buf].filetype
+
+          if ft == 'javascriptreact' or ft == 'typescriptreact' then
+            vim.opt_local.foldmethod = 'indent'
+          else
+            vim.opt_local.foldmethod = 'expr'
+            vim.opt_local.foldexpr = 'v:lua.vim.treesitter.foldexpr()'
+          end
+          vim.schedule(function()
+            if vim.fn.mode() ~= 't' then
+              vim.cmd 'silent! normal! zx'
+            end
+          end)
+
+          if not vim.tbl_contains({ 'python', 'html', 'yaml', 'markdown' }, ft) then
+            vim.bo[buf].indentexpr = "v:lua.require('nvim-treesitter').indentexpr()"
+          end
+
+          if vim.fn.executable 'tree-sitter' ~= 1 then
+            return
+          end
+
+          local lang = vim.treesitter.language.get_lang(ft)
+          if not lang then
+            return
+          end
+
+          if vim.list_contains(ts.get_installed(), lang) then
+            start_highlight(buf, lang)
+          elseif vim.list_contains(ts.get_available(), lang) then
+            ts.install(lang):await(function()
+              start_highlight(buf, lang)
+            end)
+          end
+        end,
+      })
+    end,
+    config = function(_, opts)
+      local ts = require 'nvim-treesitter'
+      ts.setup(opts)
+      if vim.fn.executable 'tree-sitter' == 1 then
+        ts.install(opts.install)
+      end
     end,
   },
 
