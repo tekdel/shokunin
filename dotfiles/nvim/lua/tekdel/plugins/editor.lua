@@ -203,9 +203,6 @@ return {
     end,
   },
 
-  -- Comment plugin
-  { 'numToStr/Comment.nvim', opts = {} },
-
   -- Detect tabstop/shiftwidth
   'tpope/vim-sleuth',
 
