@@ -17,23 +17,15 @@ mkdir -p ~/.local/bin
 
 # Hyprland
 if [ -d "$DOTFILES_DIR/hypr" ]; then
-    # Copy all hypr configs except nvidia.conf (conditionally added below)
-    find "$DOTFILES_DIR/hypr" -maxdepth 1 -type f ! -name "nvidia.conf" -exec cp {} ~/.config/hypr/ \;
+    # hyprland.lua handles NVIDIA env itself (detects the loaded driver)
+    find "$DOTFILES_DIR/hypr" -maxdepth 1 -type f -exec cp {} ~/.config/hypr/ \;
+    # Hyprland 0.57+ only reads hyprland.lua; drop legacy hyprlang files
+    rm -f ~/.config/hypr/hyprland.conf ~/.config/hypr/nvidia.conf
     echo "✓ Hyprland config updated"
 
     # Portal config for screen sharing
     cp "$DOTFILES_DIR/hypr/xdg-portal.conf" ~/.config/xdg-desktop-portal/hyprland-portals.conf
     echo "✓ XDG portal config updated"
-
-    # Copy NVIDIA config only if an NVIDIA GPU is present
-    if lspci | grep -qi 'nvidia'; then
-        cp "$DOTFILES_DIR/hypr/nvidia.conf" ~/.config/hypr/
-        echo "✓ NVIDIA Hyprland config enabled"
-    else
-        # Create empty file so hyprland source directive doesn't warn
-        echo "# No NVIDIA GPU detected" > ~/.config/hypr/nvidia.conf
-        echo "✓ No NVIDIA GPU detected, skipping nvidia.conf"
-    fi
 fi
 
 # Waybar

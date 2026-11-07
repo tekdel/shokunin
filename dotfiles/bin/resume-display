@@ -8,14 +8,14 @@ LAPTOP="eDP-1"
 sleep 1
 
 # Turn on DPMS
-hyprctl dispatch dpms on
+hyprctl dispatch 'hl.dsp.dpms({ action = "on" })'
 
 # Check if any monitor is active
 ACTIVE_MONITORS=$(hyprctl monitors -j | jq 'length')
 
 if [ "$ACTIVE_MONITORS" -eq 0 ]; then
     # No monitors - force laptop on as emergency fallback
-    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    hyprctl eval "hl.monitor({ output = \"$LAPTOP\", mode = \"preferred\", position = \"auto\", scale = 1 })"
     sleep 1
 fi
 

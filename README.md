@@ -196,7 +196,7 @@ vim runs/40-apps
 
 ```bash
 # Edit dotfiles
-vim dotfiles/hypr/hyprland.conf
+vim dotfiles/hypr/hyprland.lua
 
 # Apply changes
 ./update dotfiles

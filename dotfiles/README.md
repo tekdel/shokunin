@@ -42,7 +42,7 @@ cp dotfiles/bash/.bashrc ~/
 Add your own dotfiles here! The installer will copy everything from this directory.
 
 **Examples:**
-- `hypr/hyprland.conf` - Hyprland keybindings and settings
+- `hypr/hyprland.lua` - Hyprland keybindings and settings (Lua, Hyprland 0.57+)
 - `waybar/config` - Waybar modules and layout
 - `waybar/style.css` - Waybar styling
 - `alacritty/alacritty.toml` - Terminal configuration

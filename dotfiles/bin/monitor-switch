@@ -3,10 +3,16 @@
 # Supports Z13 (1920x1200), Framework 13 2.2K (2256x1504), and Framework 13 2.8K (2880x1920)
 
 LAPTOP="eDP-1"
+EXTERNAL="desc:LG Electronics LG UltraFine 901NTDV6P994"
+
+# Apply a monitor rule at runtime (Hyprland 0.57+ Lua; 'hyprctl keyword' was removed)
+monitor() {
+    hyprctl eval "hl.monitor({ $1 })"
+}
 
 # Force laptop on (recovery mode) - auto-detects resolution
 if [[ "$1" == "-l" ]]; then
-    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    monitor "output = \"$LAPTOP\", mode = \"preferred\", position = \"auto\", scale = 1"
     exit 0
 fi
 
@@ -16,15 +22,15 @@ external_connected=$(hyprctl monitors | grep -c "LG UltraFine" || true)
 
 if [ "$external_connected" -gt 0 ]; then
     # External connected
-    hyprctl keyword monitor "desc:LG Electronics LG UltraFine 901NTDV6P994,3840x2160,0x0,1"
-    hyprctl keyword monitor "$LAPTOP,disable"
+    monitor "output = \"$EXTERNAL\", mode = \"3840x2160\", position = \"0x0\", scale = 1"
+    monitor "output = \"$LAPTOP\", disabled = true"
     notify-send -t 3000 "Monitor" "External"
 else
     # Laptop only - force enable first (in case it was disabled), then configure
-    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    monitor "output = \"$LAPTOP\", mode = \"preferred\", position = \"auto\", scale = 1"
     # Small delay to let the display initialize
     sleep 0.3
     # Re-apply to ensure proper configuration
-    hyprctl keyword monitor "$LAPTOP,preferred,auto,1"
+    monitor "output = \"$LAPTOP\", mode = \"preferred\", position = \"auto\", scale = 1"
     notify-send -t 3000 "Monitor" "Laptop"
 fi
