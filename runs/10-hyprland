@@ -26,14 +26,14 @@ sudo pacman -S --needed --noconfirm \
     playerctl \
     pamixer \
     socat \
-    kanshi
+    kanshi \
+    swayosd
 
 # Application launcher (Walker - same as Omarchy)
 paru -S --needed --noconfirm --skipreview \
     walker-bin \
     elephant-desktopapplications \
-    elephant-runner \
-    swayosd-git
+    elephant-runner
 
 # Wallpaper and theming
 sudo pacman -S --needed --noconfirm \
