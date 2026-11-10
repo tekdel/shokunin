@@ -5,7 +5,7 @@ WS_TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _failures=0
 _base_path=$PATH
 _sandboxes=()
-trap 'rm -rf "${_sandboxes[@]}"' EXIT
+trap 'drop_fixtures' EXIT
 
 ok() {
     printf 'ok    %s\n' "$1"
@@ -14,6 +14,11 @@ ok() {
 not_ok() {
     printf 'FAIL  %s\n' "$1"
     _failures=$((_failures + 1))
+}
+
+abort() {
+    printf 'ABORT %s\n' "$1"
+    exit 2
 }
 
 assert() {
@@ -37,18 +42,37 @@ assert_eq() {
     fi
 }
 
+drop_fixtures() {
+    local dir
+    for dir in "${_sandboxes[@]}"; do
+        chmod -R u+rwx "$dir" 2>/dev/null
+        rm -rf "$dir"
+    done
+    _sandboxes=()
+}
+
 new_fixture() {
     local sandbox
-    sandbox=$(mktemp -d "${TMPDIR:-/tmp}/ws-test.XXXXXX")
+    drop_fixtures
+    unset FX
+    sandbox=$(mktemp -d "${TMPDIR:-/tmp}/ws-test.XXXXXX") || abort "cannot make a sandbox"
     _sandboxes+=("$sandbox")
-    bash "$WS_TESTS/fixture.sh" "$sandbox/root" >/dev/null
     PATH=$_base_path
-    FX=$sandbox/root
+    bash "$WS_TESTS/fixture.sh" "$sandbox/root" >/dev/null || abort "fixture.sh failed"
     # shellcheck source=/dev/null
-    source "$FX/env.sh"
+    source "$sandbox/root/env.sh" || abort "cannot source env.sh"
+    _sandboxes+=("$TMUX_TMPDIR")
+    [[ $HOME == "$sandbox/root" ]] || abort "env.sh did not set HOME"
+    FX=$sandbox/root
+}
+
+run_test() {
+    "$1"
+    drop_fixtures
 }
 
 ws() {
+    [[ -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
     bash "$WS_TESTS/../../dotfiles/bin/ws" "$@"
 }
 
@@ -85,6 +109,28 @@ detail_of() {
 
 pr_of() {
     table_field 3 "$@"
+}
+
+trash_dir() {
+    echo "$XDG_DATA_HOME/ws/trash"
+}
+
+manifest_get() {
+    local value
+    value=$(awk -F '\t' -v orig="orig=${1//%/%25}" -v key="$2=" '$1 == orig {
+        for (i = 1; i <= NF; i++) if (index($i, key) == 1) print substr($i, length(key) + 1) }' \
+        "$(trash_dir)/manifest" 2>/dev/null)
+    printf '%s\n' "${value//%25/%}"
+}
+
+trash_of() {
+    manifest_get "$1" trash
+}
+
+in_trash() {
+    local trash
+    trash=$(trash_of "$1")
+    [[ -n $trash && ! -e $1 ]] && is_worktree "$trash"
 }
 
 add_worktree() {

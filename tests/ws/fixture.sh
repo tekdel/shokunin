@@ -13,18 +13,23 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   vault/               WS_VAULT
   gitconfig            GIT_CONFIG_GLOBAL: identity, and github.com/fixture
                        URLs rewritten to origins/
-  bin/gh               gh shim, answers pr list from prs.tsv
+  bin/gh               gh shim, answers pr list -R github.com/<owner>/<repo>
+                       from prs.tsv
   prs.tsv              repo, branch, state, number, headRefOid, and
-                       isCrossRepository (default false) per PR
+                       isCrossRepository per PR: true, false (the
+                       default), null, or missing to leave it out
   gh.log               one line per gh call
   gh.fail              create it to make gh exit 1, list repo names to
                        fail only those repos
   gh.out               create it to make gh print its content instead
   gh.slow              holds seconds for gh to sleep, and logs start and
                        end times to gh.times
-  env.sh               exports HOME, XDG_CACHE_HOME, TMUX_TMPDIR,
-                       GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM, WS_ROOT,
-                       WS_PROJECTS, WS_VAULT, and PATH
+  env.sh               exports HOME, the XDG_CONFIG_HOME, XDG_CACHE_HOME,
+                       XDG_DATA_HOME, and XDG_STATE_HOME dirs under
+                       <root>, GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM,
+                       WS_ROOT, WS_PROJECTS, WS_VAULT, PATH, and a short
+                       TMUX_TMPDIR under /tmp, and unsets TMUX and
+                       TMUX_PANE
 EOF
 }
 
@@ -41,7 +46,9 @@ root=$(cd "$1" && pwd)
 
 projects=$root/projects
 mkdir -p "$root/origins" "$projects/notes" "$root/work/t1" "$root/vault" "$root/bin" \
-    "$root/.cache" "$root/tmux"
+    "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state"
+# A socket path under <root> can pass the 108-byte limit.
+tmux_dir=$(mktemp -d /tmp/wsx.XXXXXX)
 
 cat >"$root/gitconfig" <<EOF
 [user]
@@ -60,8 +67,12 @@ EOF
 
 cat >"$root/env.sh" <<EOF
 export HOME=$(printf %q "$root")
+export XDG_CONFIG_HOME=$(printf %q "$root/.config")
 export XDG_CACHE_HOME=$(printf %q "$root/.cache")
-export TMUX_TMPDIR=$(printf %q "$root/tmux")
+export XDG_DATA_HOME=$(printf %q "$root/.local/share")
+export XDG_STATE_HOME=$(printf %q "$root/.local/state")
+export TMUX_TMPDIR=$(printf %q "$tmux_dir")
+unset TMUX TMUX_PANE
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
 export WS_ROOT=$(printf %q "$root/work")
@@ -161,7 +172,11 @@ if [[ -f $root/gh.slow ]]; then
     sleep "$(<"$root/gh.slow")"
     printf 'end %s %s\n' "$(date +%s.%N)" "$args" >>"$root/gh.times"
 fi
-name=${repo#*/}
+[[ $repo == github.com/*/* ]] || {
+    echo "gh shim: -R must be github.com/<owner>/<repo>: $args" >&2
+    exit 3
+}
+name=${repo##*/}
 if [[ -f $root/gh.fail ]] && { [[ ! -s $root/gh.fail ]] || grep -qx "$name" "$root/gh.fail"; }; then
     echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2
     exit 1
@@ -173,10 +188,12 @@ fi
 jq -Rn --arg repo "$name" --arg state "$state" --arg head "$head" --argjson limit "$limit" \
     --arg fields "$json" '
     [inputs | split("\t") | select(.[0] == $repo)
-     | {headRefName: .[1], state: .[2], number: (.[3] | tonumber),
-        headRefOid: (.[4] // ""), isCrossRepository: ((.[5] // "false") == "true")}
+     | {headRefName: .[1], state: .[2], number: (.[3] | tonumber), headRefOid: (.[4] // ""),
+        isCrossRepository: (.[5] as $c | if $c == "true" then true elif $c == "null" then null
+            elif $c == "missing" then "missing" else false end)}
      | select($state == "all" or (.state | ascii_downcase) == $state)
-     | select($head == "" or .headRefName == $head)]
+     | select($head == "" or .headRefName == $head)
+     | if .isCrossRepository == "missing" then del(.isCrossRepository) else . end]
     | sort_by(-.number) | .[:$limit]
     | map(with_entries(select(.key as $k | $fields | split(",") | index($k))))' "$root/prs.tsv"
 EOF
