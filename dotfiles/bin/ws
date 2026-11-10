@@ -248,6 +248,10 @@ ws_prune() {
 
 main() {
     local cmd=${1:-}
+    if [[ $cmd == -h || $cmd == --help ]]; then
+        usage
+        return 0
+    fi
     if [[ -z $cmd || -z ${WS_COMMANDS[$cmd]+set} ]]; then
         usage >&2
         return 1

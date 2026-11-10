@@ -31,13 +31,17 @@ root=$(cd "$1" && pwd)
     exit 1
 }
 
-# The operator's global config can sign commits or rename the default branch.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
 export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
 
 projects=$root/projects
 mkdir -p "$root/origins" "$projects" "$root/work/t1" "$root/vault" "$root/bin" "$projects/notes"
+
+fake_github_origin() {
+    git -C "$projects/$1" remote set-url origin "https://github.com/fixture/$1.git"
+    git -C "$projects/$1" config "url.$root/origins/.insteadOf" "https://github.com/fixture/"
+}
 
 make_repo() {
     local repo=$1 seed=$root/seed-$1
@@ -48,9 +52,7 @@ make_repo() {
     git clone -q --bare "$seed" "$root/origins/$repo.git"
     rm -rf "$seed"
     git clone -q "$root/origins/$repo.git" "$projects/$repo"
-    # A github.com origin URL lets ws derive the slug, insteadOf keeps git traffic local.
-    git -C "$projects/$repo" remote set-url origin "https://github.com/fixture/$repo.git"
-    git -C "$projects/$repo" config "url.$root/origins/.insteadOf" "https://github.com/fixture/"
+    fake_github_origin "$repo"
 }
 
 add_worktree() {
