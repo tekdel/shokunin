@@ -3,6 +3,7 @@ set -euo pipefail
 
 WS_PROJECTS=${WS_PROJECTS:-$HOME/projects}
 WS_ROOT=${WS_ROOT:-$HOME/work}
+WS_GH_TIMEOUT=${WS_GH_TIMEOUT:-60}
 
 declare -A WS_COMMANDS=(
     [prune]="list worktrees whose PR merged or closed, --apply removes them"
@@ -22,168 +23,311 @@ prune_usage() {
 usage: ws prune [--apply] [--include-detached]
 
 Lists every linked worktree under $WS_PROJECTS/ and $WS_ROOT/<ticket>/.
-A worktree is REMOVE when its branch has a merged or closed PR, its tree
-is clean, and every commit on HEAD is on a remote. Every other worktree
-is KEEP with the reason.
+A worktree is REMOVE when its branch has a merged or closed PR from its
+own repo, it has no changed, untracked, or hidden file, each ignored
+file has a byte-identical copy in the main checkout, and a remote has
+every commit on HEAD or HEAD is the head of the merged PR. Every other
+worktree is KEEP with the reason.
 
-  --apply             ask once, remove the REMOVE worktrees, and delete
-                      their merged branches with git branch -d
+  --apply             ask once, check each worktree again, remove the
+                      unchanged ones, and delete their merged branches
   --include-detached  treat clean, pushed detached worktrees as REMOVE
+
+Each gh call stops after $WS_GH_TIMEOUT seconds, 60 by default.
 EOF
 }
 
-prune_slug() {
-    local url
-    url=$(git -C "$1" config --get remote.origin.url) || {
-        echo "no origin remote" >&2
-        return 1
-    }
-    [[ $url =~ github\.com[:/]([^/]+/[^/]+)$ ]] || {
-        echo "origin is not on github.com: $url" >&2
-        return 1
-    }
-    echo "${BASH_REMATCH[1]%.git}"
+# Prints each linked worktree directly inside the given roots, one path
+# per line. Symlinks are skipped, and a worktree reached through two
+# roots prints once.
+ws_worktrees() {
+    local root dir real
+    local -A seen=()
+    for root in "$@"; do
+        while IFS= read -r -d '' dir; do
+            [[ -f $dir/.git ]] || continue
+            if [[ $dir == *[$'\t\n']* ]]; then
+                echo "ws: skip $dir: tab or newline in the path" >&2
+                continue
+            fi
+            real=$(realpath -e -- "$dir") || continue
+            [[ -z ${seen[$real]+set} ]] || continue
+            seen[$real]=1
+            printf '%s\n' "$dir"
+        done < <(find -H "$root" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+    done
 }
 
-prune_fetch_prs() {
-    local slug
-    slug=$(prune_slug "$1") || return
-    gh pr list -R "$slug" --state all --limit 1000 --json headRefName,state,number |
-        jq -r '
-            group_by(.headRefName)[]
-            | max_by({OPEN: 3, MERGED: 2, CLOSED: 1}[.state])
-            | [.headRefName, (.state | ascii_downcase), .number]
-            | @tsv'
+ws_github_slug() {
+    local url host path
+    url=$(git --git-dir="$1" config --get remote.origin.url) || return
+    if [[ $url =~ ^[a-z+]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+        host=${BASH_REMATCH[2]} path=${BASH_REMATCH[4]}
+    elif [[ $url =~ ^([^@/]+@)?([^/:]+):(.+)$ ]]; then
+        host=${BASH_REMATCH[2]} path=${BASH_REMATCH[3]}
+    else
+        return 1
+    fi
+    [[ $host == github.com || $host == github.com-* ]] || return 1
+    path=${path%/}
+    path=${path%.git}
+    [[ $path =~ ^[^/]+/[^/]+$ ]] || return 1
+    echo "$path"
 }
 
-prune_scan() {
-    local dir common branch status unpushed
-    for dir in "$WS_PROJECTS"/*/ "$WS_ROOT"/*/*/; do
-        dir=${dir%/}
-        [[ -f $dir/.git ]] || continue
-        if ! common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
-            echo "ws: skip $dir: git cannot read this worktree" >&2
-            continue
+# Prints one "key<TAB>value" line per fact about the worktree at $1.
+# path, common, github, branch, head, locked, submodules, dirty,
+# hidden-flags, and unpushed print once. nested-repo, ignored-unique, and
+# wtref print once per item. Same tree, same output.
+ws_wt_facts() {
+    local dir=$1 common gitdir main head list counts hidden submodules entry hit n ref
+    local -a refs=() tips=()
+    common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir) || return
+    gitdir=$(git -C "$dir" rev-parse --path-format=absolute --git-dir) || return
+    main=
+    [[ ${common##*/} != .git ]] || main=${common%/.git}
+    head=$(git -C "$dir" rev-parse -q --verify HEAD) || head=
+
+    printf 'path\t%s\n' "$dir"
+    printf 'common\t%s\n' "$common"
+    printf 'github\t%s\n' "$(ws_github_slug "$common" 2>/dev/null || true)"
+    printf 'branch\t%s\n' "$(git -C "$dir" symbolic-ref -q --short HEAD || true)"
+    printf 'head\t%s\n' "$head"
+    if [[ -f $gitdir/locked ]]; then
+        printf 'locked\t%s\n' "$(tr '\t\n' '  ' <"$gitdir/locked" | sed 's/ *$//; s/^$/locked/')"
+    else
+        printf 'locked\t\n'
+    fi
+
+    counts=$(git -C "$dir" ls-files -v -s | awk '$1 ~ /^([a-z]|S)$/ { h++ } $2 == 160000 { s++ } END { print h + 0, s + 0 }') ||
+        return
+    read -r hidden submodules <<<"$counts"
+    printf 'submodules\t%d\n' "$submodules"
+
+    n=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" -c status.showUntrackedFiles=all status --porcelain=v1 \
+        --untracked-files=all --ignore-submodules=none | wc -l) || return
+    printf 'dirty\t%d\n' "$n"
+    printf 'hidden-flags\t%d\n' "$hidden"
+
+    list=$(mktemp "$WS_TMP/ignored.XXXXXX")
+    git -C "$dir" ls-files -z --others --ignored --exclude-standard --directory >"$list" || return
+    while IFS= read -r -d '' entry; do
+        if [[ $entry == */ ]]; then
+            hit=$(find "$dir/$entry" -name .git -print -quit 2>/dev/null) || hit=$dir/$entry
+            hit=${hit%/.git}
+            [[ -z $hit ]] || printf 'nested-repo\t%s\n' "${hit#"$dir/"}"
+        elif [[ -z $main ]] || ! cmp -s -- "$dir/$entry" "$main/$entry"; then
+            printf 'ignored-unique\t%s\n' "$entry"
         fi
-        branch=$(git -C "$dir" branch --show-current)
-        status=$(git -C "$dir" status --porcelain)
-        unpushed=$(git -C "$dir" rev-list --count HEAD --not --remotes 2>/dev/null) || unpushed=1
-        wt_path+=("$dir")
-        wt_main+=("${common%/.git}")
-        wt_branch+=("$branch")
-        wt_dirty+=("${#status}")
-        wt_unpushed+=("$unpushed")
+    done <"$list"
+    rm -f "$list"
+
+    list=$(git -C "$dir" for-each-ref --format='%(refname)' refs/worktree refs/bisect) || return
+    [[ -z $list ]] || mapfile -t refs <<<"$list"
+    for ref in "${refs[@]}"; do
+        printf 'wtref\t%s\n' "$ref"
     done
+    [[ -z $head ]] || tips+=(HEAD)
+    tips+=("${refs[@]}")
+    n=0
+    if ((${#tips[@]})); then
+        n=$(git -C "$dir" rev-list --count "${tips[@]}" --not --remotes) || return
+    fi
+    printf 'unpushed\t%d\n' "$n"
 }
 
-prune_read_prs() {
-    local i main branch state number key failed=0
-    local -a mains=()
-    local -A job=() prs=()
-    for i in "${!wt_path[@]}"; do
-        main=${wt_main[i]}
-        [[ -n ${wt_branch[i]} && -z ${job[$main]+set} ]] || continue
-        mains+=("$main")
-        prune_fetch_prs "$main" >"$WS_TMP/${#mains[@]}.tsv" 2>"$WS_TMP/${#mains[@]}.err" &
-        job[$main]=$!
-    done
+ws_gh_list() {
+    local out=$1 slug=$2 rc=0
+    shift 2
+    timeout "$WS_GH_TIMEOUT" gh pr list -R "$slug" --limit 1000 \
+        --json headRefName,headRefOid,isCrossRepository,number,state "$@" >"$out.json" 2>"$out.err" || rc=$?
+    ((rc != 124)) || echo "gh pr list timed out after ${WS_GH_TIMEOUT}s" >>"$out.err"
+    echo "$rc" >"$out.rc"
+}
 
-    for i in "${!mains[@]}"; do
-        main=${mains[i]}
-        if ! wait "${job[$main]}"; then
-            echo "ws: cannot read PR state for $(basename "$main")" >&2
-            sed 's/^/  /' "$WS_TMP/$((i + 1)).err" >&2
+# Reads gh pr list JSON from the files given, drops fork PRs, and prints
+# "branch<TAB>state<TAB>number<TAB>headRefOid" for the PR that speaks for
+# each branch: an open PR first, then merged, then closed, newest first.
+ws_pr_pick() {
+    jq -rs --argjson files "$#" '
+        if length == $files and all(.[]; type == "array") then . else error("gh did not return a PR list") end
+        | add
+        | map(select(.isCrossRepository | not))
+        | group_by(.headRefName)[]
+        | max_by([{OPEN: 3, MERGED: 2, CLOSED: 1}[.state], .number])
+        | [.headRefName, (.state | ascii_downcase), .number, .headRefOid]
+        | @tsv' "$@"
+}
+
+ws_pr_failed() {
+    echo "ws: cannot read PR state for $(basename "${1%/.git}")" >&2
+    sed 's/^/  /' "$2" >&2
+}
+
+# Reads "common<TAB>branch" lines, where common is a git common dir, and
+# prints "common<TAB>branch<TAB>state<TAB>number<TAB>headRefOid" for each.
+# state is open, merged, closed, no-pr, or no-github. Returns 2 when a gh
+# call fails, after naming the repo.
+ws_pr_states() {
+    local d common branch id state number oid failed=0
+    local -A slug_of=() id_of=() picked=()
+    d=$(mktemp -d "$WS_TMP/pr.XXXXXX")
+    cat >"$d/want"
+
+    while IFS=$'\t' read -r common branch; do
+        [[ -z ${id_of[$common]+set} ]] || continue
+        id_of[$common]=${#id_of[@]}
+        slug_of[$common]=$(ws_github_slug "$common" 2>/dev/null) || slug_of[$common]=
+        [[ -n ${slug_of[$common]} ]] || continue
+        ws_gh_list "$d/${id_of[$common]}.open" "${slug_of[$common]}" --state open &
+        ws_gh_list "$d/${id_of[$common]}.all" "${slug_of[$common]}" --state all &
+    done <"$d/want"
+    wait
+
+    for common in "${!slug_of[@]}"; do
+        [[ -n ${slug_of[$common]} ]] || continue
+        id=$d/${id_of[$common]}
+        if [[ $(<"$id.open.rc") == 0 && $(<"$id.all.rc") == 0 ]] &&
+            ws_pr_pick "$id.open.json" "$id.all.json" >"$id.tsv" 2>>"$id.all.err"; then
+            while IFS=$'\t' read -r branch state number oid; do
+                picked[$common$'\t'$branch]=$state$'\t'$number$'\t'$oid
+            done <"$id.tsv"
+        else
+            cat "$id.open.err" "$id.all.err" >"$id.err"
+            ws_pr_failed "$common" "$id.err"
             failed=1
-            continue
         fi
-        while IFS=$'\t' read -r branch state number; do
-            key=$main/$branch
-            prs[$key]="$state $number"
-        done <"$WS_TMP/$((i + 1)).tsv"
     done
     ((failed == 0)) || return 2
 
-    for i in "${!wt_path[@]}"; do
-        key=${wt_main[i]}/${wt_branch[i]}
-        if [[ -z ${wt_branch[i]} ]]; then
-            wt_state+=(detached)
-            wt_pr+=(-)
-        elif [[ -n ${prs[$key]+set} ]]; then
-            read -r state number <<<"${prs[$key]}"
-            wt_state+=("$state")
-            wt_pr+=("#$number $state")
+    id=0
+    while IFS=$'\t' read -r common branch; do
+        [[ -n ${slug_of[$common]} && -z ${picked[$common$'\t'$branch]+set} ]] || continue
+        id=$((id + 1))
+        printf '%s\t%s\n' "$common" "$branch" >"$d/head.$id.key"
+        ws_gh_list "$d/head.$id" "${slug_of[$common]}" --state all --head "$branch" &
+    done <"$d/want"
+    wait
+
+    while ((id > 0)); do
+        IFS=$'\t' read -r common branch <"$d/head.$id.key"
+        if [[ $(<"$d/head.$id.rc") == 0 ]] && ws_pr_pick "$d/head.$id.json" >"$d/head.$id.tsv" 2>>"$d/head.$id.err"; then
+            while IFS=$'\t' read -r branch state number oid; do
+                picked[$common$'\t'$branch]=$state$'\t'$number$'\t'$oid
+            done <"$d/head.$id.tsv"
         else
-            wt_state+=(no-pr)
-            wt_pr+=(-)
+            ws_pr_failed "$common" "$d/head.$id.err"
+            failed=1
         fi
+        id=$((id - 1))
     done
+    ((failed == 0)) || return 2
+
+    while IFS=$'\t' read -r common branch; do
+        if [[ -z ${slug_of[$common]} ]]; then
+            printf '%s\t%s\tno-github\t\t\n' "$common" "$branch"
+        elif [[ -n ${picked[$common$'\t'$branch]+set} ]]; then
+            printf '%s\t%s\t%s\n' "$common" "$branch" "${picked[$common$'\t'$branch]}"
+        else
+            printf '%s\t%s\tno-pr\t\t\n' "$common" "$branch"
+        fi
+    done <"$d/want"
 }
 
-prune_action() {
-    local state=$1 dirty=$2 unpushed=$3 include_detached=$4
-    case $state in
-    open | no-pr)
-        echo "KEEP $state"
+ws_fact() {
+    awk -F '\t' -v key="$2" '$1 == key { print $2; exit }' "$1"
+}
+
+prune_classify() {
+    local facts=$1 state=$2 oid=$3 include_detached=$4 key value
+    local -A f=() n=()
+    while IFS=$'\t' read -r key value; do
+        key=${key//-/_}
+        case $((n[$key]++)) in
+        0 | 1 | 2) f[$key]+=${f[$key]:+, }$value ;;
+        3) f[$key]+=", ..." ;;
+        esac
+    done <"$facts"
+
+    if [[ -z ${f[github]} ]]; then
+        echo "KEEP no-github"
         return
-        ;;
-    detached)
-        if ((include_detached == 0)); then
+    fi
+    if [[ -z ${f[branch]} ]]; then
+        ((include_detached)) || {
             echo "KEEP detached"
             return
-        fi
-        ;;
-    esac
-    if ((dirty)); then
+        }
+    elif [[ $state != merged && $state != closed ]]; then
+        echo "KEEP $state"
+        return
+    fi
+    if [[ -n ${f[locked]} ]]; then
+        printf 'KEEP locked\t%s\n' "${f[locked]}"
+    elif ((f[submodules] > 0)); then
+        echo "KEEP submodules"
+    elif ((f[dirty] > 0)); then
         echo "KEEP dirty"
-    elif ((unpushed)); then
+    elif ((f[hidden_flags] > 0)); then
+        echo "KEEP hidden-flags"
+    elif [[ -n ${f[nested_repo]:-} ]]; then
+        printf 'KEEP nested-repo\t%s\n' "${f[nested_repo]}"
+    elif [[ -n ${f[ignored_unique]:-} ]]; then
+        printf 'KEEP ignored-unique\t%s\n' "${f[ignored_unique]}"
+    elif ((f[unpushed] > 0)) && ! [[ $state == merged && ${f[head]} == "$oid" && -z ${f[wtref]:-} ]]; then
         echo "KEEP unpushed"
     else
         echo REMOVE
     fi
 }
 
-prune_report() {
-    local i reason line reasons="" removed=0
-    local -A count=()
-    {
-        printf 'ACTION\tREPO\tPR\tBRANCH\tWORKTREE\n'
-        for i in "${!wt_path[@]}"; do
-            printf '%s\t%s\t%s\t%s\t%s\n' "${wt_action[i]}" "$(basename "${wt_main[i]}")" "${wt_pr[i]}" \
-                "${wt_branch[i]:-(detached)}" "${wt_path[i]/#"$HOME/"/\~/}"
-        done
-    } | column -t -s $'\t'
-
-    for i in "${!wt_action[@]}"; do
-        count[${wt_action[i]}]=$((${count[${wt_action[i]}]:-0} + 1))
+prune_summary() {
+    local rows=$1 reason line reasons="" removed total n
+    total=$(wc -l <"$rows")
+    removed=$(awk -F '\t' '$1 == "REMOVE"' "$rows" | wc -l)
+    for reason in open no-pr no-github detached locked submodules dirty hidden-flags nested-repo \
+        ignored-unique unpushed; do
+        n=$(awk -F '\t' -v a="KEEP $reason" '$1 == a' "$rows" | wc -l)
+        ((n == 0)) || reasons+="${reasons:+, }$reason $n"
     done
-    removed=${count[REMOVE]:-0}
-    for reason in open no-pr detached dirty unpushed; do
-        if ((${count["KEEP $reason"]:-0})); then
-            reasons+="${reasons:+, }$reason ${count["KEEP $reason"]}"
-        fi
-    done
-    line="REMOVE $removed  KEEP $((${#wt_action[@]} - removed))"
+    line="REMOVE $removed  KEEP $((total - removed))"
     [[ -z $reasons ]] || line+=" ($reasons)"
-    echo
     echo "$line"
 }
 
+prune_report() {
+    {
+        printf 'ACTION\tREPO\tPR\tBRANCH\tWORKTREE\tDETAIL\n'
+        cut -f1-6 "$1"
+    } | column -t -s $'\t' | sed 's/ *$//'
+    echo
+    prune_summary "$1"
+}
+
+prune_delete_branch() {
+    local common=$1 branch=$2 oid=$3 number=$4 out tip
+    if out=$(git --git-dir="$common" branch -d "$branch" 2>&1); then
+        echo "Deleted branch $branch"
+        return
+    fi
+    tip=$(git --git-dir="$common" rev-parse -q --verify "refs/heads/$branch") || tip=
+    if [[ -n $oid && $tip == "$oid" ]] && git --git-dir="$common" branch -D "$branch" >/dev/null 2>&1; then
+        echo "Deleted branch $branch, its tip is the head of merged PR #$number"
+        return
+    fi
+    echo "Kept branch $branch: ${out%%$'\n'*}"
+}
+
 prune_apply() {
-    local i main answer out status=0
-    local -a doomed=()
-    local -A touched=()
-    for i in "${!wt_action[@]}"; do
-        [[ ${wt_action[i]} != REMOVE ]] || doomed+=("$i")
-    done
-    if ((${#doomed[@]} == 0)); then
+    local plan=$1 facts=$2 n noun=worktrees answer status=0 i common path shown state branch number oid
+    n=$(wc -l <"$plan")
+    if ((n == 0)); then
         echo "Nothing to remove."
         return 0
     fi
-
-    local noun=worktrees
-    ((${#doomed[@]} > 1)) || noun=worktree
-    printf 'Remove %d %s? [y/N] ' "${#doomed[@]}" "$noun"
-    read -r answer || true
+    ((n > 1)) || noun=worktree
+    printf 'Remove %d %s? [y/N] ' "$n" "$noun"
+    read -r answer || echo
     case $answer in
     y | Y | yes) ;;
     *)
@@ -192,30 +336,25 @@ prune_apply() {
         ;;
     esac
 
-    for i in "${doomed[@]}"; do
-        main=${wt_main[i]}
-        touched[$main]=1
-        if ! git -C "$main" worktree remove "${wt_path[i]}"; then
+    while IFS=$'\t' read -r -u 3 i common path shown state branch number oid; do
+        if [[ $(ws_wt_facts "$path" 2>/dev/null) != "$(<"$facts/$i")" ]]; then
+            echo "Skipped $shown: it changed after the scan"
+            continue
+        fi
+        if ! git --git-dir="$common" worktree remove "$path" </dev/null; then
             status=1
             continue
         fi
-        echo "Removed ${wt_path[i]/#"$HOME/"/\~/}"
-        [[ ${wt_state[i]} == merged ]] || continue
-        if out=$(git -C "$main" branch -d "${wt_branch[i]}" 2>&1); then
-            echo "Deleted branch ${wt_branch[i]}"
-        else
-            echo "$out" >&2
-            status=1
-        fi
-    done
-    for main in "${!touched[@]}"; do
-        git -C "$main" worktree prune
-    done
+        echo "Removed $shown"
+        [[ $state != merged ]] || prune_delete_branch "$common" "$branch" "$oid" "$number"
+    done 3<"$plan"
     return "$status"
 }
 
 ws_prune() {
-    local apply=0 include_detached=0 i
+    local apply=0 include_detached=0 d dir i n common branch path shown state number oid action detail shown_pr
+    local -a tickets=()
+    local -A pr=()
     while (($#)); do
         case $1 in
         --apply) apply=1 ;;
@@ -232,17 +371,54 @@ ws_prune() {
         shift
     done
 
-    local -a wt_path=() wt_main=() wt_branch=() wt_dirty=() wt_unpushed=()
-    local -a wt_state=() wt_pr=() wt_action=()
-    prune_scan
-    prune_read_prs || return
-    for i in "${!wt_path[@]}"; do
-        wt_action+=("$(prune_action "${wt_state[i]}" "${wt_dirty[i]}" "${wt_unpushed[i]}" "$include_detached")")
+    d=$WS_TMP/prune
+    mkdir -p "$d/facts"
+    if [[ -d $WS_ROOT ]]; then
+        mapfile -d '' tickets < <(find -H "$WS_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+    fi
+    ws_worktrees "$WS_PROJECTS" "${tickets[@]}" >"$d/worktrees"
+
+    n=0
+    while IFS= read -r dir; do
+        if ws_wt_facts "$dir" >"$d/facts/$n" 2>"$d/facts/$n.err" </dev/null; then
+            n=$((n + 1))
+        else
+            echo "ws: skip $dir: git cannot read this worktree" >&2
+        fi
+    done <"$d/worktrees"
+
+    for ((i = 0; i < n; i++)); do
+        [[ -n $(ws_fact "$d/facts/$i" branch) ]] || continue
+        printf '%s\t%s\n' "$(ws_fact "$d/facts/$i" common)" "$(ws_fact "$d/facts/$i" branch)"
+    done | sort -u >"$d/want"
+    ws_pr_states <"$d/want" >"$d/prs" || return
+    while IFS=$'\t' read -r common branch state number oid; do
+        pr[$common$'\t'$branch]=$state$'\t'$number$'\t'$oid
+    done <"$d/prs"
+
+    : >"$d/table"
+    : >"$d/plan"
+    for ((i = 0; i < n; i++)); do
+        common=$(ws_fact "$d/facts/$i" common)
+        branch=$(ws_fact "$d/facts/$i" branch)
+        path=$(ws_fact "$d/facts/$i" path)
+        shown=${path/#"$HOME/"/\~/}
+        state=- number='' oid=''
+        [[ -z $branch || -z ${pr[$common$'\t'$branch]+set} ]] ||
+            IFS=$'\t' read -r state number oid <<<"${pr[$common$'\t'$branch]}"
+        IFS=$'\t' read -r action detail < <(prune_classify "$d/facts/$i" "$state" "$oid" "$include_detached")
+        shown_pr=-
+        [[ -z $number ]] || shown_pr="#$number $state"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$action" "$(basename "${common%/.git}")" "$shown_pr" \
+            "${branch:-(detached)}" "$shown" "$detail" >>"$d/table"
+        [[ $action != REMOVE ]] ||
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "$common" "$path" "$shown" "$state" "$branch" "$number" "$oid" >>"$d/plan"
     done
-    prune_report
+
+    prune_report "$d/table"
     if ((apply)); then
         echo
-        prune_apply
+        prune_apply "$d/plan" "$d/facts"
     fi
 }
 
