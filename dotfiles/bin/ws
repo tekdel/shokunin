@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WS_PROJECTS=${WS_PROJECTS:-$HOME/projects}
+WS_ROOT=${WS_ROOT:-$HOME/work}
+
+declare -A WS_COMMANDS=(
+    [prune]="list worktrees whose PR merged or closed, --apply removes them"
+)
+
+usage() {
+    local cmd
+    echo "usage: ws <command> [args]"
+    echo
+    for cmd in $(printf '%s\n' "${!WS_COMMANDS[@]}" | sort); do
+        printf '  %-10s %s\n' "$cmd" "${WS_COMMANDS[$cmd]}"
+    done
+}
+
+prune_usage() {
+    cat <<'EOF'
+usage: ws prune [--apply] [--include-detached]
+
+Lists every linked worktree under $WS_PROJECTS/ and $WS_ROOT/<ticket>/.
+A worktree is REMOVE when its branch has a merged or closed PR, its tree
+is clean, and every commit on HEAD is on a remote. Every other worktree
+is KEEP with the reason.
+
+  --apply             ask once, remove the REMOVE worktrees, and delete
+                      their merged branches with git branch -d
+  --include-detached  treat clean, pushed detached worktrees as REMOVE
+EOF
+}
+
+prune_slug() {
+    local url
+    url=$(git -C "$1" config --get remote.origin.url) || {
+        echo "no origin remote" >&2
+        return 1
+    }
+    [[ $url =~ github\.com[:/]([^/]+/[^/]+)$ ]] || {
+        echo "origin is not on github.com: $url" >&2
+        return 1
+    }
+    echo "${BASH_REMATCH[1]%.git}"
+}
+
+prune_fetch_prs() {
+    local slug
+    slug=$(prune_slug "$1") || return
+    gh pr list -R "$slug" --state all --limit 1000 --json headRefName,state,number |
+        jq -r '
+            group_by(.headRefName)[]
+            | max_by({OPEN: 3, MERGED: 2, CLOSED: 1}[.state])
+            | [.headRefName, (.state | ascii_downcase), .number]
+            | @tsv'
+}
+
+prune_scan() {
+    local dir common branch status unpushed
+    for dir in "$WS_PROJECTS"/*/ "$WS_ROOT"/*/*/; do
+        dir=${dir%/}
+        [[ -f $dir/.git ]] || continue
+        if ! common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+            echo "ws: skip $dir: git cannot read this worktree" >&2
+            continue
+        fi
+        branch=$(git -C "$dir" branch --show-current)
+        status=$(git -C "$dir" status --porcelain)
+        unpushed=$(git -C "$dir" rev-list --count HEAD --not --remotes 2>/dev/null) || unpushed=1
+        wt_path+=("$dir")
+        wt_main+=("${common%/.git}")
+        wt_branch+=("$branch")
+        wt_dirty+=("${#status}")
+        wt_unpushed+=("$unpushed")
+    done
+}
+
+prune_read_prs() {
+    local i main branch state number key failed=0
+    local -a mains=()
+    local -A job=() prs=()
+    for i in "${!wt_path[@]}"; do
+        main=${wt_main[i]}
+        [[ -n ${wt_branch[i]} && -z ${job[$main]+set} ]] || continue
+        mains+=("$main")
+        prune_fetch_prs "$main" >"$WS_TMP/${#mains[@]}.tsv" 2>"$WS_TMP/${#mains[@]}.err" &
+        job[$main]=$!
+    done
+
+    for i in "${!mains[@]}"; do
+        main=${mains[i]}
+        if ! wait "${job[$main]}"; then
+            echo "ws: cannot read PR state for $(basename "$main")" >&2
+            sed 's/^/  /' "$WS_TMP/$((i + 1)).err" >&2
+            failed=1
+            continue
+        fi
+        while IFS=$'\t' read -r branch state number; do
+            key=$main/$branch
+            prs[$key]="$state $number"
+        done <"$WS_TMP/$((i + 1)).tsv"
+    done
+    ((failed == 0)) || return 2
+
+    for i in "${!wt_path[@]}"; do
+        key=${wt_main[i]}/${wt_branch[i]}
+        if [[ -z ${wt_branch[i]} ]]; then
+            wt_state+=(detached)
+            wt_pr+=(-)
+        elif [[ -n ${prs[$key]+set} ]]; then
+            read -r state number <<<"${prs[$key]}"
+            wt_state+=("$state")
+            wt_pr+=("#$number $state")
+        else
+            wt_state+=(no-pr)
+            wt_pr+=(-)
+        fi
+    done
+}
+
+prune_action() {
+    local state=$1 dirty=$2 unpushed=$3 include_detached=$4
+    case $state in
+    open | no-pr)
+        echo "KEEP $state"
+        return
+        ;;
+    detached)
+        if ((include_detached == 0)); then
+            echo "KEEP detached"
+            return
+        fi
+        ;;
+    esac
+    if ((dirty)); then
+        echo "KEEP dirty"
+    elif ((unpushed)); then
+        echo "KEEP unpushed"
+    else
+        echo REMOVE
+    fi
+}
+
+prune_report() {
+    local i reason line reasons="" removed=0
+    local -A count=()
+    {
+        printf 'ACTION\tREPO\tPR\tBRANCH\tWORKTREE\n'
+        for i in "${!wt_path[@]}"; do
+            printf '%s\t%s\t%s\t%s\t%s\n' "${wt_action[i]}" "$(basename "${wt_main[i]}")" "${wt_pr[i]}" \
+                "${wt_branch[i]:-(detached)}" "${wt_path[i]/#"$HOME/"/\~/}"
+        done
+    } | column -t -s $'\t'
+
+    for i in "${!wt_action[@]}"; do
+        count[${wt_action[i]}]=$((${count[${wt_action[i]}]:-0} + 1))
+    done
+    removed=${count[REMOVE]:-0}
+    for reason in open no-pr detached dirty unpushed; do
+        if ((${count["KEEP $reason"]:-0})); then
+            reasons+="${reasons:+, }$reason ${count["KEEP $reason"]}"
+        fi
+    done
+    line="REMOVE $removed  KEEP $((${#wt_action[@]} - removed))"
+    [[ -z $reasons ]] || line+=" ($reasons)"
+    echo
+    echo "$line"
+}
+
+prune_apply() {
+    local i main answer out status=0
+    local -a doomed=()
+    local -A touched=()
+    for i in "${!wt_action[@]}"; do
+        [[ ${wt_action[i]} != REMOVE ]] || doomed+=("$i")
+    done
+    if ((${#doomed[@]} == 0)); then
+        echo "Nothing to remove."
+        return 0
+    fi
+
+    local noun=worktrees
+    ((${#doomed[@]} > 1)) || noun=worktree
+    printf 'Remove %d %s? [y/N] ' "${#doomed[@]}" "$noun"
+    read -r answer || true
+    case $answer in
+    y | Y | yes) ;;
+    *)
+        echo "Nothing removed."
+        return 0
+        ;;
+    esac
+
+    for i in "${doomed[@]}"; do
+        main=${wt_main[i]}
+        touched[$main]=1
+        if ! git -C "$main" worktree remove "${wt_path[i]}"; then
+            status=1
+            continue
+        fi
+        echo "Removed ${wt_path[i]/#"$HOME/"/\~/}"
+        [[ ${wt_state[i]} == merged ]] || continue
+        if out=$(git -C "$main" branch -d "${wt_branch[i]}" 2>&1); then
+            echo "Deleted branch ${wt_branch[i]}"
+        else
+            echo "$out" >&2
+            status=1
+        fi
+    done
+    for main in "${!touched[@]}"; do
+        git -C "$main" worktree prune
+    done
+    return "$status"
+}
+
+ws_prune() {
+    local apply=0 include_detached=0 i
+    while (($#)); do
+        case $1 in
+        --apply) apply=1 ;;
+        --include-detached) include_detached=1 ;;
+        -h | --help)
+            prune_usage
+            return 0
+            ;;
+        *)
+            prune_usage >&2
+            return 1
+            ;;
+        esac
+        shift
+    done
+
+    local -a wt_path=() wt_main=() wt_branch=() wt_dirty=() wt_unpushed=()
+    local -a wt_state=() wt_pr=() wt_action=()
+    prune_scan
+    prune_read_prs || return
+    for i in "${!wt_path[@]}"; do
+        wt_action+=("$(prune_action "${wt_state[i]}" "${wt_dirty[i]}" "${wt_unpushed[i]}" "$include_detached")")
+    done
+    prune_report
+    if ((apply)); then
+        echo
+        prune_apply
+    fi
+}
+
+main() {
+    local cmd=${1:-}
+    if [[ -z $cmd || -z ${WS_COMMANDS[$cmd]+set} ]]; then
+        usage >&2
+        return 1
+    fi
+    shift
+    WS_TMP=$(mktemp -d)
+    trap 'rm -rf "$WS_TMP"' EXIT
+    "ws_$cmd" "$@"
+}
+
+main "$@"
