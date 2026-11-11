@@ -1756,6 +1756,36 @@ EOF
     refute "a fixture.sh that fails removes its tmux dir" test -e "${made:-/nonexistent}"
 }
 
+test_killed_run_leaves_no_temp_dir() {
+    local made tmux_dir dir left=0 pid i
+    new_fixture
+    mkdir -p "$FX/mktemp-bin"
+    printf '#!/usr/bin/env bash\nout=$(%q "$@") || exit\necho "$out" >>%q\necho "$out"\n' \
+        "$(PATH=$_base_path type -P mktemp)" "$FX/made" >"$FX/mktemp-bin/mktemp"
+    chmod +x "$FX/mktemp-bin/mktemp"
+    echo 30 >"$FX/gh.slow"
+    ws_guard
+    PATH=$FX/mktemp-bin:$PATH setsid bash "$WS_BIN" prune >/dev/null 2>&1 &
+    pid=$!
+    for ((i = 0; i < 200; i++)); do
+        grep -q '^start' "$FX/gh.times" 2>/dev/null && break
+        sleep 0.05
+    done
+    kill -TERM -- "-$pid"
+    wait "$pid"
+    made=$(cat "$FX/made" 2>/dev/null)
+    assert "the killed run made a temp dir" test -n "$made"
+    tmux_dir=$TMUX_TMPDIR
+    drop_fixtures
+    for dir in $made "$tmux_dir"; do
+        if [[ -e $dir ]]; then
+            left=1
+            printf '      left: %s\n' "$dir"
+        fi
+    done
+    assert_eq "dropping the fixture removes the temp dirs of a killed ws run and the tmux dir" 0 "$left"
+}
+
 test_unknown_command() {
     new_fixture
     local err
@@ -1823,7 +1853,7 @@ test_trash_leftovers_are_listed() {
     chmod 555 "$(trash_dir)/archive"
     ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
     chmod 755 "$(trash_dir)/archive"
-    out=$(ws prune --restore t3 2>&1)
+    out=$(ws prune --restore t9 2>&1)
     assert "restore lists ticket files that did not reach the archive" \
         grep -q "^Kept ~/.*/$stamp-t3: it holds no record. No repo lists a worktree in it. ws keeps what it holds.$" \
         <<<"$out"
@@ -1832,6 +1862,8 @@ test_trash_leftovers_are_listed() {
     refute "with no record, no note moves them" grep -q '^    ' <<<"$out"
     assert "the notes settle" settle
     assert "the files stay in the trash" grep -qx third "$(trash_dir)/$stamp-t3/CLAUDE.md"
+    out=$(ws prune --restore t3 2>&1)
+    assert "restore t3 brings those ticket files back" grep -qx third "$t/CLAUDE.md"
 
     new_fixture
     m=$WS_PROJECTS/alpha-merged
@@ -3945,4 +3977,5 @@ run_test test_ticket_dirs_ask_every_repo_with_a_git_inside
 run_test test_apply_skips_a_worktree_another_repo_lists
 run_test test_one_ticket_line_per_ticket
 run_test test_temp_dirs_of_older_runs
+run_test test_killed_run_leaves_no_temp_dir
 finish

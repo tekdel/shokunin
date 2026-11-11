@@ -25,9 +25,10 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   gh.slow              holds seconds for gh to sleep, and logs start and
                        end times to gh.times
   bin/claude           claude shim: agents --json prints agents.json,
-                       stop <id> marks that session stopped, agents
-                       alone prints a banner and waits for a line, and
-                       anything else prints its arguments and sleeps
+                       stop <id> marks that session stopped and kills
+                       its pid, agents alone prints a banner and waits
+                       for a line, and anything else prints its
+                       arguments and sleeps
   agents.json          the sessions claude agents --json lists, [] at
                        first
   claude.log           one line per claude call
@@ -283,9 +284,11 @@ stop | kill)
         echo "No background session ${2-}" >&2
         exit 1
     }
+    pid=$(jq -r --arg id "$2" '.[] | select(.id == $id) | .pid | numbers' "$root/agents.json")
     jq --arg id "$2" 'map(if .id == $id then .state = "stopped" | del(.pid, .status, .waitingFor) else . end)' \
         "$root/agents.json" >"$root/agents.json.new"
     mv "$root/agents.json.new" "$root/agents.json"
+    [[ -z $pid ]] || kill "$pid" 2>/dev/null || true
     ;;
 *)
     echo "claude $* (fixture shim)"

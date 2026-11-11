@@ -17,7 +17,7 @@ session_path() {
 }
 
 has_session() {
-    tmux has-session -t "=$1" 2>/dev/null
+    tmux has-session -t "=$1:" 2>/dev/null
 }
 
 lists_worktree() {
@@ -91,7 +91,7 @@ test_new() {
     assert_eq "the session has the windows claude, shell, and env" "claude shell env" "$(windows_of t1)"
     assert_eq "the session works in the ticket" "$WS_ROOT/t1" "$(session_path t1)"
     assert "the claude window runs claude -n t1" wait_for_line "$FX/claude.log" '-n t1'
-    assert "new says how to attach outside tmux" grep -qx 'Attach with: tmux attach -t t1' <<<"$out"
+    assert "new says how to attach outside tmux" grep -qxF "Attach with: tmux attach -t '=t1:'" <<<"$out"
     ws new v1.2 feat/v alpha >/dev/null 2>&1
     assert_eq "an id with a dot gets its own session" "claude shell env" "$(windows_of v1.2)"
 }
@@ -126,7 +126,7 @@ test_new_rerun() {
     out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun exits 0" 0 "$rc"
     assert_eq "a rerun adds no window" "claude shell env" "$(windows_of t1)"
-    assert "a rerun switches, or says how to attach" grep -qx 'Attach with: tmux attach -t t1' <<<"$out"
+    assert "a rerun switches, or says how to attach" grep -qxF "Attach with: tmux attach -t '=t1:'" <<<"$out"
 
     tmux kill-window -t "=t1:env"
     tmux kill-window -t "=t1:claude"
@@ -457,7 +457,7 @@ test_pick_opens() {
     out=$(WS_FZF_PICK=$WS_PROJECTS/alpha ws pick 2>&1)
     assert "pick makes a session for a project" has_session alpha
     assert_eq "that session works in the project" "$WS_PROJECTS/alpha" "$(session_path alpha)"
-    assert "pick says how to attach outside tmux" grep -qx 'Attach with: tmux attach -t alpha' <<<"$out"
+    assert "pick says how to attach outside tmux" grep -qxF "Attach with: tmux attach -t '=alpha:'" <<<"$out"
     wait_refresh
 
     echo 'echo hydrated' >"$WS_PROJECTS/beta/.tmux-ready"
@@ -486,6 +486,344 @@ commit_in() {
     { echo "$2" >"$1/$2" && git -C "$1" add "$2" && git -C "$1" commit -qm "$2"; } || abort "cannot commit in $1"
 }
 
+start_in() {
+    local i
+    (cd "$1" && exec "${@:2}") >/dev/null 2>&1 &
+    STARTED=$!
+    for ((i = 0; i < 100; i++)); do
+        [[ $(readlink "/proc/$STARTED/cwd" 2>/dev/null) == "$1" && $(cat "/proc/$STARTED/comm" 2>/dev/null) == "$2" ]] &&
+            return 0
+        sleep 0.05
+    done
+    abort "process $STARTED did not start in $1"
+}
+
+stop_started() {
+    local pid
+    for pid; do
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+    done
+}
+
+wait_for_file() {
+    local i
+    for ((i = 0; i < 100; i++)); do
+        [[ -s $1 ]] && return 0
+        sleep 0.05
+    done
+    abort "$1 did not appear"
+}
+
+outer_tmux() {
+    "$(PATH=$_base_path type -P tmux)" -L wsfxout "$@"
+}
+
+attached_session() {
+    tmux list-clients -F '#{session_name}' 2>/dev/null
+}
+
+hint_reaches_session() {
+    local shell=$1 hint=$2
+    mkdir -p "$FX/hint-bin"
+    printf '#!/usr/bin/env bash\n[[ $1 == attach && $2 == -t ]] || exit 9\nexec %q has-session -t "$3"\n' \
+        "$FX/bin/tmux" >"$FX/hint-bin/tmux"
+    chmod +x "$FX/hint-bin/tmux"
+    PATH=$FX/hint-bin:$PATH "$shell" -c "$hint" 2>/dev/null
+}
+
+test_dotted_id() {
+    local out rc hint shell
+    new_fixture_no_ticket
+    fake_fzf
+    out=$(ws new rel.42 feat/dot alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new takes an id with a dot" 0 "$rc"
+    assert_eq "the dotted session has the windows claude, shell, and env" "claude shell env" "$(windows_of rel.42)"
+    hint=$(sed -n 's/^Attach with: //p' <<<"$out")
+    for shell in bash zsh; do
+        if command -v "$shell" >/dev/null; then
+            assert "the attach hint, typed into $shell, reaches the dotted session" hint_reaches_session "$shell" "$hint"
+        else
+            ok "attach hint in $shell skipped: no $shell"
+        fi
+    done
+
+    out=$(ws new rel.42 feat/dot alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun on a dotted id exits 0" 0 "$rc"
+    refute "a rerun makes no second session" grep -q 'duplicate session' <<<"$out"
+    assert_eq "a rerun adds no window to the dotted session" "claude shell env" "$(windows_of rel.42)"
+
+    tmux kill-window -t "=rel.42:env"
+    WS_FZF_PICK=$WS_ROOT/rel.42 ws pick >/dev/null 2>&1 && rc=0 || rc=$?
+    wait_refresh
+    assert_eq "pick opens a dotted ticket" 0 "$rc"
+    assert_eq "pick repairs the dotted session" "claude shell env" "$(windows_of rel.42)"
+
+    tmux new-session -d -s other -c "$HOME"
+    outer_tmux new-session -d -x 120 -y 40 "env -u TMUX $(printf %q "$FX/bin/tmux") attach-session -t '=other:'"
+    for ((rc = 0; rc < 100; rc++)); do
+        [[ $(attached_session) == other ]] && break
+        sleep 0.05
+    done
+    assert_eq "a client is attached to the other session" other "$(attached_session)"
+    TMUX=$TMUX_TMPDIR/tmux-$UID/wsfx,1,0 WS_FZF_PICK=$WS_ROOT/rel.42 ws pick >/dev/null 2>&1
+    wait_refresh
+    assert_eq "pick from inside tmux switches the client to the dotted ticket" rel.42 "$(attached_session)"
+    tmux switch-client -t "=other:" 2>/dev/null
+    outer_tmux kill-server 2>/dev/null
+
+    out=$(ws rm rel.42 2>&1) && rc=0 || rc=$?
+    assert_eq "rm takes a dotted id" 0 "$rc"
+    refute "rm kills the dotted session" has_session rel.42
+    refute "rm removes the dotted ticket" test -e "$WS_ROOT/rel.42"
+}
+
+test_names_are_ascii() {
+    local out rc utf8=""
+    new_fixture_no_ticket
+    utf8=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8' | head -n 1)
+    [[ -n $utf8 ]] || utf8=C.UTF-8
+    out=$(LC_ALL=$utf8 ws new ünï feat/u alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a non-ASCII id under $utf8" 1 "$rc"
+    assert "it says the id takes ASCII only" grep -qF "ws: ticket id 'ünï' must start with an ASCII letter or digit" <<<"$out"
+    out=$(LC_ALL=$utf8 ws new --topic ünï t1 feat/u alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a non-ASCII --topic under $utf8" 1 "$rc"
+    assert "it says --topic takes ASCII only" grep -qF "ws: --topic takes a plain ASCII name" <<<"$out"
+    out=$(LC_ALL=$utf8 ws new --ticket ünï t1 feat/u alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a non-ASCII --ticket under $utf8" 1 "$rc"
+    out=$(LC_ALL=$utf8 ws new t1 feat/ünï alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a non-ASCII branch under $utf8" 1 "$rc"
+    assert "it names the branch" grep -qF "ws: 'feat/ünï' is not a branch name ws takes" <<<"$out"
+    out=$(LC_ALL=$utf8 ws adopt ünï "$WS_PROJECTS/alpha-open" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a non-ASCII id under $utf8" 1 "$rc"
+    out=$(LC_ALL=$utf8 ws stage ünï qa 2>&1) && rc=0 || rc=$?
+    assert_eq "stage refuses a non-ASCII id under $utf8" 1 "$rc"
+    assert_eq "WS_ROOT stays empty" "" "$(find "$WS_ROOT" -mindepth 1 -maxdepth 1 -printf '%P\n')"
+}
+
+test_rm_refuses_a_foreign_process() {
+    local out rc
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    agents '[{"kind":"background","id":"bg1","state":"working","cwd":"'"$WS_ROOT"'/t1","startedAt":0}]'
+    start_in "$WS_ROOT/t1/alpha" sleep 300
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$STARTED"
+    assert_eq "rm refuses a process outside the ticket's sessions" 1 "$rc"
+    assert "it names the process" grep -qF "process $STARTED (sleep) works in ~/work/t1" <<<"$out"
+    assert "it keeps the tmux session" has_session t1
+    assert_eq "it stops no Claude session" 0 "$(claude_calls '^stop')"
+    assert "it keeps alpha" is_worktree "$WS_ROOT/t1/alpha"
+    assert "it keeps beta" is_worktree "$WS_ROOT/t1/beta"
+    assert "it keeps .ws" test -f "$WS_ROOT/t1/.ws"
+
+    start_in "$WS_ROOT/t1" sleep 300
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$STARTED"
+    assert_eq "rm refuses a process in the ticket dir itself" 1 "$rc"
+    assert "it keeps both worktrees" is_worktree "$WS_ROOT/t1/beta"
+}
+
+test_rm_ignores_its_own_sessions() {
+    local out rc host bg2
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    tmux split-window -d -t "=t1:shell" -c "$WS_ROOT/t1/alpha" "sleep 300 & wait"
+    start_in "$WS_ROOT/t1/beta" bash -c 'sleep 300 & echo $! >"$1"; wait' _ "$FX/bg.pid" --bg-pty-host
+    host=$STARTED
+    wait_for_file "$FX/bg.pid"
+    start_in "$WS_ROOT/t1" sleep 300
+    bg2=$STARTED
+    agents '[{"kind":"background","id":"bg1","state":"working","cwd":"'"$WS_ROOT"'/t1/beta","pid":'"$(<"$FX/bg.pid")"',"startedAt":0},
+        {"kind":"background","id":"bg2","state":"blocked","cwd":"'"$WS_ROOT"'/t1","pid":'"$bg2"',"startedAt":0}]'
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$host" "$(<"$FX/bg.pid")" "$bg2"
+    assert_eq "rm takes a ticket whose only processes are its tmux panes and its Claude sessions" 0 "$rc"
+    assert_eq "it stops the background session" 1 "$(claude_calls '^stop bg1$')"
+    assert_eq "it stops the blocked background session" 1 "$(claude_calls '^stop bg2$')"
+    refute "it kills the tmux session" has_session t1
+    refute "it removes the ticket" test -e "$WS_ROOT/t1"
+}
+
+test_rm_moves_nothing_when_a_process_survives() {
+    local out rc pid
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    tmux split-window -d -t "=t1:shell" -c "$WS_ROOT/t1" \
+        "nohup sleep 300 >/dev/null 2>&1 & echo \$! >$(printf %q "$FX/survivor.pid"); wait"
+    wait_for_file "$FX/survivor.pid"
+    pid=$(<"$FX/survivor.pid")
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$pid"
+    assert_eq "rm exits 1 when a process outlives the session" 1 "$rc"
+    refute "it got as far as the kill" has_session t1
+    assert "it says the process outlived the session" \
+        grep -qF "ws: a process still works in ~/work/t1 after its sessions ended, so ws moved nothing" <<<"$out"
+    assert "it keeps alpha" is_worktree "$WS_ROOT/t1/alpha"
+    assert "it keeps beta" is_worktree "$WS_ROOT/t1/beta"
+    assert "it keeps .ws" test -f "$WS_ROOT/t1/.ws"
+}
+
+test_rm_ticket_without_worktree() {
+    local out rc
+    new_fixture_no_ticket
+    mkdir -p "$WS_ROOT/t5"
+    printf 'WS_ID=t5\nWS_BRANCH=feat/t5\n' >"$WS_ROOT/t5/.ws"
+    echo notes >"$WS_ROOT/t5/notes.md"
+    out=$(ws rm t5 2>&1) && rc=0 || rc=$?
+    assert_eq "rm takes a ticket with no worktree" 0 "$rc"
+    refute "it removes the ticket dir" test -e "$WS_ROOT/t5"
+    out=$(ws prune --restore t5 2>&1) && rc=0 || rc=$?
+    assert_eq "restore brings back a ticket with no worktree" 0 "$rc"
+    assert_eq "restore brings back its .ws" feat/t5 "$(ws_value t5 WS_BRANCH)"
+    assert_eq "restore brings back its other files" notes "$(cat "$WS_ROOT/t5/notes.md" 2>/dev/null)"
+    assert "restore says what it restored" grep -qxF "Restored ~/work/t5" <<<"$out"
+}
+
+test_adopt_checks_the_session_first() {
+    local out rc
+    new_fixture_no_ticket
+    add_worktree beta "$WS_PROJECTS/beta-six" feat/six
+    tmux new-session -d -s t6 -c "$HOME"
+    out=$(ws adopt t6 "$WS_PROJECTS/beta-six" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses an id whose tmux session works elsewhere" 1 "$rc"
+    assert "it names the session's directory" grep -qF "tmux session t6 works in ~, not ~/work/t6" <<<"$out"
+    assert "it moves nothing first" lists_worktree beta "$WS_PROJECTS/beta-six"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/t6"
+}
+
+test_adopt_refuses_another_tickets_worktree() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t2 feat/t2 alpha >/dev/null 2>&1
+    out=$(ws adopt t7 "$WS_ROOT/t2/alpha" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a worktree of another ticket" 1 "$rc"
+    assert "it names the ticket" grep -qF "~/work/t2/alpha belongs to ticket t2" <<<"$out"
+    assert "the worktree stays in its ticket" lists_worktree alpha "$WS_ROOT/t2/alpha"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/t7"
+}
+
+age_pr_cache() {
+    jq --argjson t "$(($(date +%s) - $1))" '.prs.time = $t' "$XDG_CACHE_HOME/ws/status.json" >"$FX/status.new" &&
+        mv "$FX/status.new" "$XDG_CACHE_HOME/ws/status.json"
+}
+
+test_status_retries_a_gh_failure_soon() {
+    local before
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
+    ws status --refresh
+    age_pr_cache 61
+    before=$(gh_calls)
+    ws status --refresh
+    assert_eq "a good PR state stays cached for WS_PR_TTL" "$before" "$(gh_calls)"
+
+    : >"$FX/gh.fail"
+    WS_PR_TTL=0 ws status --refresh 2>/dev/null
+    rm "$FX/gh.fail"
+    assert "a failed gh call is cached" grep -qE '^t1 +spec +pr:failed +feat/x$' <<<"$(ws ls)"
+    age_pr_cache 30
+    before=$(gh_calls)
+    ws status --refresh
+    assert_eq "a failure 30 s old stays cached" "$before" "$(gh_calls)"
+    age_pr_cache 61
+    ws status --refresh
+    assert "a failure over 60 s old asks gh again" test "$(gh_calls)" -gt "$before"
+    assert "the new state replaces the failure" grep -qE '^t1 +spec +pr:open +feat/x$' <<<"$(ws ls)"
+}
+
+most_gh_at_once() {
+    awk '{ print $2, ($1 == "start" ? 1 : -1) }' "$FX/gh.times" | sort -k1,1n -k2,2n |
+        awk '{ n += $2; if (n > max) max = n } END { print max + 0 }'
+}
+
+test_gh_calls_run_eight_at_a_time() {
+    local n
+    new_fixture_no_ticket
+    for n in $(seq 12); do
+        mkdir -p "$WS_ROOT/m$n"
+        printf 'WS_ID=m%s\nWS_BRANCH=feat/m%s\nWS_REPOS=alpha\nWS_STAGE=spec\n' "$n" "$n" >"$WS_ROOT/m$n/.ws"
+    done
+    echo 0.4 >"$FX/gh.slow"
+    ws status --refresh
+    assert_eq "every ticket branch gets one gh call" 12 "$(grep -c '^start' "$FX/gh.times")"
+    n=$(most_gh_at_once)
+    assert "at most 8 gh calls run at once ($n ran)" test "$n" -le 8
+    assert "gh calls still run in parallel ($n ran)" test "$n" -ge 2
+}
+
+test_claude_md_keeps_edits() {
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    assert "a rerun rewrites an unedited CLAUDE.md with the new repo" \
+        grep -qF '`beta/` belongs to `~/projects/beta`' "$WS_ROOT/t1/CLAUDE.md"
+
+    echo "my notes" >>"$WS_ROOT/t1/CLAUDE.md"
+    tmux kill-window -t "=t1:env"
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    assert "new keeps an edited CLAUDE.md" grep -qx "my notes" "$WS_ROOT/t1/CLAUDE.md"
+    assert "new still repairs the rest" test "$(windows_of t1)" = "claude shell env"
+
+    add_worktree alpha "$WS_PROJECTS/alpha-t2" feat/t2
+    ws new t2 feat/t2 beta >/dev/null 2>&1
+    echo "t2 notes" >>"$WS_ROOT/t2/CLAUDE.md"
+    ws adopt t2 "$WS_PROJECTS/alpha-t2" >/dev/null 2>&1
+    assert "adopt moves the worktree in" lists_worktree alpha "$WS_ROOT/t2/alpha"
+    assert "adopt keeps an edited CLAUDE.md" grep -qx "t2 notes" "$WS_ROOT/t2/CLAUDE.md"
+}
+
+zsh_launch() {
+    local zd=$FX/zdot
+    mkdir -p "$zd"
+    cp "$WS_TESTS/../../dotfiles/zsh/.zshrc" "$zd/.zshrc"
+    printf 'echo ALIVE-$((6 * 7))\nexit\n' |
+        env -i HOME="$FX/zhome" ZDOTDIR="$zd" TERM=dumb DISPLAY=:99 "$@" timeout 20 zsh -i 2>&1
+}
+
+test_zsh_launch_line() {
+    local out rc ro
+    if ! command -v zsh >/dev/null; then
+        ok "zsh launch line skipped: no zsh"
+        return
+    fi
+    new_fixture_no_ticket
+    mkdir -p "$FX/zhome" "$FX/nobin" "$FX/okbin" "$FX/failbin" "$FX/realbin"
+    for cmd in zsh env timeout cat; do
+        ln -s "$(type -P "$cmd")" "$FX/nobin/$cmd"
+    done
+    printf '#!/bin/sh\necho "$@" >>%q\nexit 0\n' "$FX/tmux-ok.log" >"$FX/okbin/tmux"
+    printf '#!/bin/sh\nexit 1\n' >"$FX/failbin/tmux"
+    printf '#!/bin/sh\nexec %q -L wsfxz "$@"\n' "$(PATH=$_base_path type -P tmux)" >"$FX/realbin/tmux"
+    chmod +x "$FX/okbin/tmux" "$FX/failbin/tmux" "$FX/realbin/tmux"
+
+    out=$(zsh_launch PATH="$FX/nobin") && rc=0 || rc=$?
+    assert "a desktop terminal without tmux gets a shell" grep -q ALIVE-42 <<<"$out"
+
+    ro=$FX/ro-sockets
+    mkdir -p "$ro"
+    chmod 555 "$ro"
+    out=$(zsh_launch PATH="$FX/realbin:$FX/nobin" TMUX_TMPDIR="$ro") && rc=0 || rc=$?
+    chmod 755 "$ro"
+    assert "tmux fails on the unwritable socket dir" grep -qF "couldn't create directory" <<<"$out"
+    assert "a desktop terminal whose tmux fails gets a shell" grep -q ALIVE-42 <<<"$out"
+
+    out=$(zsh_launch PATH="$FX/failbin:$FX/nobin") && rc=0 || rc=$?
+    assert "a tmux that exits 1 leaves a shell" grep -q ALIVE-42 <<<"$out"
+
+    out=$(zsh_launch PATH="$FX/okbin:$FX/nobin") && rc=0 || rc=$?
+    assert_eq "a desktop terminal runs tmux new-session -A -s main" "new-session -A -s main" "$(cat "$FX/tmux-ok.log")"
+    refute "the terminal closes when tmux exits 0" grep -q ALIVE-42 <<<"$out"
+    assert_eq "and the shell exits 0" 0 "$rc"
+
+    out=$(zsh_launch PATH="$FX/okbin:$FX/nobin" TMUX=/tmp/x,1,0) && rc=0 || rc=$?
+    assert "a shell inside tmux starts no tmux" grep -q ALIVE-42 <<<"$out"
+}
+
 run_test test_new
 run_test test_new_existing_branch
 run_test test_new_rerun
@@ -502,4 +840,16 @@ run_test test_pick_lists_what_the_sessionizer_listed
 run_test test_pick_order
 run_test test_status
 run_test test_pick_opens
+run_test test_dotted_id
+run_test test_names_are_ascii
+run_test test_rm_refuses_a_foreign_process
+run_test test_rm_ignores_its_own_sessions
+run_test test_rm_moves_nothing_when_a_process_survives
+run_test test_rm_ticket_without_worktree
+run_test test_adopt_checks_the_session_first
+run_test test_adopt_refuses_another_tickets_worktree
+run_test test_status_retries_a_gh_failure_soon
+run_test test_gh_calls_run_eight_at_a_time
+run_test test_claude_md_keeps_edits
+run_test test_zsh_launch_line
 finish
