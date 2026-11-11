@@ -4,6 +4,7 @@ WS_TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 _failures=0
 _base_path=$PATH
+_base_tmpdir=${TMPDIR-}
 _sandboxes=()
 _sandbox=
 _suite=$$
@@ -73,6 +74,11 @@ make_fixture() {
     drop_fixtures
     unset FX WS_TRASH
     _sandbox=
+    if [[ -n $_base_tmpdir ]]; then
+        export TMPDIR=$_base_tmpdir
+    else
+        unset TMPDIR
+    fi
     sandbox=$(mktemp -d "${TMPDIR:-/tmp}/ws-test.XXXXXX") || abort "cannot make a sandbox"
     _sandboxes+=("$sandbox")
     PATH=$_base_path

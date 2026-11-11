@@ -44,10 +44,11 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   <engine>.log         one line per engine call
   env.sh               exports HOME, the XDG_CONFIG_HOME, XDG_CACHE_HOME,
                        XDG_DATA_HOME, and XDG_STATE_HOME dirs under
-                       <root>, GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM,
-                       WS_ROOT, WS_PROJECTS, WS_VAULT, PATH, and a short
-                       TMUX_TMPDIR under /tmp, and unsets TMUX and
-                       TMUX_PANE; remove TMUX_TMPDIR with <root>
+                       <root>, TMPDIR as <root>/.tmp, GIT_CONFIG_GLOBAL,
+                       GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
+                       WS_VAULT, PATH, and a short TMUX_TMPDIR under
+                       /tmp, and unsets TMUX and TMUX_PANE; remove
+                       TMUX_TMPDIR with <root>
 EOF
 }
 
@@ -70,7 +71,7 @@ root=$(cd "$1" && pwd)
 projects=$root/projects
 real_tmux=$(command -v tmux) || real_tmux=
 mkdir -p "$root/origins" "$projects/notes" "$root/work" "$root/vault" "$root/bin" \
-    "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state"
+    "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state" "$root/.tmp"
 : >"$root/.zshrc"
 # A socket path under <root> can pass the 108-byte limit.
 tmux_dir=$(mktemp -d /tmp/wsx.XXXXXX)
@@ -98,6 +99,7 @@ export XDG_CACHE_HOME=$(printf %q "$root/.cache")
 export XDG_DATA_HOME=$(printf %q "$root/.local/share")
 export XDG_STATE_HOME=$(printf %q "$root/.local/state")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
+export TMPDIR=$(printf %q "$root/.tmp")
 unset TMUX TMUX_PANE
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
