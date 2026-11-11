@@ -97,34 +97,37 @@ worktree, and again before --purge deletes an entry.
 
 A process in another mount namespace counts when its directory is the
 worktree or a directory up to three levels below it, outside
-WS_REGENERABLE directories. A process of yours whose directory ws cannot
-read, because it turned off core dumps or holds extra capabilities, makes
-every worktree KEEP unreadable while it runs, and so does a zombie process
-of yours until its parent reaps it. The check skips such a process when
-its parent belongs to another user, as for SSH logins, when its parent
-is a process of yours whose own parent is init, as for user services and
-daemons such as a tmux server, and when it runs below a containerd-shim
-that docker answered for or a conmon that podman answered for, since
-the container check covers it. So a command that turns off core dumps
-and runs directly in a tmux pane is not seen. The check does not see
-processes of other users either. It does not look at open files. A
-process whose directory is elsewhere can hold an ignored file in a
-worktree open, and a write it makes in the about 45 ms between the last
-check of --purge and the removal is lost. --purge asks the engines about
-85 ms before the removal, so a container that starts in that window is
-not seen. Both windows grow when --purge saves a bundle first.
+WS_REGENERABLE directories. A process of yours whose directory or status
+file ws cannot read, because it turned off core dumps or holds extra
+capabilities, makes every worktree KEEP unreadable while it runs, and so
+does a zombie process of yours until its parent reaps it; the row names
+the zombie's parent. The check skips such a process when its parent
+belongs to another user, as for SSH logins, when its parent is a process
+of yours whose own parent is init, as for user services and daemons such
+as a tmux server, and when it runs below a containerd-shim in docker's
+containerd namespace, moby, while docker answered, or below a conmon
+while podman answered, since the container check covers it. So a command
+that turns off core dumps and runs directly in a tmux pane is not seen.
+The check does not see processes of other users either. It does not look
+at open files. A process whose directory is elsewhere can hold an ignored
+file in a worktree open, and a write it makes in the about 45 ms between
+the last check of --purge and the removal is lost. --purge asks the
+engines about 85 ms before the removal, so a container that starts in
+that window is not seen. Both windows grow when --purge saves a bundle
+first.
 
 A worktree that is the source of a container's bind mount, holds one, or
 lies inside one is KEEP in-use, and the row names the container. ws
 reads Mounts and HostConfig.Binds, and --purge also matches the path an
 entry came from. An engine whose daemon does not run has no containers,
-unless a containerd-shim, conmon, crun, or runc process runs, as with
-docker live-restore: then every worktree is KEEP unreadable. Any other
-engine error, an engine that does not answer in 30 s, and a bind mount
-whose source is not an absolute path make every worktree KEEP
-unreadable. The check does not see named volumes, containers of another
-docker context or of another engine, or a container whose mount source
-was moved or renamed after it started.
+unless a containerd-shim, conmon, crun, runc, or runsc process runs, as
+with docker live-restore: then every worktree is KEEP unreadable. Any
+other engine error, an engine that does not answer in 30 s, an inspect
+that leaves out a container ps listed, and a bind mount whose source is
+not an absolute path make every worktree KEEP unreadable. The check does
+not see named volumes, containers of another docker context or of
+another engine, or a container whose mount source was moved or renamed
+after it started.
 
 The trash:
   <stamp>-<name>/        a worktree; <stamp>-<name>.meta is its record
@@ -134,14 +137,21 @@ When a name is taken, its stamp gets a counter, as in <stamp>.2-<name>.
 A trash directory without a record is an orphan. --restore and --purge
 never delete one. They list each orphan, each entry git cannot use,
 each record whose directory is gone, and each ticket dir that holds only
-files or nothing, with its next step. They ask git how it sees each
-worktree first, one level down too, as a move can land a worktree
-inside a directory another process made. A next step moves a worktree
-git lists out of the trash, to where it came from or to a free path
-next to it. It moves something to the archive or deletes a record only
-when the repo the worktree belongs to says the worktree is no longer
-there. When the main checkout moved, the first step is git worktree
-repair. Otherwise the note says what ws found and keeps everything.
+files or nothing, with its next step. A directory that holds a .git up
+to three levels down gets only git worktree repair and git worktree
+move, out of the trash to where it came from or a free path next to it,
+and only from the one repo that lists that worktree. ws asks the repo in
+the record first, then every repo directly under WS_PROJECTS. When no
+repo or more than one lists it, or ws cannot read a worktree list, the
+note says so and ws keeps it. Ticket files go to the archive, and rmdir
+removes a directory that holds only empty directories. A record whose
+directory is gone is deleted when git lists its worktree out of the
+trash, or, for a .meta record, when no repo lists its worktree at a path
+ws used; an unfinished .meta.tmp record stays otherwise. Everything else
+stays. When git worktree repair points an entry at a repo that moved, ws
+writes that repo into the entry's record. --apply, --restore, and
+--purge remove a .tmp.<pid>.* dir in the trash once process <pid> is
+gone.
 
 Environment:
   WS_TRASH        the trash, ${XDG_DATA_HOME:-~/.local/share}/ws/trash by
@@ -205,7 +215,12 @@ ws_fact() {
 }
 
 ws_shown() {
-    printf '%s\n' "${1/#"$HOME/"/\~/}"
+    local p=${1/#"$HOME/"/\~/}
+    if [[ $p == *[$'\t\n\r']* ]]; then
+        printf '%q\n' "$p"
+    else
+        printf '%s\n' "$p"
+    fi
 }
 
 # Prints each linked worktree directly inside the given roots, one path
@@ -271,6 +286,30 @@ ws_system_child() {
     [[ ! -O $WS_PROC/$parent ]] || [[ $(ws_ppid "$parent") == 1 ]]
 }
 
+ws_comm() {
+    local stat
+    { IFS= read -r stat <"$WS_PROC/$1/stat"; } 2>/dev/null || return 1
+    stat=${stat#*(}
+    printf '%s\n' "${stat%)*}"
+}
+
+# Docker runs its containers in the containerd namespace moby; k3s and
+# other containerd clients use their own.
+ws_shim_namespace() {
+    local arg prev=""
+    local -a args=()
+    [[ -r $WS_PROC/$1/cmdline ]] || return 1
+    mapfile -d '' args <"$WS_PROC/$1/cmdline"
+    for arg in "${args[@]}"; do
+        if [[ ($prev == -namespace || $prev == --namespace) && $arg == "$2" ]] ||
+            [[ $arg == -namespace="$2" || $arg == --namespace="$2" ]]; then
+            return 0
+        fi
+        prev=$arg
+    done
+    return 1
+}
+
 ws_engine_vouches() {
     local pid=$1 stat comm i
     for ((i = 0; i < 64; i++)); do
@@ -278,8 +317,14 @@ ws_engine_vouches() {
         comm=${stat#*(}
         comm=${comm%)*}
         case $comm in
-        containerd-shim*) [[ " $WS_ENGINES_OK " == *" docker "* ]] && return 0 || return 1 ;;
-        conmon) [[ " $WS_ENGINES_OK " == *" podman "* ]] && return 0 || return 1 ;;
+        containerd-shim*)
+            [[ " $WS_ENGINES_OK " == *" docker "* ]] && ws_shim_namespace "$pid" moby
+            return
+            ;;
+        conmon)
+            [[ " $WS_ENGINES_OK " == *" podman "* ]]
+            return
+            ;;
         esac
         pid=${stat##*) }
         pid=${pid#* }
@@ -296,7 +341,7 @@ ws_runtime() {
         comm=${stat#*(}
         comm=${comm%)*}
         case $comm in
-        containerd-shim* | conmon | crun | runc*)
+        containerd-shim* | conmon* | crun | runc* | runsc*)
             printf '%s (%s)\n' "${stat%% *}" "$comm"
             return 0
             ;;
@@ -322,7 +367,8 @@ ws_dir_ids() {
 }
 
 ws_cwd_count() {
-    local real self proc link name id ids="" n=0 rc=0 out
+    local real self proc link name state ppid id ids="" n=0 rc=0 out
+    local -a status=()
     local -A cwd=() foreign=()
     real=$(realpath -e -- "$1") || return 1
     self=$(readlink -- "$WS_PROC/self/ns/mnt" 2>/dev/null) || self=
@@ -356,34 +402,56 @@ ws_cwd_count() {
         return 0
     }
     # awk stops at a file argument it cannot open; getline skips only that file.
-    out=$(printf '%s\n' "$WS_PROC"/[0-9]*/status | awk -v me="$EUID" '
+    status=("$WS_PROC"/[0-9]*/status)
+    out=$(printf '%s\n' "${status[@]}" | awk -v me="$EUID" '
         {
+            dir = $0
+            sub("/status$", "", dir)
             name = ""
-            while ((getline line < $0) > 0) {
+            state = ppid = "-"
+            while ((r = (getline line < $0)) > 0) {
                 if (line ~ /^Name:/) {
                     name = line
                     sub(/^Name:[ \t]*/, "", name)
+                } else if (line ~ /^State:/) {
+                    split(line, f)
+                    state = f[2]
+                } else if (line ~ /^PPid:/) {
+                    split(line, f)
+                    ppid = f[2]
                 } else if (line ~ /^Uid:/) {
                     split(line, uid)
-                    if (uid[2] == me && uid[3] == me) {
-                        dir = $0
-                        sub("/status$", "", dir)
-                        print dir "\t" name
-                    }
+                    if (uid[2] == me && uid[3] == me)
+                        print dir "\t" state "\t" ppid "\t" name
                     break
                 }
             }
+            if (r < 0)
+                print dir "\t?\t-\t"
             close($0)
-        }') || {
+        }
+        END { print "end\t" NR }') || {
         echo "cannot read process status files: awk failed"
         return 1
     }
-    while IFS=$'\t' read -r proc name; do
-        [[ -n $proc && -z ${cwd[$proc]+set} ]] || continue
+    if [[ ${out##*$'\n'} != "end"$'\t'"${#status[@]}" ]]; then
+        echo "cannot read process status files: awk did not finish"
+        return 1
+    fi
+    while IFS=$'\t' read -r proc state ppid name; do
+        [[ $proc == "$WS_PROC"/* && -z ${cwd[$proc]+set} ]] || continue
+        if [[ $state == "?" ]]; then
+            [[ -O $proc ]] || continue
+            name=$(ws_comm "${proc##*/}") || name=
+        fi
         if link=$(readlink -- "$proc/cwd" 2>/dev/null); then
             [[ $link != "$real" && $link != "$real"/* ]] || n=$((n + 1))
         elif [[ -e $proc ]] && ! ws_system_child "${proc##*/}" && ! ws_engine_vouches "${proc##*/}"; then
-            echo "process ${proc##*/} ($name) hides its working directory"
+            if [[ $state == Z ]]; then
+                echo "process ${proc##*/} ($name) is a zombie child of process $ppid ($(ws_comm "$ppid"))"
+            else
+                echo "process ${proc##*/} ($name) hides its working directory"
+            fi
             return 1
         fi
     done <<<"$out"
@@ -391,36 +459,52 @@ ws_cwd_count() {
 }
 
 ws_engine_down() {
-    [[ -s $1 ]] && ! grep -qvE 'Cannot connect to the Docker daemon|Cannot connect to Podman|connect: (no such file or directory|connection refused)' \
-        -- "$1"
+    ((0 < $2 && $2 < 124)) && [[ -s $1 ]] &&
+        ! grep -qvE 'Cannot connect to the Docker daemon|Cannot connect to Podman|connect: (no such file or directory|connection refused)' \
+            -- "$1"
 }
 
-# inspect exits 1 with "no such object" for a container that stopped after ps.
-ws_engine_gone() {
-    local err=$1 json=$2 rc=$3 line id
-    local -A named=()
-    shift 3
-    ((rc != 124 && rc < 128)) && [[ -s $err ]] || return 1
-    while IFS= read -r line; do
-        [[ $line =~ [Nn]o\ such\ (object|container):\ *\"?([^\"]+)\"?$ ]] || return 1
-        named[${BASH_REMATCH[2]}]=1
-    done <"$err"
-    while IFS= read -r id; do
-        named[$id]=1
-    done < <(jq -r '.[].Id' "$json" 2>/dev/null)
-    for id; do
-        [[ -n ${named[$id]+set} ]] || return 1
-    done
+ws_usec() {
+    printf '%s\n' "${EPOCHREALTIME//[!0-9]/}"
 }
 
-ws_engine_error() {
+ws_engine_failed() {
     local line
-    if (($2 == 124 || ($2 == 137 && SECONDS - $4 >= 30))); then
+    if (($2 == 124 || $2 == 137)) && (($(ws_usec) - $4 >= 30000000)); then
         printf '%s timed out after 30 s\n' "$1"
         return
     fi
     line=$(head -n 1 -- "$3")
     printf '%s failed: %s\n' "$1" "${line:-exit code $2}"
+}
+
+# inspect exits 1 with "no such object" for a container that stopped after ps.
+ws_engine_answered() {
+    local engine=$1 err=$2 json=$3 rc=$4 line id
+    local -A seen=()
+    shift 4
+    if ((rc)) && [[ ! -s $err ]]; then
+        printf '%s inspect failed: exit code %s\n' "$engine" "$rc"
+        return 1
+    fi
+    if ((rc)); then
+        while IFS= read -r line || [[ -n $line ]]; do
+            if ! [[ $line =~ [Nn]o\ such\ (object|container):\ *\"?([^\"]+)\"?$ ]]; then
+                printf '%s inspect failed: %s\n' "$engine" "$line"
+                return 1
+            fi
+            seen[${BASH_REMATCH[2]}]=1
+        done <"$err"
+    fi
+    while IFS= read -r id; do
+        seen[$id]=1
+    done < <(jq -r '.[].Id | strings' <"$json" 2>/dev/null)
+    for id; do
+        if [[ -z ${seen[$id]+set} ]]; then
+            printf '%s inspect did not answer for container %s\n' "$engine" "$id"
+            return 1
+        fi
+    done
 }
 
 ws_engine_mounts() {
@@ -436,29 +520,33 @@ ws_engine_mounts() {
     }
     for engine in docker podman; do
         type -P "$engine" >/dev/null || continue
-        start=$SECONDS
+        start=$(ws_usec)
         mapfile -t ids < <(timeout -k 5 30 "$engine" ps -q --no-trunc 2>"$tmp/err" </dev/null)
         wait $! && rc=0 || rc=$?
-        if ((rc != 0 && rc != 124)) && ws_engine_down "$tmp/err"; then
+        if ws_engine_down "$tmp/err" "$rc"; then
             if runtime=$(ws_runtime); then
                 WS_ENGINE_ERR="the $engine daemon is down, but containers may still run: process $runtime"
                 break
             fi
             continue
         elif ((rc)); then
-            WS_ENGINE_ERR=$(ws_engine_error "$engine ps" "$rc" "$tmp/err" "$start")
+            WS_ENGINE_ERR=$(ws_engine_failed "$engine ps" "$rc" "$tmp/err" "$start")
             break
         fi
         if ((${#ids[@]})); then
-            start=$SECONDS rc=0
-            timeout -k 5 30 "$engine" inspect "${ids[@]}" >"$tmp/json" 2>"$tmp/err" </dev/null || rc=$?
-            if ((rc)) && ! ws_engine_gone "$tmp/err" "$tmp/json" "$rc" "${ids[@]}"; then
-                WS_ENGINE_ERR=$(ws_engine_error "$engine inspect" "$rc" "$tmp/err" "$start")
+            start=$(ws_usec) rc=0
+            # Keeps bash from printing a notice when timeout kills inspect.
+            { timeout -k 5 30 "$engine" inspect "${ids[@]}" >"$tmp/json" 2>"$tmp/err" </dev/null || rc=$?; } 2>/dev/null
+            if ((rc >= 124)); then
+                WS_ENGINE_ERR=$(ws_engine_failed "$engine inspect" "$rc" "$tmp/err" "$start")
                 break
             fi
-            mapfile -d '' found < <(jq -j --arg engine "$engine" "$WS_MOUNTS_JQ" "$tmp/json" 2>"$tmp/err")
+            if ! WS_ENGINE_ERR=$(ws_engine_answered "$engine" "$tmp/err" "$tmp/json" "$rc" "${ids[@]}"); then
+                break
+            fi
+            mapfile -d '' found < <(jq -j --arg engine "$engine" "$WS_MOUNTS_JQ" <"$tmp/json" 2>"$tmp/err")
             if ! wait $! || ((${#found[@]} % 2)); then
-                WS_ENGINE_ERR=$(ws_engine_error "reading $engine inspect" 1 "$tmp/err" "$SECONDS")
+                WS_ENGINE_ERR=$(ws_engine_failed "reading $engine inspect" 1 "$tmp/err" "$start")
                 break
             fi
             for ((i = 0; i < ${#found[@]}; i += 2)); do
@@ -1013,11 +1101,9 @@ ws_ticket_of() {
 }
 
 ws_ticket_file() {
-    local c
+    local found
     [[ $1 != *.meta && $1 != *.meta.tmp && $1 != *.purging && ! -e $1/.git ]] || return 1
-    for c in "$1"/*/.git; do
-        [[ ! -e $c ]] || return 1
-    done
+    found=$(find "$1" -maxdepth 3 -name .git -print -quit 2>/dev/null) && [[ -z $found ]]
 }
 
 ws_holds_repo() {
@@ -1119,9 +1205,20 @@ ws_keep_why() {
     printf 'KEEP %s%s\n' "$reason" "${detail:+ ($(ws_detail "$detail"))}"
 }
 
+ws_record_set() {
+    local tmp
+    tmp=$(mktemp -- "$1.XXXXXX") || return 1
+    if awk -v key="$2=" 'index($0, key) != 1' "$1" >"$tmp" && ws_record "$2" "$3" >>"$tmp" &&
+        mv -T -- "$tmp" "$1"; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+}
+
 ws_record_at() {
     [[ -n $2 ]] || return 0
-    if sed -i '/^at=/d' -- "$1" && ws_record at "$2" >>"$1"; then
+    if ws_record_set "$1" at "$2"; then
         echo "ws: its record $(ws_shown "$1") keeps that path" >&2
     fi
 }
@@ -1306,7 +1403,7 @@ ws_trash_scan() {
         ws_trash_item "$d"
         ws_ticket_trash_dir "$d" || continue
         for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
-            ws_trash_item "$e"
+            ws_ticket_item "$e"
         done
         if ws_holds_repo "$d"; then
             continue
@@ -1332,6 +1429,14 @@ ws_trash_item() {
     fi
 }
 
+ws_ticket_item() {
+    ws_trash_item "$1"
+    if [[ -d $1 && ! -L $1 && $1 != *.meta* && $1 != *.purging && ! -e $1/.git && ! -e $1.meta && ! -e $1.meta.tmp ]] &&
+        ! ws_ticket_file "$1"; then
+        printf 'orphan:%s\0' "$1"
+    fi
+}
+
 ws_name_orig() {
     local rel=${1#"$WS_TRASH"/}
     rel=${rel%.purging}
@@ -1344,176 +1449,227 @@ ws_name_orig() {
     fi
 }
 
-ws_archive_cmd() {
-    local d=$1 rel=${1#"$WS_TRASH"/} rm="" adest
-    rel=${rel%.purging}
-    [[ -z $2 ]] || rm=" && rm -f -- $(printf %q "$2")"
-    adest=$(ws_free_path "$WS_TRASH/archive/$rel")
-    printf '    chmod u+w -- %q && mkdir -p -- %q && mv -T -- %q %q%s\n' "$d" "${adest%/*}" "$d" "$adest" "$rm"
-}
-
-ws_move_out_cmd() {
-    local target mk=""
-    target=$(ws_free_path "$2")
-    [[ -d ${target%/*} ]] || mk="mkdir -p -- $(printf %q "${target%/*}") && "
-    printf '    %sgit -C %q worktree move %q %q\n' "$mk" "$1" "$1" "$target"
-    [[ $target == "$2" ]] || echo "$(ws_shown "$2") is taken, so that command puts it at $(ws_shown "$target")."
-}
-
-ws_git_state() {
-    local w=$1 line gitdir common rc
-    if [[ ! -f $w/.git || -L $w/.git ]]; then
-        printf 'bad\tits .git is not a file\n'
-        return
-    fi
-    { IFS= read -r line <"$w/.git"; } 2>/dev/null || line=
-    if [[ $line != "gitdir: "?* ]]; then
-        printf 'bad\tits .git file holds no gitdir\n'
-        return
-    fi
-    gitdir=${line#gitdir: }
-    [[ $gitdir == /* ]] || gitdir=$w/$gitdir
-    if [[ -d $gitdir ]]; then
-        if ! common=$(git -C "$w" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
-            printf 'bad\tgit cannot open it\n'
-            return
-        fi
+ws_main_of() {
+    if [[ $1 == */.git ]]; then
+        printf '%s\n' "${1%/.git}"
     else
-        common=$(realpath -m -- "$gitdir/../..")
-        if [[ ${gitdir%/*} != */worktrees ]] || ! git --git-dir="$common" rev-parse -q --git-dir >/dev/null 2>&1 ||
-            ws_listed "$common" "$(realpath -m -- "$w")"; then
-            printf 'moved\t%s\n' "$gitdir"
-            return
-        fi
+        printf '%s\n' "$1"
     fi
-    ws_listed "$common" "$(realpath -m -- "$w")" && rc=0 || rc=$?
-    case $rc in
-    0) printf 'listed\t%s\n' "$common" ;;
-    1) printf 'forgotten\t%s\n' "$common" ;;
-    *) printf 'bad\tgit worktree list fails in %s\n' "$(ws_shown "$common")" ;;
-    esac
 }
 
-ws_find_main() {
-    local g
-    for g in "$WS_PROJECTS"/*/.git/worktrees/*/gitdir; do
-        [[ -f $g && $(<"$g") == "$1/.git" ]] || continue
-        printf '%s\n' "${g%/.git/worktrees/*}"
-        return 0
+ws_linked() {
+    local f first=1
+    local -a fields=()
+    mapfile -d '' fields < <(git --git-dir="$1" worktree list --porcelain -z 2>/dev/null)
+    wait $! || return 1
+    for f in "${fields[@]}"; do
+        [[ $f == "worktree "* ]] || continue
+        ((first)) || printf '%s\0' "${f#worktree }"
+        first=0
+    done
+}
+
+ws_listed() {
+    local p
+    local -a paths=()
+    mapfile -d '' paths < <(ws_linked "$1")
+    wait $! || return 2
+    for p in "${paths[@]}"; do
+        [[ $p != "$2" ]] || return 0
     done
     return 1
 }
 
-ws_worktree_note() {
-    local w=$1 d=$2 lead=$3 record=$4 orig=$5 state main
-    state=$(ws_git_state "$w")
-    case ${state%%$'\t'*} in
-    listed)
-        if [[ -z $orig ]]; then
-            printf '%s Its name does not say where it came from.\n' "$lead"
-            printf '    Pick a free path next to the worktrees that git -C %q worktree list shows, then run git -C %q worktree move %q with that path.\n' \
-                "$w" "$w" "$w"
-        else
-            printf '%s Move it out of the trash with:\n' "$lead"
-            ws_move_out_cmd "$w" "$orig"
-        fi
-        ;;
-    moved)
-        printf '%s Its .git file points at %s, which is gone, so its main checkout moved.' "$lead" \
-            "$(ws_shown "${state#*$'\t'}")"
-        if main=$(ws_find_main "$(realpath -m -- "$w")"); then
-            printf ' Repair it from there first, then move it out of the trash:\n    git -C %q worktree repair %q\n' \
-                "$main" "$w"
-            [[ -z $orig ]] || ws_move_out_cmd "$w" "$orig"
-        else
-            printf ' First run git -C <main checkout> worktree repair %s, with the path the main checkout moved to.\n' \
-                "$(printf %q "$w")"
-        fi
-        ;;
-    forgotten)
-        main=${state#*$'\t'}
-        printf '%s Git no longer knows it as a worktree: %s does not list it. Move what is left of it to the archive with:\n' \
-            "$lead" "$(ws_shown "${main%/.git}")"
-        ws_archive_cmd "$d" "$record"
-        ;;
-    *)
-        printf '%s ws cannot tell how git sees it (%s), so it keeps it.\n' "$lead" "${state#*$'\t'}"
-        ;;
-    esac
-}
-
-ws_locate() {
-    local common=$1 e=$2 orig f p entry="" moved="" out=""
-    local -a fields=()
-    orig=$(realpath -m -- "$3")
-    mapfile -d '' fields < <(git --git-dir="$common" worktree list --porcelain -z 2>/dev/null)
-    wait $! || return 2
-    for f in "${fields[@]}"; do
-        [[ $f == "worktree "* ]] || continue
-        p=${f#worktree }
-        if [[ $p == "$e" ]]; then
-            entry=$p
-        elif [[ $p == "$e.purging" || ${p%/*} == "$e" || ${p%/*} == "$e.purging" || ${p%/*} == "$orig" ]]; then
-            moved=$p
-        elif [[ $p == "$orig" || ($p == "$orig".* && ${p#"$orig".} =~ ^[0-9]+$) ]]; then
-            out=$p
+ws_project_repos() {
+    local d
+    for d in "$WS_PROJECTS"/*/; do
+        d=${d%/}
+        if [[ -d $d/.git && ! -L $d/.git ]]; then
+            printf '%s\0' "$d/.git"
+        elif [[ -f $d/HEAD && -d $d/objects && -d $d/refs ]]; then
+            printf '%s\0' "$d"
         fi
     done
-    if [[ -n $entry ]]; then
-        printf 'entry\t%s\n' "$entry"
-    elif [[ -n $moved ]]; then
-        printf 'moved\t%s\n' "$moved"
-    elif [[ -n $out ]]; then
-        printf 'out\t%s\n' "$out"
+}
+
+ws_is() {
+    [[ $1 == "$2" ]]
+}
+
+ws_used_path() {
+    ws_within "$1" "$2" || ws_within "$1" "$2.purging" || ws_within "$1" "$3" ||
+        [[ $1 == "$3".* && ${1#"$3".} =~ ^[0-9]+$ ]]
+}
+
+ws_owner() {
+    local rec=$1 test=$2 repo p real
+    local -a paths=() repos=() found=() unread=() names=()
+    local -A seen=()
+    shift 2
+    if [[ -n $rec ]] && git --git-dir="$rec" rev-parse -q --git-dir >/dev/null 2>&1; then
+        mapfile -d '' paths < <(ws_linked "$rec")
+        if ! wait $!; then
+            echo "ws cannot read the worktree list of $(ws_shown "$(ws_main_of "$rec")")"
+            return 2
+        fi
+        for p in "${paths[@]}"; do
+            if "$test" "$p" "$@"; then
+                found+=("$rec"$'\t'"$p")
+                names+=("$(ws_shown "$(ws_main_of "$rec")")")
+            fi
+        done
+    fi
+    if ((${#found[@]} == 0)); then
+        mapfile -d '' repos < <(ws_project_repos)
+        for repo in "${repos[@]}"; do
+            real=$(realpath -m -- "$repo")
+            [[ -z ${seen[$real]+set} ]] || continue
+            seen[$real]=1
+            mapfile -d '' paths < <(ws_linked "$repo")
+            if ! wait $!; then
+                unread+=("$(ws_shown "$(ws_main_of "$repo")")")
+                continue
+            fi
+            for p in "${paths[@]}"; do
+                if "$test" "$p" "$@"; then
+                    found+=("$repo"$'\t'"$p")
+                    names+=("$(ws_shown "$(ws_main_of "$repo")")")
+                fi
+            done
+        done
+    fi
+    if ((${#unread[@]})); then
+        printf -v p '%s, ' "${unread[@]}"
+        echo "ws cannot read the worktree list of ${p%, }"
+        return 2
+    elif ((${#found[@]} == 1)); then
+        printf '%s\n' "${found[0]}"
+    elif ((${#found[@]} > 1)); then
+        printf -v p '%s, ' "${names[@]}"
+        echo "${#found[@]} worktrees match it, listed by ${p%, }"
+        return 2
+    elif [[ -z $rec ]]; then
+        echo "no repo in $(ws_shown "$WS_PROJECTS") lists it"
+        return 1
+    elif git --git-dir="$rec" rev-parse -q --git-dir >/dev/null 2>&1; then
+        echo "neither $(ws_shown "$(ws_main_of "$rec")") nor another repo in $(ws_shown "$WS_PROJECTS") lists it"
+        return 1
     else
+        echo "its repo $(ws_shown "$(ws_main_of "$rec")") is gone, and no repo in $(ws_shown "$WS_PROJECTS") lists it"
         return 1
     fi
 }
 
-ws_lost_note() {
-    local lead=$1 record=$2 d=$3 e=${2%.tmp} orig main loc rc why
-    local -A m=()
-    e=${e%.meta}
-    ws_meta_read "$record" m why || return 1
-    orig=${m[orig]} main=${m[common]%/.git}
-    loc=$(ws_locate "${m[common]}" "$e" "$orig") && rc=0 || rc=$?
-    if ((rc == 2)); then
-        printf '%s ws cannot read the worktree list of %s, so it keeps it.\n' "$lead" "$(ws_shown "$main")"
-    elif ((rc == 1)) && [[ $record == *.meta ]]; then
-        printf '%s %s lists its worktree at none of the paths ws used, so a purge or you removed it. Delete what is left with:\n' \
-            "$lead" "$(ws_shown "$main")"
-        if [[ -n $d ]]; then
-            ws_archive_cmd "$d" "$record"
-        else
-            printf '    rm -- %q\n' "$record"
-        fi
-    elif ((rc == 1)); then
-        printf '%s ws cannot find its worktree: %s lists it at none of the paths ws used, so ws keeps the record. This shows where git has its worktrees:\n    git -C %q worktree list\n' \
-            "$lead" "$(ws_shown "$main")" "$main"
-    elif [[ ! -f ${loc#*$'\t'}/.git ]]; then
-        printf '%s %s lists its worktree at %s, which is gone, so ws keeps the record.\n' "$lead" "$(ws_shown "$main")" \
-            "$(ws_shown "${loc#*$'\t'}")"
-    elif [[ $loc == entry$'\t'* ]]; then
-        printf '%s Its worktree is at %s, so this directory holds only files another process made. Move them to the archive with:\n' \
-            "$lead" "$(ws_shown "$e")"
-        ws_archive_cmd "$d" ""
-    elif [[ $loc == out$'\t'* && -n $d ]]; then
-        printf '%s git lists its worktree at %s, out of the trash, so this directory holds only files another process made. Move them to the archive with:\n' \
-            "$lead" "$(ws_shown "${loc#*$'\t'}")"
-        ws_archive_cmd "$d" "$record"
-    elif [[ $loc == out$'\t'* ]]; then
-        printf '%s git lists its worktree at %s, out of the trash, so the record is stale. Delete it with:\n    rm -- %q\n' \
-            "$lead" "$(ws_shown "${loc#*$'\t'}")" "$record"
+ws_move_cmd() {
+    local main target mk=""
+    main=$(ws_main_of "$1")
+    target=$(ws_free_path "$3")
+    [[ -d ${target%/*} ]] || mk="mkdir -p -- $(printf %q "${target%/*}") && "
+    printf '    %sgit -C %q worktree move %q %q\n' "$mk" "$main" "$2" "$target"
+    [[ $target == "$3" ]] || echo "$(ws_shown "$3") is taken, so that command puts it at $(ws_shown "$target")."
+}
+
+ws_listed_worktree_note() {
+    local lead=$1 repo=$2 w=$3 orig=$4 main line gitdir common verb=Move
+    main=$(ws_main_of "$repo")
+    common=$(git -C "$w" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+    if [[ -n $common && $(realpath -m -- "$common") == "$(realpath -m -- "$repo")" ]]; then
+        lead+=" $(ws_shown "$main") lists it."
     else
-        printf '%s git lists its worktree at %s. Move it to a free path out of the trash with:\n' "$lead" \
-            "$(ws_shown "${loc#*$'\t'}")"
-        ws_move_out_cmd "${loc#*$'\t'}" "$orig"
+        { IFS= read -r line <"$w/.git"; } 2>/dev/null || line=
+        gitdir=${line#gitdir: }
+        [[ $gitdir == /* ]] || gitdir=$w/$gitdir
+        if [[ $line == "gitdir: "?* && ! -e $gitdir ]]; then
+            lead+=" Its .git file points at $(ws_shown "$gitdir"), which is gone, so its main checkout moved."
+        else
+            lead+=" Its .git file does not point into $(ws_shown "$main")."
+        fi
+        lead+=" $(ws_shown "$main") lists it, so repair it from there first:"
+        printf '%s\n    git -C %q worktree repair\n' "$lead" "$main"
+        lead=
+        verb="Then move"
+    fi
+    if [[ -z $orig ]]; then
+        printf '%s%s it to a free path out of the trash with git -C %q worktree move %q and that path.\n' \
+            "${lead:+$lead }" "$verb" "$main" "$w"
+    else
+        printf '%s%s it out of the trash with:\n' "${lead:+$lead }" "$verb"
+        ws_move_cmd "$repo" "$w" "$orig"
+    fi
+}
+
+ws_dir_note() {
+    local d=$1 record=$2 lead=$3 orig="" common="" why w t loc inside
+    local -a gits=() tops=()
+    local -A m=()
+    local -
+    set -o pipefail
+    if [[ -n $record ]] && ws_meta_read "$record" m why; then
+        orig=${m[orig]} common=${m[common]}
+        lead+=" Its record says it came from $(ws_shown "$orig")."
+    elif orig=$(ws_name_orig "$d"); then
+        lead+=" Its trash name says it came from $(ws_shown "$orig")."
+    fi
+    if [[ -L $d || ! -d $d ]]; then
+        printf '%s It is no directory, so ws keeps it.\n' "$lead"
+        return
+    fi
+    mapfile -d '' gits < <(find "$d" -maxdepth 3 -name .git -prune -printf '%h\0' 2>/dev/null | LC_ALL=C sort -z)
+    if ! wait $!; then
+        printf '%s ws cannot read every directory in it, so it keeps it.\n' "$lead"
+        return
+    fi
+    for w in "${gits[@]}"; do
+        inside=0
+        for t in "${tops[@]}"; do
+            ! ws_within "$w" "$t" || inside=1
+        done
+        ((inside)) || tops+=("$w")
+    done
+    if ((${#tops[@]} == 0)); then
+        ws_plain_dir_note "$d" "$lead" "$common" "$orig"
+        return
+    elif ((${#tops[@]} > 1)); then
+        printf '%s It holds more than one repository, so ws keeps it.\n' "$lead"
+        return
+    fi
+    w=${tops[0]}
+    [[ $w == "$d" ]] || lead+=" Git has its worktree inside it, at $(ws_shown "$w")."
+    if loc=$(ws_owner "$common" ws_is "$(realpath -m -- "$w")"); then
+        ws_listed_worktree_note "$lead" "${loc%%$'\t'*}" "$w" "$orig"
+    else
+        printf '%s ws keeps it, since %s.\n' "$lead" "$loc"
+    fi
+}
+
+ws_plain_dir_note() {
+    local d=$1 lead=$2 common=$3 orig=$4 e=${1%.purging} out loc="" listed=""
+    local -a dirs=()
+    if [[ -z $common || -z $orig ]]; then
+        lead+=" It holds no worktree, and ws has no record that says where its worktree is."
+    elif ! loc=$(ws_owner "$common" ws_used_path "$e" "$orig"); then
+        lead+=" It holds no worktree, and ws cannot place its worktree, since $loc."
+        loc=
+    else
+        listed=${loc#*$'\t'}
+        lead+=" It holds no worktree. Git lists its worktree at $(ws_shown "$listed")."
+    fi
+    if out=$(find "$d" ! -type d -print -quit 2>/dev/null) && [[ -z $out ]] &&
+        mapfile -d '' dirs < <(find "$d" -depth -type d -print0 2>/dev/null) && wait $!; then
+        printf '%s It holds no files. Remove it with:\n    rmdir --' "$lead"
+        printf ' %q' "${dirs[@]}"
+        echo
+    else
+        printf '%s ws keeps what it holds.\n' "$lead"
+    fi
+    if [[ -n $loc && $listed == "$orig"/* && -f $listed/.git ]]; then
+        printf 'Its worktree sits inside a directory another process made. Move it to a free path with:\n'
+        ws_move_cmd "${loc%%$'\t'*}" "$listed" "$orig"
     fi
 }
 
 ws_orphan_note() {
-    local d=$1 lead=${2-} record=${3-} e=${1%.purging} w="" c why orig=""
-    local -A m=()
+    local d=$1 lead=${2-} record=${3-} e=${1%.purging}
     if [[ -n $record ]]; then
         :
     elif [[ -e $d.meta.tmp || -L $d.meta.tmp ]]; then
@@ -1523,43 +1679,41 @@ ws_orphan_note() {
     else
         lead="Orphan $(ws_shown "$d") has no record."
     fi
-    if [[ -n $record ]] && ws_meta_read "$record" m why; then
-        orig=${m[orig]}
-        lead+=" Its record says it came from $(ws_shown "$orig")."
-    elif orig=$(ws_name_orig "$d"); then
-        lead+=" Its trash name says it came from $(ws_shown "$orig")."
-    fi
-    if [[ -e $d/.git || -L $d/.git ]]; then
-        w=$d
-    else
-        for c in "$d"/*/.git; do
-            [[ -e $c ]] || continue
-            w=${c%/.git}
-            lead+=" Another process made $(ws_shown "$d") first, so git moved the worktree inside it, to $(ws_shown "$w")."
-            break
-        done
-    fi
-    if [[ -n $w ]]; then
-        ws_worktree_note "$w" "$d" "$lead" "$record" "$orig"
-    elif [[ -z ${m[orig]-} ]]; then
-        printf '%s It holds no worktree, and ws has no record that says where its worktree is, so it keeps it.\n' "$lead"
-    else
-        ws_lost_note "$lead" "$record" "$d"
-    fi
+    ws_dir_note "$d" "$record" "$lead"
 }
 
 ws_record_note() {
-    local record=$1 lead=$2 why
+    local record=$1 lead=$2 e=${1%.tmp} why loc rc listed
     local -A m=()
+    e=${e%.meta}
     if ! ws_meta_read "$record" m why; then
         printf '%s ws cannot read it (%s), so it keeps it. Read it before you delete it.\n' "$lead" "$why"
         return 0
     fi
-    ws_lost_note "$lead It was for $(ws_shown "${m[orig]}")." "$record" ""
+    lead+=" It was for $(ws_shown "${m[orig]}")."
+    loc=$(ws_owner "${m[common]}" ws_used_path "$e" "${m[orig]}") && rc=0 || rc=$?
+    listed=${loc#*$'\t'}
+    if ((rc == 1)) && [[ $record == *.meta ]]; then
+        printf '%s %s, so a purge or you removed it. Delete the record with:\n    rm -- %q\n' "$lead" "${loc^}" "$record"
+    elif ((rc)); then
+        printf '%s ws keeps it, since %s.\n' "$lead" "$loc"
+    elif [[ ! -f $listed/.git ]]; then
+        printf '%s Git lists its worktree at %s, which holds no .git file, so ws keeps the record.\n' "$lead" \
+            "$(ws_shown "$listed")"
+    elif ws_within "$listed" "$e" || ws_within "$listed" "$e.purging"; then
+        printf '%s Git lists its worktree at %s, in the trash, so ws keeps the record.\n' "$lead" "$(ws_shown "$listed")"
+    elif [[ $listed == "${m[orig]}"/* ]]; then
+        printf '%s Git lists its worktree at %s, inside a directory another process made. Move it to a free path with:\n' \
+            "$lead" "$(ws_shown "$listed")"
+        ws_move_cmd "${loc%%$'\t'*}" "$listed" "${m[orig]}"
+    else
+        printf '%s Git lists its worktree at %s, out of the trash, so the record is stale. Delete it with:\n    rm -- %q\n' \
+            "$lead" "$(ws_shown "$listed")" "$record"
+    fi
 }
 
 ws_trash_notes() {
-    local rec meta e why problem
+    local rec meta e why repo
     local -A m=()
     while IFS= read -r -d '' rec; do
         meta=${rec#*:} e=${meta%.meta}
@@ -1583,23 +1737,16 @@ ws_trash_notes() {
                 fi
             elif [[ ! -e $e && ! -L $e && ! -e $e.purging && ! -L $e.purging ]]; then
                 ws_record_note "$meta" "Record $(ws_shown "$meta") has no directory."
-            elif [[ -e $e || -L $e ]] && problem=$(ws_entry_problem "$e") && [[ -n $problem ]]; then
-                ws_orphan_note "$e" "Kept $(ws_shown "$e"): $problem." "$meta"
+            elif [[ ! -e $e && ! -L $e ]]; then
+                :
+            elif ! repo=$(ws_entry_repo "$e"); then
+                ws_orphan_note "$e" "Kept $(ws_shown "$e"): $repo." "$meta"
+            elif [[ $repo != "${m[common]}" ]] && ws_clean_path "$repo" && ws_record_set "$meta" common "$repo"; then
+                echo "Record $(ws_shown "$meta") now names $(ws_shown "$(ws_main_of "$repo")"), which lists its worktree."
             fi
             ;;
         esac
     done < <(ws_trash_scan)
-}
-
-ws_listed() {
-    local f
-    local -a fields=()
-    mapfile -d '' fields < <(git --git-dir="$1" worktree list --porcelain -z 2>/dev/null)
-    wait $! || return 2
-    for f in "${fields[@]}"; do
-        [[ $f != "worktree $2" ]] || return 0
-    done
-    return 1
 }
 
 ws_landed() {
@@ -1631,23 +1778,34 @@ ws_move() {
     return 2
 }
 
-ws_entry_problem() {
-    local common
+ws_entry_repo() {
+    local common rc
     if [[ $1 == *[$'\t\n']* ]]; then
         echo "a tab or newline in its path"
+    elif [[ -L $1 ]]; then
+        echo "it is a symlink"
     elif [[ ! -d $1 ]]; then
         echo "its directory is missing"
     elif [[ ! -f $1/.git ]]; then
         echo "it holds no .git file"
     elif ! common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
         echo "git cannot open it"
-    elif ! ws_listed "$common" "$1"; then
-        echo "git does not list it as a worktree of $(ws_shown "$common")"
+    else
+        ws_listed "$common" "$1" && rc=0 || rc=$?
+        case $rc in
+        0)
+            printf '%s\n' "$common"
+            return 0
+            ;;
+        1) echo "git does not list it as a worktree of $(ws_shown "$(ws_main_of "$common")")" ;;
+        *) echo "ws cannot read the worktree list of $(ws_shown "$(ws_main_of "$common")")" ;;
+        esac
     fi
+    return 1
 }
 
 prune_restore_one() {
-    local meta=$1 e=${1%.meta} orig ticket tdir f why problem common stop=0
+    local meta=$1 e=${1%.meta} orig ticket tdir f why common stop=0
     local -a files=()
     local -A m=()
     if ! ws_meta_read "$meta" m why; then
@@ -1659,9 +1817,8 @@ prune_restore_one() {
         echo "ws: cannot restore $(ws_shown "$e"): $(ws_shown "$orig") exists" >&2
         return 1
     fi
-    problem=$(ws_entry_problem "$e")
-    if [[ -n $problem ]]; then
-        echo "ws: cannot restore $(ws_shown "$e"): $problem" >&2
+    if ! common=$(ws_entry_repo "$e"); then
+        echo "ws: cannot restore $(ws_shown "$e"): $common" >&2
         return 1
     fi
     if [[ -n $ticket ]]; then
@@ -1676,7 +1833,6 @@ prune_restore_one() {
         done
         ((stop == 0)) || return 1
     fi
-    common=$(git -C "$e" rev-parse --path-format=absolute --git-common-dir) || return 1
     mkdir -p -- "${orig%/*}" || return 1
     for f in "${files[@]}"; do
         if ! mv -n -- "$f" "$ticket/" || [[ -e $f || -L $f ]]; then
@@ -1763,7 +1919,7 @@ ws_save_reflog() (
     wt=$1 common=$2 branch=$3 out=$4
     wtrefs=("${@:5}")
     set -o pipefail
-    tmp=$(mktemp -d -- "$WS_TRASH/.tmp.XXXXXX") || exit 1
+    tmp=$(mktemp -d -- "$WS_TRASH/.tmp.$$.XXXXXX") || exit 1
     trap 'rm -rf -- "$tmp"' EXIT
     git -C "$wt" log -g --format=%H HEAD ${branch:+"refs/heads/$branch"} "${wtrefs[@]}" -- >"$tmp/tips" ||
         exit 1
@@ -1806,6 +1962,17 @@ ws_save_reflog() (
     [[ -f $out && ! -L $out && $(stat -c %i -- "$out") == "$ino" ]] || exit 1
     echo "Saved $n commit(s) that only its reflogs held to $(ws_shown "$out")"
 )
+
+ws_drop_dead_tmp() {
+    local d
+    for d in "$WS_TRASH"/.tmp.*; do
+        [[ ${d##*/} =~ ^\.tmp\.([0-9]+)\.[A-Za-z0-9]{6}$ && -d $d && ! -L $d ]] || continue
+        [[ ! -e /proc/${BASH_REMATCH[1]} ]] || continue
+        if rm -rf -- "$d"; then
+            echo "Removed $(ws_shown "$d"), which a ws run that died left behind."
+        fi
+    done
+}
 
 ws_archive_ticket() {
     local tdir=$1 adir
@@ -1877,7 +2044,7 @@ prune_purge_one() {
 }
 
 prune_purge() {
-    local d=$1 older=$2 cutoff stamp rec meta e rel why problem n noun=worktrees status=0 i
+    local d=$1 older=$2 cutoff stamp rec meta e rel why n noun=worktrees status=0 i
     local -A m=()
     if ! [[ $older =~ ^[0-9]{1,5}d$ ]]; then
         echo "ws: --older-than takes days, such as 14d" >&2
@@ -1889,7 +2056,7 @@ prune_purge() {
     while IFS= read -r -d '' rec; do
         [[ $rec == entry:* ]] || continue
         meta=${rec#*:} e=${meta%.meta} rel=${meta#"$WS_TRASH"/}
-        if ! ws_meta_read "$meta" m why || [[ ! -e $e && ! -L $e ]] || [[ -n $(ws_entry_problem "$e") ]]; then
+        if ! ws_meta_read "$meta" m why || [[ ! -e $e && ! -L $e ]] || ! ws_entry_repo "$e" >/dev/null; then
             continue
         elif [[ ! ${rel:0:16} > $stamp ]] && ws_decimal_le "${m[time]}" "$cutoff"; then
             printf '%s\n' "$e" >>"$d/entries"
@@ -1967,6 +2134,7 @@ ws_prune() {
 
     WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
     ws_env_ok || return 1
+    [[ $mode == scan ]] || ws_drop_dead_tmp
     d=$(mktemp -d) || return 1
     case $mode in
     scan) prune_scan "$d" "$include_detached" || rc=$? ;;
