@@ -82,7 +82,7 @@ as for user services and daemons such as a tmux server. So a command that
 turns off core dumps and runs directly in a tmux pane is not seen. The
 check does not see processes of other users either. It does not look at
 open files. A process whose directory is elsewhere can hold an ignored
-file in a worktree open, and a write it makes in the about 35 ms between
+file in a worktree open, and a write it makes in the about 45 ms between
 the last check of --purge and the removal is lost.
 
 The trash:
