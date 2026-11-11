@@ -5,7 +5,11 @@ WS_TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _failures=0
 _base_path=$PATH
 _sandboxes=()
+_sandbox=
+_suite=$$
+exec {_suite_out}>&1
 trap 'drop_fixtures' EXIT
+trap 'exit 2' TERM
 
 ok() {
     printf 'ok    %s\n' "$1"
@@ -17,7 +21,8 @@ not_ok() {
 }
 
 abort() {
-    printf 'ABORT %s\n' "$1"
+    printf 'ABORT %s\n' "$1" >&"$_suite_out"
+    [[ $BASHPID == "$_suite" ]] || kill -TERM "$_suite"
     exit 2
 }
 
@@ -54,7 +59,8 @@ drop_fixtures() {
 new_fixture() {
     local sandbox
     drop_fixtures
-    unset FX
+    unset FX WS_TRASH
+    _sandbox=
     sandbox=$(mktemp -d "${TMPDIR:-/tmp}/ws-test.XXXXXX") || abort "cannot make a sandbox"
     _sandboxes+=("$sandbox")
     PATH=$_base_path
@@ -63,7 +69,20 @@ new_fixture() {
     source "$sandbox/root/env.sh" || abort "cannot source env.sh"
     _sandboxes+=("$TMUX_TMPDIR")
     [[ $HOME == "$sandbox/root" ]] || abort "env.sh did not set HOME"
+    _sandbox=$(realpath -e -- "$sandbox") || abort "cannot resolve the sandbox"
     FX=$sandbox/root
+    export WS_PROC=$FX/proc
+    { mkdir -p "$WS_PROC/self/ns" && ln -s "mnt:[1]" "$WS_PROC/self/ns/mnt"; } || abort "cannot make the fake process tree"
+    ws_guard
+}
+
+ws_guard() {
+    local path gh
+    [[ -n $_sandbox && -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
+    gh=$(command -v gh) || gh=
+    for path in "$HOME" "${WS_ROOT-}" "${WS_PROJECTS-}" "${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}" "$gh"; do
+        [[ -n $path && $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: '$path' is outside $_sandbox"
+    done
 }
 
 run_test() {
@@ -72,8 +91,32 @@ run_test() {
 }
 
 ws() {
-    [[ -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
+    ws_guard
     bash "$WS_TESTS/../../dotfiles/bin/ws" "$@"
+}
+
+ws_on_other_fs() {
+    ws_guard
+    mkdir -p "$FX/otherfs" || abort "cannot make $FX/otherfs"
+    # shellcheck disable=SC2016
+    unshare -rm bash -c 'mount -t tmpfs -o size=8m tmpfs "$1" && mkdir "$1/trash" "$1/data" || exit 9
+        dir=$1
+        shift
+        bash "$@"
+        rc=$?
+        find "$dir" -mindepth 2 >"$dir.landed"
+        exit "$rc"' _ "$FX/otherfs" "$WS_TESTS/../../dotfiles/bin/ws" "$@"
+}
+
+fake_proc() {
+    local pid=$1 ppid=$2 cwd=${3-} ns=${4:-mnt:[1]} dir=$WS_PROC/$1
+    {
+        mkdir -p "$dir/ns" &&
+            printf 'Name:\tfake%s\nUid:\t%s\t%s\t%s\t%s\n' "$pid" "$EUID" "$EUID" "$EUID" "$EUID" >"$dir/status" &&
+            printf '%s (fake%s) S %s 0 0 0\n' "$pid" "$pid" "$ppid" >"$dir/stat" &&
+            ln -s "$ns" "$dir/ns/mnt" &&
+            { [[ -z $cwd ]] || ln -s "$cwd" "$dir/cwd"; }
+    } || abort "cannot make fake process $pid"
 }
 
 snapshot() {
@@ -139,18 +182,6 @@ trash_of() {
     printf '%s\n' "${f%.meta}"
 }
 
-other_fs_dir() {
-    local dev dir
-    dev=$(stat -c %d "$FX")
-    for dir in /dev/shm "/run/user/$(id -u)" /var/tmp; do
-        if [[ -d $dir && -w $dir && $(stat -c %d "$dir") != "$dev" ]]; then
-            printf '%s\n' "$dir"
-            return 0
-        fi
-    done
-    return 1
-}
-
 fake_git() {
     {
         printf '#!/usr/bin/env bash\nreal=%q\n' "$(PATH=$_base_path command -v git)"
@@ -168,15 +199,18 @@ in_trash() {
 
 add_worktree() {
     local repo=$1 path=$2 branch=$3 file=${3//\//-}.txt
-    git -C "$WS_PROJECTS/$repo" worktree add -q -b "$branch" "$path"
-    echo "$branch" >"$path/$file"
-    git -C "$path" add "$file"
-    git -C "$path" commit -qm "work on $branch"
-    git -C "$path" push -q -u origin "$branch"
+    {
+        git -C "$WS_PROJECTS/$repo" worktree add -q -b "$branch" "$path" &&
+            echo "$branch" >"$path/$file" &&
+            git -C "$path" add "$file" &&
+            git -C "$path" commit -qm "work on $branch" &&
+            git -C "$path" push -q -u origin "$branch"
+    } || abort "cannot add worktree $path"
 }
 
 add_pr() {
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" "${6:-false}" >>"$FX/prs.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" "${6:-false}" >>"$FX/prs.tsv" ||
+        abort "cannot add a PR for $2"
 }
 
 head_of() {
