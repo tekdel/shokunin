@@ -196,6 +196,12 @@ test_new_refuses() {
     out=$(ws new t7 feat/q alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a .ws whose WS_ID is not its directory" 1 "$rc"
     assert "it names the mismatch" grep -qF "WS_ID in ~/work/t7/.ws is not t7" <<<"$out"
+
+    mkdir -p "$WS_ROOT/t8"
+    { echo WS_ID=t8 && printf '# %0100d\n' $(seq 700); } >"$WS_ROOT/t8/.ws"
+    out=$(ws new t8 feat/q alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a .ws over 64 KB" 1 "$rc"
+    assert "it says the .ws is too big" grep -qF "~/work/t8/.ws is over 64 KB" <<<"$out"
 }
 
 test_ws_file_writes() {
@@ -210,10 +216,14 @@ test_ws_file_writes() {
         "$(ws_value t1 WS_URLS)"
     assert_eq "a write keeps keys ws does not know" kept "$(ws_value t1 WS_EXTRA)"
     assert_eq "a write puts unknown keys last" WS_EXTRA=kept "$(tail -n 1 "$WS_ROOT/t1/.ws")"
+    sed -i 's/$/\r/' "$WS_ROOT/t1/.ws"
+    ws stage t1 verifying >/dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "ws reads a .ws with CRLF line ends" 0 "$rc"
+    refute "the write drops the carriage returns" grep -q $'\r' "$WS_ROOT/t1/.ws"
     printf 'WS_BAD="a$b"\n' >>"$WS_ROOT/t1/.ws"
     ws stage t1 qa >/dev/null 2>&1 && rc=0 || rc=$?
     assert_eq "ws refuses to write a value a shell would expand" 1 "$rc"
-    assert_eq "the refused write leaves the stage" building "$(ws_value t1 WS_STAGE)"
+    assert_eq "the refused write leaves the stage" verifying "$(ws_value t1 WS_STAGE)"
     refute "the refused write leaves no temp file" compgen -G "$WS_ROOT/t1/.ws.*"
 }
 

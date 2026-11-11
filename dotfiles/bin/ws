@@ -2439,7 +2439,7 @@ ticket_check_id() {
 }
 
 ticket_read() {
-    local file=$1/.ws line key value n=0 shown
+    local file=$1/.ws content="" line key value n=0 shown LC_ALL=C
     local -n tr_kv=$2
     tr_kv=()
     REPLY=
@@ -2448,7 +2448,8 @@ ticket_read() {
         REPLY="$shown is not a readable file"
         return 1
     fi
-    if (($(wc -c <"$file") > 65536)); then
+    IFS= read -r -d '' -N 65537 content <"$file" || true
+    if ((${#content} > 65536)); then
         REPLY="$shown is over 64 KB"
         return 1
     fi
@@ -2469,7 +2470,7 @@ ticket_read() {
             return 1
         fi
         tr_kv["$key"]=$value
-    done <"$file"
+    done <<<"$content"
     if ! ticket_name_ok "${tr_kv[WS_ID]-}" || [[ ${tr_kv[WS_ID]} != "${1##*/}" ]]; then
         REPLY="WS_ID in $shown is not ${1##*/}"
         return 1
