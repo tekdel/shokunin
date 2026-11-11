@@ -96,6 +96,8 @@ test_help() {
     done
     assert "help names the trash" grep -q WS_TRASH <<<"$help"
     assert "help names the regenerable table" grep -q WS_REGENERABLE <<<"$help"
+    assert "help names the processes the in-use check cannot see" grep -q "other users" <<<"$help"
+    assert "help says orphans are never deleted" grep -qi "orphan" <<<"$help"
 }
 
 test_gh_calls() {
@@ -166,23 +168,30 @@ test_apply_yes() {
     refute "no prunable entries remain" grep -q "^prunable" <<<"$(snapshot alpha beta)"
 }
 
-test_manifest_record() {
+test_meta_record() {
     new_fixture
-    local m=$WS_PROJECTS/alpha-merged head start end time
+    local m=$WS_PROJECTS/alpha-merged head start end time meta
     head=$(head_of "$m")
     start=$(date +%s)
     ws prune --apply <<<y >/dev/null 2>&1
     end=$(date +%s)
-    assert_eq "the record names the original path" "$m" "$(manifest_get "$m" orig)"
-    assert_eq "the record names the main repo" "$WS_PROJECTS/alpha/.git" "$(manifest_get "$m" common)"
-    assert_eq "the record names the branch" feat/merged "$(manifest_get "$m" branch)"
-    assert_eq "the record names HEAD" "$head" "$(manifest_get "$m" head)"
-    assert_eq "the record names the PR" 2 "$(manifest_get "$m" pr)"
-    assert_eq "the record names the PR state" merged "$(manifest_get "$m" state)"
-    assert_eq "the record names the merged headRefOid" "$head" "$(manifest_get "$m" oid)"
-    time=$(manifest_get "$m" time)
+    meta=$(meta_of "$m")
+    assert "the entry sits beside its record, named by it" is_worktree "${meta%.meta}"
+    assert_eq "the record names the original path" "$m" "$(meta_get "$m" orig)"
+    assert_eq "the record names the main repo" "$WS_PROJECTS/alpha/.git" "$(meta_get "$m" common)"
+    assert_eq "the record names the branch" feat/merged "$(meta_get "$m" branch)"
+    assert_eq "the record names HEAD" "$head" "$(meta_get "$m" head)"
+    assert_eq "the record names the PR" 2 "$(meta_get "$m" pr)"
+    assert_eq "the record names the PR state" merged "$(meta_get "$m" state)"
+    assert_eq "the record names the merged headRefOid" "$head" "$(meta_get "$m" oid)"
+    assert_eq "a worktree outside a ticket has no ticket" "" "$(meta_get "$m" ticket)"
+    assert_eq "a ticket worktree's record names its ticket" "$WS_ROOT/t1" "$(meta_get "$WS_ROOT/t1/beta" ticket)"
+    time=$(meta_get "$m" time)
     assert "the record holds the move time" test "$time" -ge "$start" -a "$time" -le "$end"
-    assert_eq "one record per move" 3 "$(wc -l <"$(trash_dir)/manifest")"
+    refute "the record holds no trash path" grep -q '^trash=' "$meta"
+    assert_eq "one record per moved worktree" 3 "$(find "$(trash_dir)" -name '*.meta' | wc -l)"
+    refute "no pending record is left" test -n "$(find "$(trash_dir)" -name '*.meta.tmp')"
+    refute "no shared manifest file" test -e "$(trash_dir)/manifest"
 }
 
 test_apply_no() {
@@ -803,7 +812,7 @@ test_layout() {
     assert "the percent-sign path restores to its exact name" is_worktree "$sp"
 
     new_fixture
-    out=$(WS_ROOT=$FX ws prune)
+    out=$(WS_ROOT=$FX WS_TRASH=${FX%/*}/trash ws prune)
     assert_eq "a worktree reached through two roots is listed once" 7 "$(rows "$out")"
 }
 
@@ -818,7 +827,7 @@ test_restore() {
     assert "restore puts the worktree back" is_worktree "$m"
     assert_eq "the restored worktree keeps its HEAD" "$head" "$(head_of "$m")"
     assert "restore empties the trash entry" test ! -e "$trash"
-    assert_eq "restore removes the manifest record" "" "$(trash_of "$m")"
+    refute "restore removes the entry's record" test -e "$trash.meta"
     assert "restore says where the worktree went" grep -qx "Restored ~/projects/alpha-merged" <<<"$out"
 
     trash=$(trash_of "$c")
@@ -836,6 +845,19 @@ test_restore() {
     assert_eq "restore onto an existing path exits 1" 1 $?
     assert "it names the path in the way" grep -q "alpha-merged exists" <<<"$out"
     assert "the trash entry stays" is_worktree "$trash"
+    rmdir "$m"
+    ln -s /nonexistent "$m"
+    ws prune --restore alpha-merged >/dev/null 2>&1
+    assert_eq "restore onto a dangling symlink exits 1" 1 $?
+    assert "the trash entry stays after that" is_worktree "$trash"
+    rm "$m"
+
+    trash=$(trash_of "$WS_ROOT/t1/beta")
+    mv "$WS_ROOT/t1" "$FX/t1.saved"
+    echo file >"$WS_ROOT/t1"
+    ws prune --restore "$trash" >/dev/null 2>&1
+    assert_eq "restore into a ticket path that is a file exits 1" 1 $?
+    assert "that trash entry stays" is_worktree "$trash"
 }
 
 test_ticket_moves_with_last_repo() {
@@ -885,13 +907,16 @@ test_purge() {
     assert "a declined purge keeps every entry" in_trash "$m"
 
     echo edit-in-trash >>"$(trash_of "$c")/work.txt"
+    local trash
+    trash=$(trash_of "$m")
     out=$(ws prune --purge --older-than 0d <<<y 2>"$FX/err")
     code=$?
     assert_eq "purge past the age exits 0" 0 "$code"
     assert_eq "purge prints nothing on stderr" "" "$(<"$FX/err")"
     assert "purge asks once" grep -q "Delete 2 worktrees from the trash? \[y/N\]" <<<"$out"
-    assert "purge deletes an entry that still classifies REMOVE" test ! -e "$(trash_of "$m")"
-    assert_eq "purge drops that entry's record" 0 "$(grep -c alpha-merged "$(trash_dir)/manifest")"
+    assert "purge deletes an entry that still classifies REMOVE" test ! -e "$trash"
+    refute "purge drops that entry's record" test -e "$trash.meta"
+    refute "purge leaves no renamed entry" test -e "$trash.purging"
     refute "purge deletes the merged branch" has_branch alpha feat/merged
     assert_eq "an entry changed in the trash is KEEP with its reason" "KEEP dirty" \
         "$(action_of "$out" "$(trash_of "$c")")"
@@ -906,7 +931,7 @@ test_purge() {
 
 test_purge_ticket() {
     new_fixture
-    local t=$WS_ROOT/t2 tdir out
+    local t=$WS_ROOT/t2 tdir adir out
     mkdir -p "$t/.claude"
     add_worktree beta "$t/beta" feat/t2
     add_pr beta feat/t2 MERGED 5 "$(head_of "$t/beta")"
@@ -922,21 +947,52 @@ test_purge_ticket() {
     tdir=${tdir%/*}
     echo keep >"$tdir/notes.md"
     out=$(ws prune --purge --older-than 0d <<<y 2>/dev/null)
+    adir=$(trash_dir)/archive/${tdir##*/}
     assert "purge deletes the ticket's worktree" test ! -e "$tdir/beta"
-    assert "purge deletes the files ws wrote for the ticket" test ! -e "$tdir/.ws" -a ! -e "$tdir/CLAUDE.md" -a ! -e "$tdir/.claude"
-    assert "purge keeps a file ws did not write" test -f "$tdir/notes.md"
-    assert "purge says why the ticket dir stayed" grep -q "^Kept ~/.local/share/ws/trash/.*-t2: it holds files ws did not write" <<<"$out"
+    assert "purge moves the ticket's files to the archive" test -f "$adir/.ws" -a -f "$adir/CLAUDE.md" -a -f "$adir/.claude/settings.json"
+    assert "purge moves a file ws did not write to the archive" test -f "$adir/notes.md"
+    assert "purge leaves no ticket dir in the trash" test ! -e "$tdir"
+    assert "purge says where the ticket's files went" grep -q " ~/.local/share/ws/trash/archive/${tdir##*/}" <<<"$out"
+}
+
+test_purge_archives_ticket_files() {
+    new_fixture
+    local t=$WS_ROOT/t2 t3=$WS_ROOT/t3 shared=$FX/shared-claude sums tdir tdir3 adir out
+    mkdir -p "$t/.claude" "$t3" "$shared"
+    add_worktree alpha "$t/alpha" feat/t2
+    add_pr alpha feat/t2 MERGED 200 "$(head_of "$t/alpha")"
+    printf '# t2\n- a note only this file holds\n' >"$t/CLAUDE.md"
+    printf 'WS_ID=t2\nWS_STAGE=merged\n' >"$t/.ws"
+    echo '{"permissions":{"allow":["Bash(make:*)"]}}' >"$t/.claude/settings.json"
+    add_worktree beta "$t3/beta" feat/t3
+    add_pr beta feat/t3 MERGED 201 "$(head_of "$t3/beta")"
+    echo '{"shared":"by every project"}' >"$shared/settings.json"
+    ln -s "$shared" "$t3/.claude"
+    sums=$(cd "$t" && sha256sum .ws .claude/settings.json)
+    ws prune --apply <<<y >/dev/null 2>&1
+    tdir=$(trash_of "$t/alpha")
+    tdir=${tdir%/*}
+    tdir3=$(trash_of "$t3/beta")
+    tdir3=${tdir3%/*}
+    echo "- a note added in the trash" >>"$tdir/CLAUDE.md"
+    echo "notes written in the trash" >"$tdir/notes.md"
+
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    adir=$(trash_dir)/archive/${tdir##*/}
+    assert "purge deletes the ticket's worktree" test ! -e "$tdir/alpha"
+    assert "the ticket's CLAUDE.md keeps the note made before the move" grep -q "only this file holds" "$adir/CLAUDE.md"
+    assert "it keeps the note added in the trash" grep -q "added in the trash" "$adir/CLAUDE.md"
+    assert_eq "the ticket's .ws and settings keep their bytes" "$sums" "$(cd "$adir" && sha256sum .ws .claude/settings.json)"
+    assert "a file written in the trash goes to the archive" grep -q "written in the trash" "$adir/notes.md"
+    assert "a shared .claude behind a symlink keeps its file" grep -q "by every project" "$shared/settings.json"
+    assert "the symlink itself goes to the archive" test -L "$(trash_dir)/archive/${tdir3##*/}/.claude"
+    refute "nothing is left of either ticket in the trash" test -e "$tdir" -o -e "$tdir3"
 }
 
 test_cross_fs() {
     new_fixture
-    local dev dir out
-    dev=$(stat -c %d "$FX")
-    for dir in /dev/shm "/run/user/$(id -u)" /var/tmp; do
-        [[ -d $dir && -w $dir && $(stat -c %d "$dir") != "$dev" ]] && break
-        dir=
-    done
-    if [[ -z $dir ]]; then
+    local dir out
+    if ! dir=$(other_fs_dir); then
         ok "cross-fs skipped: no writable directory on another filesystem"
         return
     fi
@@ -946,6 +1002,485 @@ test_cross_fs() {
     assert "that worktree stays" is_worktree "$WS_PROJECTS/alpha-merged"
     refute "no trash is made on the other filesystem" test -e "$dir/ws-test-trash-$$"
     rm -rf "${dir:?}/ws-test-trash-$$"
+}
+
+test_trash_location() {
+    new_fixture
+    local before dir out code far
+    before=$(snapshot alpha beta)
+    for dir in "$WS_ROOT/.trash" "$WS_ROOT/trash" "$WS_PROJECTS/trash" "$FX" "$FX/odd"$'\n'"trash"; do
+        out=$(WS_TRASH=$dir ws prune --apply <<<y 2>&1)
+        code=$?
+        assert_eq "WS_TRASH at ${dir/#"$FX"/\~} exits 1" 1 "$code"
+        assert "it says what is wrong with WS_TRASH" grep -q "^ws: WS_TRASH" <<<"$out"
+    done
+    WS_TRASH=$WS_ROOT/.trash ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    assert_eq "purge refuses a trash inside WS_ROOT" 1 $?
+    assert_eq "a refused trash moves nothing" "$before" "$(snapshot alpha beta)"
+    refute "a refused trash is not made" test -e "$WS_ROOT/.trash"
+
+    mkdir -p "$(trash_dir)"
+    chmod 555 "$(trash_dir)"
+    ws prune --apply <<<y >/dev/null 2>&1
+    chmod 755 "$(trash_dir)"
+    assert_eq "a trash it cannot write to moves nothing" "$before" "$(snapshot alpha beta)"
+
+    mkdir "$WS_ROOT/hidden"
+    ln -s "$WS_ROOT/hidden" "$FX/alias"
+    WS_TRASH=$FX/alias/trash ws prune --apply <<<y >/dev/null 2>&1
+    assert_eq "a trash that a symlink puts inside WS_ROOT exits 1" 1 $?
+    assert_eq "that trash moves nothing" "$before" "$(snapshot alpha beta)"
+
+    if ! dir=$(other_fs_dir); then
+        ok "symlinked trash skipped: no writable directory on another filesystem"
+        return
+    fi
+    far=$(mktemp -d "$dir/ws-test.XXXXXX")
+    _sandboxes+=("$far")
+    mkdir "$far/trash" "$far/data"
+    ln -s "$far/trash" "$FX/trash-link"
+    out=$(WS_TRASH=$FX/trash-link ws prune --apply <<<y 2>/dev/null)
+    assert_eq "a trash reached through a symlink to another filesystem is KEEP cross-fs" "KEEP cross-fs" \
+        "$(action_of "$out" "$WS_PROJECTS/alpha-merged")"
+    rmdir "$(trash_dir)" "$XDG_DATA_HOME/ws"
+    ln -s "$far/data" "$XDG_DATA_HOME/ws"
+    out=$(ws prune --apply <<<y 2>/dev/null)
+    assert_eq "a missing trash below a symlink to another filesystem is KEEP cross-fs" "KEEP cross-fs" \
+        "$(action_of "$out" "$WS_PROJECTS/alpha-merged")"
+    assert_eq "neither moves anything" "$before" "$(snapshot alpha beta)"
+    refute "nothing lands on the other filesystem" test -n "$(find "$far" -mindepth 2 -print -quit)"
+}
+
+test_symlinked_trash() {
+    new_fixture
+    local out
+    mkdir "$FX/real-trash"
+    ln -s "$FX/real-trash" "$FX/trash-link"
+    WS_TRASH=$FX/trash-link ws prune --apply <<<y >/dev/null 2>&1
+    refute "apply through a symlinked trash on the same filesystem moves the worktree" \
+        test -e "$WS_PROJECTS/alpha-merged"
+    out=$(WS_TRASH=$FX/trash-link ws prune --purge --older-than 0d <<<y 2>&1)
+    refute "purge through that symlink keeps nothing it should delete" grep -q "^Kept" <<<"$out"
+    refute "it deletes the entry" compgen -G "$FX/real-trash/*-alpha-merged"
+}
+
+test_forged_records() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged t=$WS_ROOT/t9 tr out head
+    tr=$(trash_dir)
+    head=$(head_of "$m")
+    mkdir -p "$t/.claude" "$tr"
+    add_worktree beta "$t/beta" feat/t9
+    add_pr beta feat/t9 MERGED 90 "$(head_of "$t/beta")"
+    echo "# hand-written notes" >"$t/CLAUDE.md"
+    echo WS_ID=t9 >"$t/.ws"
+    printf 'trash=%s\ttime=1\n' "$m" >"$tr/manifest"
+    printf 'trash=%s\tticket=%s\ttime=1\n' "$t/beta" "$t" >>"$tr/manifest"
+    printf 'orig=%s\ntrash=%s\ntime=1\n' "$FX/nowhere" "$m" >"$tr/20200101T000000Z-forged.meta"
+    ln -s "$m" "$tr/20200101T000000Z-link"
+    printf 'orig=%s\ncommon=%s\nbranch=feat/merged\nhead=%s\nticket=\npr=2\nstate=merged\noid=%s\ntime=1\n' \
+        "$FX/nowhere" "$WS_PROJECTS/alpha/.git" "$head" "$head" >"$tr/20200101T000000Z-link.meta"
+
+    out=$(ws prune --purge <<<y 2>&1)
+    assert "purge never deletes a live worktree a record names" is_worktree "$m"
+    assert "purge never touches a live ticket's files" test -f "$t/CLAUDE.md" -a -f "$t/.ws"
+    assert "the live ticket's worktree survives" is_worktree "$t/beta"
+    assert "purge lists a record with a field it does not know" \
+        grep -q "^Kept ~/.local/share/ws/trash/20200101T000000Z-forged: " <<<"$out"
+    assert "purge lists an entry that is a symlink" \
+        grep -q "^Kept ~/.local/share/ws/trash/20200101T000000Z-link: " <<<"$out"
+    ws prune --restore 20200101T000000Z-link >/dev/null 2>&1
+    assert_eq "restore of a symlinked entry exits 1" 1 $?
+    assert "the worktree behind the symlink stays in place" is_worktree "$m"
+}
+
+test_restore_trusts_no_ticket_field() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged c=$WS_PROJECTS/alpha-closed out meta beta cmeta
+    ws prune --apply <<<y >/dev/null 2>&1
+    cmeta=$(meta_of "$c")
+    sed -i "s#^orig=.*#orig=projects/alpha-closed#" "$cmeta"
+    out=$(cd "$FX" && ws prune --restore "${cmeta%.meta}" 2>&1)
+    assert_eq "restore of a record with a relative orig exits 1" 1 $?
+    assert "it says the record is bad" grep -q "bad record" <<<"$out"
+    assert "that entry stays in the trash" is_worktree "${cmeta%.meta}"
+    refute "nothing appears at the relative path" test -e "$FX/projects/alpha-closed"
+    mkdir -p "$FX/elsewhere"
+    meta=$(meta_of "$m")
+    beta=$(trash_of "$WS_ROOT/t1/beta")
+    sed -i "s#^ticket=\$#ticket=$FX/elsewhere#" "$meta"
+    out=$(ws prune --restore alpha-merged 2>&1)
+    assert_eq "restore of a record whose ticket is not its parent exits 1" 1 $?
+    assert "it says the record is bad" grep -q "bad record" <<<"$out"
+    assert_eq "nothing moves to the dir the field names" "" "$(ls -A "$FX/elsewhere")"
+    assert "the entry stays in the trash" is_worktree "${meta%.meta}"
+    assert "another ticket's entry stays in the trash" is_worktree "$beta"
+}
+
+test_damaged_records() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged c=$WS_PROJECTS/alpha-closed b=$WS_ROOT/t1/beta out code mm cm line
+    ws prune --apply <<<y >/dev/null 2>&1
+    mm=$(meta_of "$m")
+    cm=$(meta_of "$c")
+    printf '\0' >>"$mm"
+    line=$(grep '^time=' "$cm")
+    echo "$line" >>"$cm"
+    out=$(ws prune --restore beta 2>&1)
+    assert_eq "restore beside damaged records exits 0" 0 $?
+    assert "a damaged record never blocks restoring another entry" is_worktree "$b"
+
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    code=$?
+    assert_eq "purge beside damaged records exits 0" 0 "$code"
+    assert "purge says why it keeps a record with a NUL byte" grep -q "^Kept ~/.*-alpha-merged: bad record" <<<"$out"
+    assert "purge says why it keeps a record with a key twice" grep -q "^Kept ~/.*-alpha-closed: bad record" <<<"$out"
+    assert "the entry with a NUL byte stays" is_worktree "${mm%.meta}"
+    assert "the entry with a key twice stays" is_worktree "${cm%.meta}"
+    out=$(ws prune --restore "${cm%.meta}" 2>&1)
+    assert_eq "restore of a damaged record exits 1" 1 $?
+    assert "it says the record is bad" grep -q "bad record" <<<"$out"
+}
+
+test_record_age() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged c=$WS_PROJECTS/alpha-closed out mm cm
+    ws prune --apply <<<y >/dev/null 2>&1
+    mm=$(meta_of "$m")
+    cm=$(meta_of "$c")
+    truncate -s -3 "$mm"
+    sed -i 's/^time=.*/time=17/' "$cm"
+    out=$(ws prune --purge <<<n 2>&1)
+    refute "the default purge offers nothing minutes after the move" grep -q "Delete" <<<"$out"
+    assert "it keeps a record cut inside its last line and says why" grep -q "^Kept ~/.*-alpha-merged: bad record" <<<"$out"
+    assert "the cut record's entry stays" is_worktree "${mm%.meta}"
+}
+
+test_restore_stops_at_a_ticket_file_in_the_way() {
+    new_fixture
+    local t=$WS_ROOT/t3 r out code
+    mkdir -p "$t"
+    for r in alpha beta; do
+        add_worktree "$r" "$t/$r" feat/t3
+        add_pr "$r" feat/t3 MERGED 3 "$(head_of "$t/$r")"
+    done
+    echo "# old notes" >"$t/CLAUDE.md"
+    echo "first notes" >"$t/0-notes.md"
+    ws prune --apply <<<y >/dev/null 2>&1
+    mkdir -p "$t"
+    echo "# new notes" >"$t/CLAUDE.md"
+    out=$(ws prune --restore t3 2>&1)
+    code=$?
+    assert_eq "restore onto a ticket file that exists exits 1" 1 "$code"
+    assert "it names the file in the way" grep -q ": ~/work/t3/CLAUDE.md exists" <<<"$out"
+    assert "it names the trash copy" grep -q "trash/[^ ]*-t3/CLAUDE.md" <<<"$out"
+    assert "the new file stays" grep -q "new notes" "$t/CLAUDE.md"
+    assert "the old file stays in the trash" grep -q "old notes" "$(dirname "$(trash_of "$t/alpha")")/CLAUDE.md"
+    refute "a restore that stops moves no ticket file" test -e "$t/0-notes.md"
+    assert "the first worktree stays in the trash" in_trash "$t/alpha"
+    assert "the second worktree stays in the trash" in_trash "$t/beta"
+}
+
+test_restore_checks_git_first() {
+    new_fixture
+    local t=$WS_ROOT/t5 tdir out
+    mkdir -p "$t"
+    add_worktree alpha "$t/alpha" feat/t5
+    add_pr alpha feat/t5 MERGED 307 "$(head_of "$t/alpha")"
+    echo notes >"$t/CLAUDE.md"
+    ws prune --apply <<<y >/dev/null 2>&1
+    tdir=$(trash_of "$t/alpha")
+    tdir=${tdir%/*}
+    mv "$WS_PROJECTS/alpha" "$WS_PROJECTS/alpha-renamed"
+    out=$(ws prune --restore t5 2>&1)
+    assert_eq "restore of a worktree whose main repo moved exits 1" 1 $?
+    assert "the ticket's files stay with the entry" test -f "$tdir/CLAUDE.md"
+    refute "no half-restored ticket dir appears" test -e "$t"
+}
+
+test_concurrent_restore_and_apply() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged c=$WS_PROJECTS/alpha-closed pid code
+    ws prune --apply <<<y >/dev/null 2>&1
+    ws prune --restore alpha-merged >/dev/null 2>&1
+    ws prune --restore alpha-closed >/dev/null 2>&1
+    mkdir -p "$FX/slow"
+    printf '#!/usr/bin/env bash\nsleep 2\nexec %q "$@"\n' "$(command -v mv)" >"$FX/slow/mv"
+    chmod +x "$FX/slow/mv"
+    PATH=$FX/slow:$PATH ws prune --restore beta >/dev/null 2>&1 &
+    pid=$!
+    sleep 1
+    ws prune --apply <<<y >/dev/null 2>&1
+    wait "$pid"
+    code=$?
+    assert_eq "the restore exits 0" 0 "$code"
+    assert "an apply during a restore keeps its first record" in_trash "$m"
+    assert "it keeps its second record" in_trash "$c"
+}
+
+two_worktree_ticket() {
+    mkdir -p "$1"
+    add_worktree alpha "$1/alpha" feat/t8a
+    add_pr alpha feat/t8a MERGED 700 "$(head_of "$1/alpha")"
+    add_worktree beta "$1/beta" feat/t8b
+    add_pr beta feat/t8b MERGED 701 "$(head_of "$1/beta")"
+    echo notes >"$1/CLAUDE.md"
+    ws prune --apply <<<y >/dev/null 2>&1
+}
+
+test_restore_one_of_two() {
+    new_fixture
+    local t=$WS_ROOT/t8 tdir
+    two_worktree_ticket "$t"
+    tdir=$(trash_of "$t/alpha")
+    tdir=${tdir%/*}
+    ws prune --restore "$tdir/alpha" >/dev/null 2>&1
+    assert "restore by trash path puts that worktree back" is_worktree "$t/alpha"
+    assert "the ticket's files come back with it" test -f "$t/CLAUDE.md"
+    assert "the other worktree stays in the trash" is_worktree "$tdir/beta"
+    assert "its record stays" test -f "$tdir/beta.meta"
+    refute "git lists nothing as prunable" grep -q '^prunable' <<<"$(snapshot alpha beta)"
+    ws prune --restore "$tdir/beta" >/dev/null 2>&1
+    assert "the other worktree restores after it" is_worktree "$t/beta"
+}
+
+test_purge_one_of_two() {
+    new_fixture
+    local t=$WS_ROOT/t8 tdir
+    two_worktree_ticket "$t"
+    tdir=$(trash_of "$t/alpha")
+    tdir=${tdir%/*}
+    echo dirty >"$tdir/beta/untracked.txt"
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    assert "purge deletes the clean worktree" test ! -e "$tdir/alpha"
+    assert "the ticket's files stay with the worktree left in the trash" test -f "$tdir/CLAUDE.md"
+    rm "$tdir/beta/untracked.txt"
+    ws prune --restore t8 >/dev/null 2>&1
+    assert "restore brings the ticket's files back" test -f "$t/CLAUDE.md"
+    assert "restore brings the worktree back" is_worktree "$t/beta"
+}
+
+test_trash_names() {
+    new_fixture
+    local stamp=20260101T000000Z tr out
+    tr=$(trash_dir)
+    mkdir -p "$WS_ROOT/alpha-merged" "$tr"
+    add_worktree beta "$WS_ROOT/alpha-merged/beta" feat/d
+    add_pr beta feat/d MERGED 304 "$(head_of "$WS_ROOT/alpha-merged/beta")"
+    echo "ticket notes" >"$WS_ROOT/alpha-merged/notes.md"
+    echo pending >"$tr/$stamp-alpha-closed.meta.tmp"
+    out=$(WS_STAMP=$stamp ws prune --apply <<<y 2>&1)
+    assert_eq "apply skips a name a pending record holds" "$tr/$stamp-alpha-closed.2" \
+        "$(trash_of "$WS_PROJECTS/alpha-closed")"
+    assert "the pending record stays as it was" grep -qx pending "$tr/$stamp-alpha-closed.meta.tmp"
+    assert_eq "a worktree named like a ticket gets the plain name" "$tr/$stamp-alpha-merged" \
+        "$(trash_of "$WS_PROJECTS/alpha-merged")"
+    assert_eq "the ticket gets its own trash dir" "$tr/$stamp-alpha-merged.2/beta" \
+        "$(trash_of "$WS_ROOT/alpha-merged/beta")"
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    assert "purge deletes the worktree" test ! -e "$tr/$stamp-alpha-merged"
+    assert "purge deletes the ticket's worktree" test ! -e "$tr/$stamp-alpha-merged.2/beta"
+    assert "the ticket's notes go to the archive" test -f "$tr/archive/$stamp-alpha-merged.2/notes.md"
+}
+
+late_trash_files() {
+    echo .late >>"$WS_PROJECTS/alpha/.git/info/exclude"
+    echo only-copy >"$merged/.late"
+    echo draft >"$closed/draft.md"
+    git -C "$beta" reset -q --hard HEAD~1
+}
+
+test_purge_rechecks_after_the_prompt() {
+    new_fixture
+    local merged closed beta detached
+    ws prune --apply --include-detached <<<y >/dev/null 2>&1
+    merged=$(trash_of "$WS_PROJECTS/alpha-merged")
+    closed=$(trash_of "$WS_PROJECTS/alpha-closed")
+    beta=$(trash_of "$WS_ROOT/t1/beta")
+    detached=$(trash_of "$WS_PROJECTS/alpha-detached")
+    answer_yes_at_prompt late_trash_files prune --purge --older-than 0d
+    assert "an ignored file made at the purge prompt survives" grep -q only-copy "$merged/.late"
+    assert "an untracked file made at the purge prompt survives" grep -q draft "$closed/draft.md"
+    assert "the entry keeps its name" is_worktree "$merged"
+    assert "the output says why" grep -q "^Kept ~/.*-alpha-merged: KEEP ignored-unique" "$FX/out"
+    assert "an entry whose HEAD moved at the prompt stays, though it still classifies REMOVE" is_worktree "$beta"
+    assert "the output says it changed" grep -q "^Kept ~/.*-t1/beta: it changed after the scan" "$FX/out"
+    assert "the untouched entry is deleted" test ! -e "$detached"
+}
+
+test_purge_moves_the_entry_before_it_deletes() {
+    new_fixture
+    local entry
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(compgen -G "$(trash_dir)/*-alpha-merged")
+    echo .late >>"$WS_PROJECTS/alpha/.git/info/exclude"
+    fake_git "if [[ \$2 == worktree && \$3 == remove ]] && echo only-copy 2>/dev/null >$(printf %q "$entry/.late"); then
+    : >$(printf %q "$FX/late.wrote")
+fi"
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    rm "$FX/bin/git"
+    assert "a file written to the entry's path while purge deletes it is never lost" \
+        test ! -e "$FX/late.wrote" -o -f "$entry/.late"
+}
+
+test_purge_saves_reflog_commits() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged lost entry bundle out
+    commit_file "$m" draft.txt "draft only the reflog holds"
+    lost=$(head_of "$m")
+    git -C "$m" reset -q --hard HEAD~1
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    bundle=$(trash_dir)/archive/${entry##*/}.bundle
+    assert "purge deletes the worktree" test ! -e "$entry"
+    assert "the bundle is valid for the repo" git -C "$WS_PROJECTS/alpha" bundle verify -q "$bundle"
+    assert "the bundle holds the commit only the reflog had" \
+        grep -q "^$lost " <<<"$(git -C "$WS_PROJECTS/alpha" bundle list-heads "$bundle" 2>/dev/null)"
+    assert "the output names the bundle" grep -q "archive/${entry##*/}.bundle" <<<"$out"
+    refute "an entry with no reflog-only commit gets no bundle" compgen -G "$(trash_dir)/archive/*-alpha-closed*"
+}
+
+test_orphans() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged out cmd entry
+    fake_git 'if [[ $2 == worktree && $3 == move && $4 == */alpha-merged ]]; then "$real" "$@"; kill -KILL "$PPID"; exit; fi'
+    ws prune --apply <<<y >/dev/null 2>&1
+    rm "$FX/bin/git"
+    entry=$(compgen -G "$(trash_dir)/*-alpha-merged")
+    out=$(ws prune --restore alpha-merged 2>&1)
+    assert "restore lists a worktree moved without its record as an orphan" grep -q "^Orphan ~/.*-alpha-merged" <<<"$out"
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    assert "purge lists it too" grep -q "^Orphan ~/.*-alpha-merged" <<<"$out"
+    assert "purge never deletes it" is_worktree "$entry"
+    cmd=$(grep -A1 "^Orphan ~/.*-alpha-merged" <<<"$out" | sed -n 2p)
+    bash -c "$cmd" >/dev/null 2>&1
+    assert "the listed command puts it back" is_worktree "$m"
+
+    new_fixture
+    m=$WS_PROJECTS/alpha-merged
+    fake_git 'if [[ $2 == worktree && $3 == move && $4 == */alpha-merged ]]; then mkdir -p "$5"; fi'
+    out=$(ws prune --apply <<<y 2>&1)
+    rm "$FX/bin/git"
+    cmd=$(grep -o "git -C .*" <<<"$out")
+    assert "apply prints a command when git moved the worktree into a dir another process made" test -n "$cmd"
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    assert "purge lists that worktree as an orphan" grep -q "^Orphan ~/.*-alpha-merged" <<<"$out"
+    bash -c "$cmd" >/dev/null 2>&1
+    assert "the printed command puts it back" is_worktree "$m"
+
+    new_fixture
+    m=$WS_PROJECTS/alpha-merged
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    fake_git 'if [[ $2 == worktree && $3 == move && $5 == *-alpha-merged.purging ]]; then "$real" "$@"; kill -KILL "$PPID"; exit; fi'
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    rm "$FX/bin/git"
+    out=$(ws prune --purge --older-than 0d <<<n 2>&1)
+    assert "purge lists an entry a dead purge renamed" grep -q "^Orphan ~/.*-alpha-merged.purging" <<<"$out"
+    cmd=$(grep -A1 "^Orphan ~/.*-alpha-merged.purging" <<<"$out" | sed -n 2p)
+    bash -c "$cmd" >/dev/null 2>&1
+    assert "the listed command gives the entry its name back" is_worktree "$entry"
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    assert "the next purge deletes it" test ! -e "$entry"
+}
+
+test_full_trash() {
+    new_fixture
+    if ! unshare -rm true 2>/dev/null; then
+        ok "full trash skipped: no user namespaces"
+        return
+    fi
+    local out
+    mkdir "$FX/small"
+    cat >"$FX/inner.sh" <<'EOF'
+set -u
+mount -t tmpfs -o size=1m tmpfs "$SM" || exit 9
+export WS_ROOT=$SM/work WS_TRASH=$SM/trash
+mkdir -p "$WS_ROOT/t9" "$WS_TRASH"
+wt=$WS_ROOT/t9/alpha
+git -C "$WS_PROJECTS/alpha" worktree add -q -b feat/small "$wt"
+echo s >"$wt/s.txt"
+git -C "$wt" add s.txt
+git -C "$wt" commit -qm small
+git -C "$wt" push -q -u origin feat/small
+printf 'alpha\tfeat/small\tMERGED\t300\t%s\tfalse\n' "$(git -C "$wt" rev-parse HEAD)" >>"$FX/prs.tsv"
+echo note >"$WS_ROOT/t9/CLAUDE.md"
+bash "$WS_BIN" prune 2>&1 | grep -q "^REMOVE .*/t9/alpha" && echo planned
+dd if=/dev/zero of="$SM/fill" bs=4k 2>/dev/null
+bash "$WS_BIN" prune --apply <<<y >/dev/null 2>&1
+rm "$SM/fill"
+if [[ -f $wt/s.txt ]]; then
+    echo stayed
+elif bash "$WS_BIN" prune --restore t9 >/dev/null 2>&1 && [[ -f $wt/s.txt ]]; then
+    echo restored
+fi
+umount "$SM"
+EOF
+    out=$(env SM="$FX/small" FX="$FX" WS_BIN="$WS_BIN" unshare -rm bash "$FX/inner.sh" 2>&1)
+    assert "the worktree on the small filesystem is REMOVE before it fills" grep -qx planned <<<"$out"
+    assert "a trash with no free space never strands a worktree" grep -qxE "stayed|restored" <<<"$out"
+}
+
+test_hidden_cwd() {
+    new_fixture
+    if ! command -v python3 >/dev/null; then
+        ok "hidden cwd skipped: no python3"
+        return
+    fi
+    local entry out pid i
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$WS_PROJECTS/alpha-merged")
+    cat >"$FX/hide.py" <<'EOF'
+import ctypes, os, sys, time
+os.chdir(sys.argv[1])
+ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
+with open(sys.argv[2], "w") as f:
+    f.write(str(os.getpid()))
+time.sleep(30)
+EOF
+    (python3 -I "$FX/hide.py" "$entry" "$FX/orphan" &)
+    for ((i = 0; i < 100; i++)); do
+        [[ ! -s $FX/orphan ]] || break
+        sleep 0.05
+    done
+    out=$(ws prune --purge --older-than 0d <<<n 2>/dev/null)
+    kill "$(<"$FX/orphan")" 2>/dev/null
+    assert_eq "a hidden process that init or the user manager adopted is skipped, as daemons are" REMOVE \
+        "$(action_of "$out" "$entry")"
+
+    python3 -I "$FX/hide.py" "$entry" "$FX/ready" &
+    pid=$!
+    for ((i = 0; i < 100; i++)); do
+        [[ ! -s $FX/ready ]] || break
+        sleep 0.05
+    done
+    out=$(ws prune --purge --older-than 0d <<<y 2>/dev/null)
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    assert_eq "an entry is KEEP unreadable while a process of ours hides its working directory" "KEEP unreadable" \
+        "$(action_of "$out" "$entry")"
+    assert "the table names that process" grep -q "$pid" <<<"$(detail_of "$out" "$entry")"
+    assert "purge keeps the entry" is_worktree "$entry"
+}
+
+test_purge_keeps_entries_git_cannot_open() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged b=$WS_ROOT/t1/beta mt bt out
+    ws prune --apply <<<y >/dev/null 2>&1
+    mt=$(trash_of "$m")
+    bt=$(trash_of "$b")
+    rm -rf "$WS_PROJECTS/alpha"
+    git init -q "$FX"
+    mv "$bt" "$FX/away"
+    git -C "$WS_PROJECTS/beta" worktree prune
+    mv "$FX/away" "$bt"
+    out=$(ws prune --purge --older-than 0d <<<y 2>&1)
+    assert_eq "purge with entries git cannot open exits 0" 0 $?
+    assert "an entry whose main repo is gone keeps its files" test -f "$mt/work.txt"
+    assert "an entry git forgot keeps its files" test -f "$bt/work.txt"
+    assert "purge says why it keeps the first" grep -q "^Kept ~/.*-alpha-merged: " <<<"$out"
+    assert "purge says why it keeps the second" grep -q "^Kept ~/.*-t1/beta: " <<<"$out"
 }
 
 test_in_use() {
@@ -1034,7 +1569,7 @@ run_test test_help
 run_test test_gh_calls
 run_test test_gh_parallel
 run_test test_apply_yes
-run_test test_manifest_record
+run_test test_meta_record
 run_test test_apply_no
 run_test test_include_detached
 run_test test_gh_failure
@@ -1062,7 +1597,27 @@ run_test test_restore
 run_test test_ticket_moves_with_last_repo
 run_test test_purge
 run_test test_purge_ticket
+run_test test_purge_archives_ticket_files
 run_test test_cross_fs
+run_test test_trash_location
+run_test test_symlinked_trash
+run_test test_forged_records
+run_test test_restore_trusts_no_ticket_field
+run_test test_damaged_records
+run_test test_record_age
+run_test test_restore_stops_at_a_ticket_file_in_the_way
+run_test test_restore_checks_git_first
+run_test test_concurrent_restore_and_apply
+run_test test_restore_one_of_two
+run_test test_purge_one_of_two
+run_test test_trash_names
+run_test test_purge_rechecks_after_the_prompt
+run_test test_purge_moves_the_entry_before_it_deletes
+run_test test_purge_saves_reflog_commits
+run_test test_orphans
+run_test test_full_trash
+run_test test_hidden_cwd
+run_test test_purge_keeps_entries_git_cannot_open
 run_test test_in_use
 run_test test_sourceable
 run_test test_fixture_isolation

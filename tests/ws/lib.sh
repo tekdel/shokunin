@@ -115,16 +115,49 @@ trash_dir() {
     echo "$XDG_DATA_HOME/ws/trash"
 }
 
-manifest_get() {
-    local value
-    value=$(awk -F '\t' -v orig="orig=${1//%/%25}" -v key="$2=" '$1 == orig {
-        for (i = 1; i <= NF; i++) if (index($i, key) == 1) print substr($i, length(key) + 1) }' \
-        "$(trash_dir)/manifest" 2>/dev/null)
+meta_of() {
+    local f
+    for f in "$(trash_dir)"/*.meta "$(trash_dir)"/*/*.meta; do
+        if [[ -f $f ]] && grep -aqxF "orig=${1//%/%25}" "$f"; then
+            printf '%s\n' "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
+meta_get() {
+    local f value
+    f=$(meta_of "$1") || return 0
+    value=$(sed -n "s/^$2=//p" "$f")
     printf '%s\n' "${value//%25/%}"
 }
 
 trash_of() {
-    manifest_get "$1" trash
+    local f
+    f=$(meta_of "$1") || return 0
+    printf '%s\n' "${f%.meta}"
+}
+
+other_fs_dir() {
+    local dev dir
+    dev=$(stat -c %d "$FX")
+    for dir in /dev/shm "/run/user/$(id -u)" /var/tmp; do
+        if [[ -d $dir && -w $dir && $(stat -c %d "$dir") != "$dev" ]]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+fake_git() {
+    {
+        printf '#!/usr/bin/env bash\nreal=%q\n' "$(PATH=$_base_path command -v git)"
+        # shellcheck disable=SC2016
+        printf '%s\nexec "$real" "$@"\n' "$1"
+    } >"$FX/bin/git"
+    chmod +x "$FX/bin/git"
 }
 
 in_trash() {
