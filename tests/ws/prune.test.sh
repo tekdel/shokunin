@@ -468,13 +468,14 @@ test_records_cannot_be_forged() {
     git init -q "$c/"$'\n''vendor'
     git -C "$c/"$'\n''vendor' commit -q --allow-empty -m only-copy
     echo only-copy >"$b/"$'\ndirty\tPWD[$(touch PWNED)]'
+    (cd "$FX" && ws prune >/dev/null 2>&1)
+    refute "a file name is never evaluated" test -e "$FX/PWNED"
+
     merged_worktree "$t" feat/trail 65
     printf 'X\n' >"$t/prod.env"$'\n'
-
     out=$(cd "$FX" && ws prune 2>&1)
     code=$?
     assert_eq "file names with tabs and newlines do not break the dry run" 0 "$code"
-    refute "a file name is never evaluated" test -e "$FX/PWNED"
     assert_eq "an ignored file name with a newline is KEEP odd-name" "KEEP odd-name" "$(action_of "$out" "$m")"
     assert_eq "an ignored dir name with a newline is KEEP odd-name" "KEEP odd-name" "$(action_of "$out" "$c")"
     assert_eq "a name forging a fact is KEEP odd-name" "KEEP odd-name" "$(action_of "$out" "$b")"
