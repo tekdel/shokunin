@@ -101,6 +101,9 @@ test_help() {
     assert "help says orphans are never deleted" grep -qi "orphan" <<<"$help"
     assert "help gives how long before the removal --purge asks the engines" \
         grep -q "asks the engines about [0-9]* ms before the removal" <<<"$(tr '\n' ' ' <<<"$help" | tr -s ' ')"
+    assert "help says ws takes no lock" grep -q "takes no lock" <<<"$(tr '\n' ' ' <<<"$help" | tr -s ' ')"
+    assert "help says a worktree that appears in a ticket dir after the check moves with it" \
+        grep -q "appears in a ticket dir after" <<<"$(tr '\n' ' ' <<<"$help" | tr -s ' ')"
 }
 
 test_gh_calls() {
@@ -3303,9 +3306,9 @@ test_ticket_files_are_decided_by_git() {
     fake_git "if [[ \$1 == --git-dir=$(printf %q "$WS_PROJECTS/zeta/.git") && \" \$* \" == *\" worktree list \"* ]]; then exit 128; fi"
     out=$(ws prune --apply <<<y 2>&1)
     rm "$FX/bin/git"
-    assert "a repo whose worktree list fails keeps the ticket" \
-        grep -qF "Kept ticket ~/work/t1: ws cannot read the worktree list of ~/projects/zeta" <<<"$out"
-    assert "with its files" test -f "$t/notes/n.md"
+    assert "a repo whose worktree list fails keeps every worktree" \
+        grep -qF "Skipped ~/work/t1/beta: ws cannot read the worktree list of ~/projects/zeta" <<<"$out"
+    assert "with the ticket's files" test -f "$t/notes/n.md"
 
     new_fixture
     t=$WS_ROOT/t1
@@ -3313,7 +3316,7 @@ test_ticket_files_are_decided_by_git() {
     git clone -q https://github.com/fixture/alpha.git "$t/clone" || abort "cannot clone into the ticket"
     out=$(ws prune --apply <<<y 2>&1)
     assert "a clone in the ticket dir keeps it" \
-        grep -qF "Kept ticket ~/work/t1: it holds ~/work/t1/clone, which is no ticket file" <<<"$out"
+        grep -qxF "Kept ticket ~/work/t1: it holds a repository at ~/work/t1/clone" <<<"$out"
     assert "the clone stays" test -d "$t/clone/.git"
 
     new_fixture
@@ -3388,7 +3391,7 @@ test_temp_dirs_of_other_runs() {
     mkdir -p "$(trash_dir)/.tmp.abc123" "$(trash_dir)/.tmp.1.$ns.abcdef" "$(trash_dir)/.tmp.$dead.$ns.ghijkl" \
         "$(trash_dir)/.tmp.$dead.1.mnopqr"
     ws prune --restore nothing-like-this >/dev/null 2>&1
-    refute "a temp dir in the old format is removed" test -e "$(trash_dir)/.tmp.abc123"
+    assert "a temp dir whose name holds no pid stays" test -d "$(trash_dir)/.tmp.abc123"
     assert "a temp dir of process 1, which runs, stays" test -d "$(trash_dir)/.tmp.1.$ns.abcdef"
     refute "a temp dir of a run of this pid namespace that died is removed" test -e "$(trash_dir)/.tmp.$dead.$ns.ghijkl"
     assert "a temp dir of another pid namespace stays" test -d "$(trash_dir)/.tmp.$dead.1.mnopqr"
@@ -3651,6 +3654,158 @@ test_shim_namespace_flags() {
     done
 }
 
+test_ticket_dirs_ask_every_repo_with_a_git_inside() {
+    local variant t z n lost out want
+    for variant in nested-projects nested-mirror outside unread gone-repo; do
+        new_fixture
+        t=$WS_ROOT/t1
+        deep_ticket
+        z=$WS_PROJECTS/poc/zeta n=$t/notes/zwt
+        case $variant in
+        nested-mirror) n=$t/poc/zeta ;;
+        outside | gone-repo) z=$FX/elsewhere/zeta ;;
+        esac
+        { git init -q "$z" && git -C "$z" commit -q --allow-empty -m z0 && mkdir -p "${n%/*}" &&
+            git -C "$z" worktree add -q --detach "$n" && echo wip >"$n/wip.txt"; } || abort "cannot make zeta"
+        lost=$(lost_commit "$n" l1)
+        want="Kept ticket ~/work/t1: ~/${z#"$HOME/"} lists a worktree in it, at ~/${n#"$HOME/"}"
+        if [[ $variant == gone-repo ]]; then
+            rm -rf "$z"
+            want="Kept ticket ~/work/t1: it holds ~/${n#"$HOME/"}/.git, and no repo ws can ask lists ~/${n#"$HOME/"}"
+        elif [[ $variant == unread ]]; then
+            fake_git "if [[ \$1 == --git-dir=$(printf %q "$z/.git") && \" \$* \" == *\" worktree list \"* ]]; then exit 128; fi"
+            want="Kept ticket ~/work/t1: ws cannot read the worktree list of ~/${z#"$HOME/"}"
+        fi
+        out=$(ws prune --apply <<<y 2>&1)
+        rm -f "$FX/bin/git"
+        assert "apply moves the ticket's merged worktree ($variant)" in_trash "$t/beta"
+        assert "apply names what keeps the ticket ($variant)" grep -qxF "$want" <<<"$out"
+        assert_eq "apply says once that it keeps the ticket ($variant)" 1 "$(grep -c '^Kept ticket' <<<"$out")"
+        assert "the ticket's file stays ($variant)" test -f "$t/notes/n.md"
+        assert "the worktree's untracked file stays ($variant)" test -f "$n/wip.txt"
+        [[ $variant == gone-repo ]] && continue
+        assert "the worktree stays where its repo lists it ($variant)" is_worktree "$n"
+        git -C "$z" worktree prune || abort "cannot prune zeta"
+        assert "the commit only its HEAD reflog holds survives git worktree prune ($variant)" reachable "$lost" "$z/.git"
+    done
+
+    new_fixture
+    t=$WS_ROOT/t1
+    deep_ticket
+    n=$t/notes/scratch
+    git clone -q https://github.com/fixture/alpha.git "$n" || abort "cannot clone into the ticket"
+    commit_file "$n" c.txt "unpushed in a plain clone"
+    lost=$(head_of "$n")
+    out=$(ws prune --apply <<<y 2>&1)
+    assert "a plain clone deep in a ticket keeps it" \
+        grep -qxF "Kept ticket ~/work/t1: it holds a repository at ~/work/t1/notes/scratch" <<<"$out"
+    assert "the clone stays with its unpushed commit" git -C "$n" cat-file -e "$lost"
+
+    new_fixture
+    t=$WS_ROOT/t1
+    deep_ticket
+    { mkdir -p "$t/notes/locked" && chmod 000 "$t/notes/locked"; } || abort "cannot make an unreadable dir"
+    out=$(ws prune --apply <<<y 2>&1)
+    chmod 755 "$t/notes/locked"
+    assert "a ticket ws cannot search for a .git stays" \
+        grep -qxF "Kept ticket ~/work/t1: ws cannot search it for a .git" <<<"$out"
+    assert "with its files" test -f "$t/notes/n.md"
+}
+
+test_apply_skips_a_worktree_another_repo_lists() {
+    local variant x branch lost out a old
+    for variant in ticket project; do
+        new_fixture
+        a=$WS_PROJECTS/alpha old=$WS_PROJECTS/alpha-old
+        if [[ $variant == ticket ]]; then
+            x=$WS_ROOT/t1/alpha branch=feat/ticket
+        else
+            x=$WS_PROJECTS/alpha-merged branch=feat/merged
+        fi
+        lost=$(head_only_commit "$x" l1)
+        mv "$a" "$old"
+        git clone -q https://github.com/fixture/alpha.git "$a" || abort "cannot clone alpha"
+        rm -rf "$x"
+        git -C "$a" worktree add -q "$x" "$branch" || abort "cannot add $x again"
+        if [[ $variant == ticket ]]; then
+            sed -i '/^alpha\tfeat\/ticket\tOPEN/d' "$FX/prs.tsv"
+            add_pr alpha feat/ticket MERGED 70 "$(head_of "$x")"
+        fi
+        out=$(ws prune --apply <<<y 2>&1)
+        assert "apply skips a worktree two repos list ($variant), naming both" grep -qF \
+            "Skipped ~/${x#"$HOME/"}: ~/projects/alpha lists it, and ~/projects/alpha-old lists it too" <<<"$out"
+        assert "the worktree stays in place ($variant)" is_worktree "$x"
+        { git -C "$a" worktree prune && git -C "$old" worktree prune; } || abort "cannot prune"
+        assert "the commit only the old repo's reflog holds survives git worktree prune ($variant)" reachable "$lost"
+        assert_eq "apply names the ticket that stays once ($variant)" 1 "$(grep -c '^Kept ticket ~/work/t1:' <<<"$out")"
+    done
+}
+
+test_one_ticket_line_per_ticket() {
+    new_fixture
+    local t=$WS_ROOT/t8 out tdir
+    mkdir -p "$t"
+    add_worktree alpha "$t/alpha" feat/t8a
+    add_pr alpha feat/t8a MERGED 700 "$(head_of "$t/alpha")"
+    add_worktree beta "$t/beta" feat/t8b
+    add_pr beta feat/t8b MERGED 701 "$(head_of "$t/beta")"
+    echo notes >"$t/CLAUDE.md"
+    out=$(ws prune --apply <<<y 2>&1)
+    assert "the first worktree of the ticket moves" in_trash "$t/alpha"
+    assert "the second worktree of the ticket moves" in_trash "$t/beta"
+    assert_eq "apply says once that the ticket moved" 1 "$(grep -c '^Moved ticket ~/work/t8 ' <<<"$out")"
+    refute "and never that it kept it" grep -q '^Kept ticket ~/work/t8:' <<<"$out"
+    tdir=$(trash_of "$t/beta")
+    assert "the ticket's file moves with it" test -f "${tdir%/*}/CLAUDE.md"
+}
+
+test_temp_dirs_of_older_runs() {
+    new_fixture
+    local tr dead n inner out host=0
+    ws prune --apply <<<y >/dev/null 2>&1
+    tr=$(trash_dir)
+    [[ $(readlink /proc/self/ns/pid) != "pid:[4026531836]" ]] || host=1
+    true &
+    dead=$!
+    wait "$dead"
+    for n in "$dead.abcdef" 1.ghijkl abc123; do
+        { mkdir -p "$tr/.tmp.$n" && echo partial >"$tr/.tmp.$n/bundle"; } || abort "cannot make .tmp.$n"
+    done
+    out=$(ws prune --restore nothing-like-this 2>&1)
+    if ((host)); then
+        refute "a dir of an older run whose pid no process has is removed" test -e "$tr/.tmp.$dead.abcdef"
+        assert "and the run says so" grep -qF "Removed ~/.local/share/ws/trash/.tmp.$dead.abcdef" <<<"$out"
+    else
+        assert "outside the host's pid namespace, a dir of an older run stays" test -d "$tr/.tmp.$dead.abcdef"
+    fi
+    assert "a dir of an older run whose pid runs stays" test -f "$tr/.tmp.1.ghijkl/bundle"
+    assert "and is listed with its path" grep -q "^Kept ~/.local/share/ws/trash/.tmp.1.ghijkl: " <<<"$out"
+    assert "a dir whose name holds no pid stays" test -f "$tr/.tmp.abc123/bundle"
+    assert "and is listed with its path" grep -q "^Kept ~/.local/share/ws/trash/.tmp.abc123: " <<<"$out"
+
+    mkdir "$tr/.tmp.$dead.mnopqr" || abort "cannot make a temp dir"
+    ws_guard
+    out=$(unshare -Upf --mount-proc bash "$WS_BIN" prune --restore nothing-like-this 2>&1)
+    assert "a ws run in a child pid namespace keeps a dir of an older run" test -d "$tr/.tmp.$dead.mnopqr"
+    assert "and lists it" grep -q "^Kept ~/.local/share/ws/trash/.tmp.$dead.mnopqr: " <<<"$out"
+
+    for n in 77777 87777 97777 107777 117777; do
+        [[ -e /proc/$n ]] || break
+    done
+    unshare -Urpf --kill-child --mount-proc bash -c 'echo $(($1 - 1)) >/proc/sys/kernel/ns_last_pid || exit 1
+        sleep 60 &
+        echo "$!" >"$2"
+        wait' _ "$n" "$FX/inner" &
+    inner=$!
+    wait_for "$FX/inner" "^$n\$" || abort "cannot start a process with pid $n in a child pid namespace"
+    mkdir "$tr/.tmp.$n.stuvwx" || abort "cannot make a temp dir"
+    out=$(ws prune --restore nothing-like-this 2>&1)
+    kill "$inner"
+    wait "$inner" 2>/dev/null
+    assert "a dir of an older run whose pid runs in a child pid namespace stays" test -d "$tr/.tmp.$n.stuvwx"
+    assert "and is listed" grep -q "^Kept ~/.local/share/ws/trash/.tmp.$n.stuvwx: " <<<"$out"
+}
+
 run_test test_dry_run
 run_test test_help
 run_test test_gh_calls
@@ -3786,4 +3941,8 @@ run_test test_entry_whose_git_is_a_symlink
 run_test test_record_of_a_worktree_listed_at_its_purging_path
 run_test test_inspect_fails_with_no_message
 run_test test_shim_namespace_flags
+run_test test_ticket_dirs_ask_every_repo_with_a_git_inside
+run_test test_apply_skips_a_worktree_another_repo_lists
+run_test test_one_ticket_line_per_ticket
+run_test test_temp_dirs_of_older_runs
 finish
