@@ -72,7 +72,8 @@ new_fixture() {
     _sandbox=$(realpath -e -- "$sandbox") || abort "cannot resolve the sandbox"
     FX=$sandbox/root
     export WS_PROC=$FX/proc
-    { mkdir -p "$WS_PROC/self/ns" && ln -s "mnt:[1]" "$WS_PROC/self/ns/mnt"; } || abort "cannot make the fake process tree"
+    { mkdir -p "$WS_PROC/self/ns" && ln -s "mnt:[1]" "$WS_PROC/self/ns/mnt" && fake_root_owned_init; } ||
+        abort "cannot make the fake process tree"
     ws_guard
 }
 
@@ -112,12 +113,16 @@ ws_on_other_fs() {
         exit "$rc"' _ "$FX/otherfs" "$WS_TESTS/../../dotfiles/bin/ws" "$@"
 }
 
+fake_root_owned_init() {
+    ln -s / "$WS_PROC/1"
+}
+
 fake_proc() {
-    local pid=$1 ppid=$2 cwd=${3-} ns=${4:-mnt:[1]} dir=$WS_PROC/$1
+    local pid=$1 ppid=$2 cwd=${3-} ns=${4:-mnt:[1]} name=${5:-fake$1} dir=$WS_PROC/$1
     {
         mkdir -p "$dir/ns" &&
-            printf 'Name:\tfake%s\nUid:\t%s\t%s\t%s\t%s\n' "$pid" "$EUID" "$EUID" "$EUID" "$EUID" >"$dir/status" &&
-            printf '%s (fake%s) S %s 0 0 0\n' "$pid" "$pid" "$ppid" >"$dir/stat" &&
+            printf 'Name:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$name" "$EUID" "$EUID" "$EUID" "$EUID" >"$dir/status" &&
+            printf '%s (%s) S %s 0 0 0\n' "$pid" "$name" "$ppid" >"$dir/stat" &&
             if [[ -n $cwd ]]; then
                 ln -s "$ns" "$dir/ns/mnt" && ln -s "$cwd" "$dir/cwd"
             else
