@@ -77,11 +77,15 @@ new_fixture() {
 }
 
 ws_guard() {
-    local path gh
+    local path gh cmd
     [[ -n $_sandbox && -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
     gh=$(command -v gh) || gh=
     for path in "$HOME" "${WS_ROOT-}" "${WS_PROJECTS-}" "${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}" "$gh"; do
         [[ -n $path && $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: '$path' is outside $_sandbox"
+    done
+    for cmd in docker podman; do
+        path=$(command -v "$cmd") || continue
+        [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
 }
 
@@ -120,6 +124,16 @@ fake_proc() {
                 : >"$dir/ns/mnt" && : >"$dir/cwd"
             fi
     } || abort "cannot make fake process $pid"
+}
+
+add_container() {
+    local engine=$1 name=$2 type=$3 source=$4
+    {
+        jq --arg name "$name" --arg type "$type" --arg source "$source" \
+            '. + [{Id: "id-\($name)", Name: "/\($name)", Mounts: [{Type: $type, Source: $source, Destination: "/src"}]}]' \
+            "$FX/$engine.json" >"$FX/$engine.json.new" &&
+            mv "$FX/$engine.json.new" "$FX/$engine.json"
+    } || abort "cannot add container $name"
 }
 
 snapshot() {

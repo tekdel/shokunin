@@ -23,12 +23,21 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   gh.out               create it to make gh print its content instead
   gh.slow              holds seconds for gh to sleep, and logs start and
                        end times to gh.times
+  bin/docker           container engine shims, answer ps -q --no-trunc
+  bin/podman           and inspect from <engine>.json
+  <engine>.json        the running containers, [] at first: objects with
+                       Id, Name, and Mounts of Type and Source
+  <engine>.gone        ids that ps lists and inspect no longer knows
+  <engine>.err         create it to make the engine print its content to
+                       stderr and exit 1
+  <engine>.inspect.err the same for inspect alone
+  <engine>.log         one line per engine call
   env.sh               exports HOME, the XDG_CONFIG_HOME, XDG_CACHE_HOME,
                        XDG_DATA_HOME, and XDG_STATE_HOME dirs under
                        <root>, GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM,
                        WS_ROOT, WS_PROJECTS, WS_VAULT, PATH, and a short
                        TMUX_TMPDIR under /tmp, and unsets TMUX and
-                       TMUX_PANE
+                       TMUX_PANE; remove TMUX_TMPDIR with <root>
 EOF
 }
 
@@ -48,6 +57,7 @@ mkdir -p "$root/origins" "$projects/notes" "$root/work/t1" "$root/vault" "$root/
     "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state"
 # A socket path under <root> can pass the 108-byte limit.
 tmux_dir=$(mktemp -d /tmp/wsx.XXXXXX)
+trap 'rm -rf -- "$tmux_dir"' EXIT
 
 cat >"$root/gitconfig" <<EOF
 [user]
@@ -193,3 +203,46 @@ jq -Rn --arg repo "$name" --arg state "$state" --arg head "$head" --argjson limi
     | map(with_entries(select(.key as $k | $fields | split(",") | index($k))))' "$root/prs.tsv"
 EOF
 chmod +x "$root/bin/gh"
+
+cat >"$root/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+engine=${0##*/}
+printf '%s\n' "$*" >>"$root/$engine.log"
+if [[ -f $root/$engine.err ]]; then
+    cat "$root/$engine.err" >&2
+    exit 1
+fi
+case "$*" in
+"ps -q --no-trunc")
+    jq -r '.[].Id' "$root/$engine.json"
+    [[ ! -f $root/$engine.gone ]] || cat "$root/$engine.gone"
+    ;;
+"inspect "*)
+    shift
+    if [[ -f $root/$engine.inspect.err ]]; then
+        cat "$root/$engine.inspect.err" >&2
+        exit 1
+    fi
+    rc=0
+    for id; do
+        if ! jq -e --arg id "$id" 'any(.[]; .Id == $id)' "$root/$engine.json" >/dev/null; then
+            echo "Error: No such object: $id" >&2
+            rc=1
+        fi
+    done
+    jq '[.[] | select(.Id | IN($ARGS.positional[]))]' "$root/$engine.json" --args "$@"
+    exit "$rc"
+    ;;
+*)
+    echo "$engine shim: unsupported call: $*" >&2
+    exit 3
+    ;;
+esac
+EOF
+chmod +x "$root/bin/docker"
+cp "$root/bin/docker" "$root/bin/podman"
+echo '[]' >"$root/docker.json"
+echo '[]' >"$root/podman.json"
+trap - EXIT
