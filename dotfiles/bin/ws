@@ -10,12 +10,14 @@ WS_REGENERABLE=${WS_REGENERABLE-node_modules dist dist-test build coverage prism
 WS_OID_RE='^[0-9a-f]{40}([0-9a-f]{24})?$'
 WS_STAMP_RE='[0-9]{8}T[0-9]{6}Z(\.[0-9]+)?'
 WS_META_KEYS="orig common branch head ticket pr state oid time"
+WS_PROC_PID_INIT_INO=4026531836
 
 declare -gA WS_COMMANDS=(
     [prune]="list worktrees whose PR merged or closed, --apply moves them to the trash"
 )
 declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
+declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=()
 WS_ENGINE_ERR="ws did not ask the container engines"
 WS_ENGINES_OK=
 WS_MOVED_TO=
@@ -55,7 +57,8 @@ as REMOVE or KEEP. A worktree is REMOVE only when no KEEP reason below
 applies. A KEEP row shows the first reason that applies.
 
   --apply             ask once, check each worktree again, and move the
-                      unchanged ones to the trash; branches stay
+                      unchanged ones that no other repo lists to the
+                      trash; branches stay
   --include-detached  also check detached worktrees, which have no PR
   --restore <name>    move a trashed worktree, or a whole ticket, back
                       to where it was; name is the worktree, the ticket,
@@ -136,22 +139,42 @@ The trash:
 When a name is taken, its stamp gets a counter, as in <stamp>.2-<name>.
 A trash directory without a record is an orphan. --restore and --purge
 never delete one. They list each orphan, each entry git cannot use,
-each record whose directory is gone, and each ticket dir that holds only
-files or nothing, with its next step. A directory that holds a .git up
-to three levels down gets only git worktree repair and git worktree
-move, out of the trash to where it came from or a free path next to it,
-and only from the one repo that lists that worktree. ws asks the repo in
-the record first, then every repo directly under WS_PROJECTS. When no
-repo or more than one lists it, or ws cannot read a worktree list, the
-note says so and ws keeps it. Ticket files go to the archive, and rmdir
-removes a directory that holds only empty directories. A record whose
-directory is gone is deleted when git lists its worktree out of the
-trash, or, for a .meta record, when no repo lists its worktree at a path
-ws used; an unfinished .meta.tmp record stays otherwise. Everything else
-stays. When git worktree repair points an entry at a repo that moved, ws
-writes that repo into the entry's record. --apply, --restore, and
---purge remove a .tmp.<pid>.* dir in the trash once process <pid> is
-gone.
+each record whose directory is gone, and each directory that holds no
+record, with what ws knows. To learn where git has a worktree, ws asks
+every repo directly under WS_PROJECTS, the repo of every record, at
+--apply, the repo of every worktree it scanned, and, for a ticket dir,
+the repo of every .git inside it; a git worktree list that fails or
+takes more than 10 s makes ws keep everything it would decide. --apply
+skips a worktree that another repo lists too, as after a reclone. A
+note prints a git worktree move, out of the trash to where the entry
+came from or a free path next to it, only when exactly one repo lists
+the entry, the entry's .git is a file that names that repo's own record
+of it, and no repo lists a worktree inside it. No note prints git
+worktree repair. rmdir removes a directory that holds only empty
+directories. A record whose directory is gone is deleted when git lists
+its worktree out of the trash, at the path it came from, or, for a .meta
+record, when no repo lists its worktree at a path ws used; it stays
+while any repo lists a worktree in the trash at its path. Everything
+else stays, and the note says why. When you repair an entry from a repo
+that moved, ws writes that repo into its record.
+
+Ticket files are what is left in a ticket dir once its worktrees move.
+--apply moves them to the trash after its last move, and --purge moves
+them to the archive, only while the dir holds no .git at any depth, no
+repo lists a worktree in it, no process works in it, and no container
+mounts it. --apply, --restore, and --purge remove a temp dir that a ws
+run left in the trash once that run is gone; ws keeps the temp dirs of a
+run in another pid namespace, since it cannot see whether that run is
+gone. Older ws runs named their temp dirs .tmp.<pid>.XXXXXX or
+.tmp.XXXXXX. ws removes the first kind only when it runs in the host's
+pid namespace and no process has that pid, and never removes the second
+kind, whose name holds no pid. It lists each one it keeps with its path.
+
+Known limits:
+  ws takes no lock, so two ws prune runs at the same time can act on
+  the same entries. Run one at a time.
+  A worktree, clone, or file that appears in a ticket dir after --apply
+  checks the dir moves to the trash with the ticket files.
 
 Environment:
   WS_TRASH        the trash, ${XDG_DATA_HOME:-~/.local/share}/ws/trash by
@@ -263,7 +286,7 @@ ws_github_slug() {
 
 ws_main_checkout() {
     local -a fields=()
-    mapfile -d '' fields < <(git --git-dir="$1" worktree list --porcelain -z)
+    mapfile -d '' fields < <(timeout -k 5 10 git --git-dir="$1" worktree list --porcelain -z)
     wait $! || return 1
     [[ ${fields[0]-} == "worktree "* ]] || return 1
     if [[ ${fields[1]-} != bare ]]; then
@@ -294,20 +317,22 @@ ws_comm() {
 }
 
 # Docker runs its containers in the containerd namespace moby; k3s and
-# other containerd clients use their own.
+# other containerd clients use their own. The shim's flag parser keeps
+# the last -namespace it is given.
 ws_shim_namespace() {
-    local arg prev=""
+    local arg prev="" ns="" set=0
     local -a args=()
     [[ -r $WS_PROC/$1/cmdline ]] || return 1
     mapfile -d '' args <"$WS_PROC/$1/cmdline"
     for arg in "${args[@]}"; do
-        if [[ ($prev == -namespace || $prev == --namespace) && $arg == "$2" ]] ||
-            [[ $arg == -namespace="$2" || $arg == --namespace="$2" ]]; then
-            return 0
+        if [[ $prev == -namespace || $prev == --namespace ]]; then
+            ns=$arg set=1
+        elif [[ $arg == -namespace=* || $arg == --namespace=* ]]; then
+            ns=${arg#*=} set=1
         fi
         prev=$arg
     done
-    return 1
+    ((set)) && [[ $ns == "$2" ]]
 }
 
 ws_engine_vouches() {
@@ -367,7 +392,7 @@ ws_dir_ids() {
 }
 
 ws_cwd_count() {
-    local real self proc link name state ppid id ids="" n=0 rc=0 out
+    local real self proc link name state ppid parent id ids="" n=0 rc=0 out
     local -a status=()
     local -A cwd=() foreign=()
     real=$(realpath -e -- "$1") || return 1
@@ -448,7 +473,8 @@ ws_cwd_count() {
             [[ $link != "$real" && $link != "$real"/* ]] || n=$((n + 1))
         elif [[ -e $proc ]] && ! ws_system_child "${proc##*/}" && ! ws_engine_vouches "${proc##*/}"; then
             if [[ $state == Z ]]; then
-                echo "process ${proc##*/} ($name) is a zombie child of process $ppid ($(ws_comm "$ppid"))"
+                parent=$(ws_comm "$ppid") || parent="parent gone"
+                echo "process ${proc##*/} ($name) is a zombie child of process $ppid ($parent)"
             else
                 echo "process ${proc##*/} ($name) hides its working directory"
             fi
@@ -1101,17 +1127,25 @@ ws_ticket_of() {
 }
 
 ws_ticket_file() {
-    local found
-    [[ $1 != *.meta && $1 != *.meta.tmp && $1 != *.purging && ! -e $1/.git ]] || return 1
-    found=$(find "$1" -maxdepth 3 -name .git -print -quit 2>/dev/null) && [[ -z $found ]]
+    [[ $1 != *.meta && $1 != *.meta.tmp && $1 != *.purging && ! -e $1/.git && ! -L $1/.git ]] &&
+        ((${#WS_WT_UNREAD[@]} == 0)) && ! ws_lists_in "$1"
 }
 
-ws_holds_repo() {
+ws_holds_entries() {
     local e
     for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do
-        if [[ -e $e || -L $e ]] && ! ws_ticket_file "$e"; then
+        if [[ ($e == *.meta || $e == *.meta.tmp || $e == *.purging) && (-e $e || -L $e) ]] ||
+            [[ -e $e/.git || -L $e/.git ]]; then
             return 0
         fi
+    done
+    return 1
+}
+
+ws_has_record() {
+    local e
+    for e in "$1"/*.meta "$1"/*.meta.tmp "$1"/.[!.]*.meta "$1"/.[!.]*.meta.tmp; do
+        [[ ! -e $e && ! -L $e ]] || return 0
     done
     return 1
 }
@@ -1121,6 +1155,72 @@ ws_holds_files() {
     for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do
         [[ ! -e $e && ! -L $e ]] || return 0
     done
+    return 1
+}
+
+ws_listing_blocker() {
+    if ((${#WS_WT_UNREAD[@]})); then
+        echo "ws cannot read the worktree list of $(ws_repos_shown "${WS_WT_UNREAD[@]}")"
+    elif ws_lists_in "$1"; then
+        echo "$(ws_repos_shown "${WS_WT_REPOS[WS_HITS[0]]}") lists a worktree in it, at $(ws_shown "${WS_WT_PATHS[WS_HITS[0]]}")"
+    else
+        return 1
+    fi
+}
+
+ws_ticket_blocker() {
+    local d=$1 e n line g admin common
+    local -a gits=() owners=()
+    ws_snapshot_worktrees
+    ! ws_listing_blocker "$d" || return 0
+    mapfile -d '' gits < <(find "$d" -name .git -prune -print0 2>/dev/null)
+    if ! wait $!; then
+        echo "ws cannot search it for a .git"
+        return 0
+    fi
+    for g in "${gits[@]}"; do
+        if admin=$(ws_gitdir_of "${g%/.git}") &&
+            common=$(git --git-dir="$admin" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+            owners+=("$common")
+        fi
+    done
+    if ((${#owners[@]})); then
+        ws_snapshot_worktrees "${owners[@]}"
+        ! ws_listing_blocker "$d" || return 0
+    fi
+    if ((${#gits[@]})); then
+        g=${gits[0]}
+        if [[ -d $g && ! -L $g ]]; then
+            echo "it holds a repository at $(ws_shown "${g%/.git}")"
+        else
+            echo "it holds $(ws_shown "$g"), and no repo ws can ask lists $(ws_shown "${g%/.git}")"
+        fi
+        return 0
+    fi
+    for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+        if [[ ($e == *.meta || $e == *.meta.tmp || $e == *.purging) && (-e $e || -L $e) ]]; then
+            echo "it holds $(ws_shown "$e"), which is no ticket file"
+            return 0
+        fi
+    done
+    if ! n=$(ws_cwd_count "$d"); then
+        echo "${n:-ws cannot resolve it}"
+        return 0
+    fi
+    if ((n)); then
+        echo "a process works in it"
+        return 0
+    fi
+    if [[ -n $WS_ENGINE_ERR ]]; then
+        echo "$WS_ENGINE_ERR"
+        return 0
+    fi
+    while IFS= read -r line; do
+        if [[ $line == container=* ]]; then
+            echo "$(ws_detail "${line#container=}") mounts it"
+            return 0
+        fi
+    done < <(ws_container_facts "$d")
     return 1
 }
 
@@ -1205,14 +1305,20 @@ ws_keep_why() {
     printf 'KEEP %s%s\n' "$reason" "${detail:+ ($(ws_detail "$detail"))}"
 }
 
+ws_not_purging() {
+    [[ -d $1 && ! -L $1 && ! -e $1.purging && ! -L $1.purging ]]
+}
+
 ws_record_set() {
-    local tmp
-    tmp=$(mktemp -- "$1.XXXXXX") || return 1
-    if awk -v key="$2=" 'index($0, key) != 1' "$1" >"$tmp" && ws_record "$2" "$3" >>"$tmp" &&
-        mv -T -- "$tmp" "$1"; then
+    local tmp entry=${4-}
+    tmp=$(ws_tmp_dir) || return 1
+    if awk -v key="$2=" 'index($0, key) != 1' "$1" >"$tmp/record" && ws_record "$2" "$3" >>"$tmp/record" &&
+        [[ -f $1 && ! -L $1 ]] && { [[ -z $entry ]] || ws_not_purging "$entry"; } &&
+        mv -T -- "$tmp/record" "$1"; then
+        rmdir -- "$tmp" 2>/dev/null || true
         return 0
     fi
-    rm -f -- "$tmp"
+    rm -rf -- "$tmp"
     return 1
 }
 
@@ -1231,6 +1337,11 @@ ws_trash_move() {
     if ! cmp -s -- "$facts.now" "$facts"; then
         why=$(ws_keep_why "$facts.now")
         echo "Skipped $(ws_shown "$wt"): ${why:-it changed after the scan}"
+        return 1
+    fi
+    ws_snapshot_worktrees
+    if ! why=$(ws_entry_repo "$wt"); then
+        echo "Skipped $(ws_shown "$wt"): $why"
         return 1
     fi
     mkdir -p -- "$WS_TRASH" || return 2
@@ -1271,13 +1382,6 @@ ws_trash_move() {
         return 2
     else
         echo "Moved $(ws_shown "$wt") to $(ws_shown "$dest")"
-        if [[ -n $ticket ]] && ! ws_holds_repo "$ticket"; then
-            if ws_move_entries "$ticket" "${dest%/*}"; then
-                echo "Moved ticket $(ws_shown "$ticket") with it"
-            else
-                echo "Kept ticket $(ws_shown "$ticket"): its files could not all move"
-            fi
-        fi
         return 0
     fi
     if [[ -n $ticket ]] && rmdir -- "${dest%/*}" 2>/dev/null; then
@@ -1374,8 +1478,19 @@ ws_confirm() {
     [[ $answer == y || $answer == Y || $answer == yes ]]
 }
 
+ws_trash_ticket_files() {
+    local ticket=$1 why
+    if why=$(ws_ticket_blocker "$ticket"); then
+        echo "Kept ticket $(ws_shown "$ticket"): $why"
+    elif ws_move_entries "$ticket" "${WS_TICKET_TRASH[$ticket]}"; then
+        echo "Moved ticket $(ws_shown "$ticket") with it"
+    else
+        echo "Kept ticket $(ws_shown "$ticket"): its files could not all move"
+    fi
+}
+
 prune_apply() {
-    local d=$1 n noun=worktrees i status=0 rc path
+    local d=$1 n noun=worktrees i status=0 rc path common ticket
     n=$(wc -l <"$d/plan")
     if ((n == 0)); then
         echo "Nothing to move."
@@ -1386,12 +1501,21 @@ prune_apply() {
         echo "Nothing moved."
         return 0
     fi
+    WS_SCANNED_REPOS=()
+    while IFS= read -r common; do
+        WS_SCANNED_REPOS+=("$(ws_decode "$common")")
+    done < <(sed -n 's/^common=//p' "$d"/facts/* | sort -u)
     while IFS= read -r -u 3 i; do
         path=$(ws_decode "$(ws_fact "$d/facts/$i" path)")
         ws_trash_move "$path" "$d/facts/$i" pr "$(ws_fact "$d/pr/$i" pr-number)" \
             state "$(ws_fact "$d/pr/$i" pr-state)" oid "$(ws_fact "$d/pr/$i" pr-oid)" && rc=0 || rc=$?
         ((rc < 2)) || status=1
     done 3<"$d/plan"
+    if ((${#WS_TICKET_TRASH[@]})); then
+        while IFS= read -r -d '' ticket; do
+            ws_trash_ticket_files "$ticket"
+        done < <(printf '%s\0' "${!WS_TICKET_TRASH[@]}" | sort -z)
+    fi
     echo "ws prune --restore <name> moves one back. ws prune --purge deletes old entries."
     return "$status"
 }
@@ -1402,13 +1526,12 @@ ws_trash_scan() {
         [[ $d != "$WS_TRASH/archive" && $d != "$WS_TRASH"/.tmp.* ]] || continue
         ws_trash_item "$d"
         ws_ticket_trash_dir "$d" || continue
-        for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
-            ws_ticket_item "$e"
-        done
-        if ws_holds_repo "$d"; then
-            continue
+        if ws_has_record "$d"; then
+            for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+                ws_ticket_item "$e"
+            done
         elif ws_holds_files "$d"; then
-            printf 'files:%s\0' "$d"
+            printf 'leftover:%s\0' "$d"
         else
             printf 'empty:%s\0' "$d"
         fi
@@ -1457,43 +1580,99 @@ ws_main_of() {
     fi
 }
 
+ws_repos_shown() {
+    local repo out=""
+    for repo; do
+        out+="${out:+, }$(ws_shown "$(ws_main_of "$repo")")"
+    done
+    printf '%s\n' "$out"
+}
+
 ws_linked() {
     local f first=1
-    local -a fields=()
-    mapfile -d '' fields < <(git --git-dir="$1" worktree list --porcelain -z 2>/dev/null)
+    local -a fields=() paths=()
+    mapfile -d '' fields < <(timeout -k 5 10 git --git-dir="$1" worktree list --porcelain -z 2>/dev/null)
     wait $! || return 1
     for f in "${fields[@]}"; do
         [[ $f == "worktree "* ]] || continue
-        ((first)) || printf '%s\0' "${f#worktree }"
+        ((first)) || paths+=("${f#worktree }")
         first=0
     done
+    ((${#paths[@]} == 0)) || realpath -m -z -- "${paths[@]}"
 }
 
 ws_listed() {
-    local p
+    local p real
     local -a paths=()
     mapfile -d '' paths < <(ws_linked "$1")
     wait $! || return 2
+    real=$(realpath -m -- "$2")
     for p in "${paths[@]}"; do
-        [[ $p != "$2" ]] || return 0
+        [[ $p != "$real" ]] || return 0
     done
     return 1
 }
 
+ws_gitdir_of() {
+    local line=""
+    [[ -f $1/.git && ! -L $1/.git ]] || return 1
+    { IFS= read -r line <"$1/.git" || [[ -n $line ]]; } 2>/dev/null || return 1
+    [[ $line == "gitdir: "?* ]] || return 1
+    line=${line#gitdir: }
+    [[ $line == /* ]] || line=$1/$line
+    printf '%s\n' "$line"
+}
+
 ws_project_repos() {
-    local d
+    local d g
     for d in "$WS_PROJECTS"/*/; do
         d=${d%/}
         if [[ -d $d/.git && ! -L $d/.git ]]; then
             printf '%s\0' "$d/.git"
+        elif g=$(ws_gitdir_of "$d") && [[ -f $g/HEAD && ! -e $g/commondir ]]; then
+            printf '%s\0' "$g"
         elif [[ -f $d/HEAD && -d $d/objects && -d $d/refs ]]; then
             printf '%s\0' "$d"
         fi
     done
 }
 
-ws_is() {
-    [[ $1 == "$2" ]]
+ws_snapshot_worktrees() {
+    local repo real f p why
+    local -a repos=() paths=()
+    local -A seen=() m=()
+    WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=()
+    mapfile -d '' repos < <(ws_project_repos)
+    for f in "$WS_TRASH"/*.meta "$WS_TRASH"/*.meta.tmp "$WS_TRASH"/*/*.meta "$WS_TRASH"/*/*.meta.tmp; do
+        if [[ -f $f ]] && ws_meta_read "$f" m why; then
+            repos+=("${m[common]}")
+        fi
+    done
+    for repo in "${repos[@]}" "${WS_SCANNED_REPOS[@]}" "$@"; do
+        [[ -d $repo ]] || continue
+        real=$(realpath -m -- "$repo")
+        [[ -z ${seen[$real]+set} ]] || continue
+        seen[$real]=1
+        mapfile -d '' paths < <(ws_linked "$repo")
+        if ! wait $!; then
+            WS_WT_UNREAD+=("$repo")
+            continue
+        fi
+        for p in "${paths[@]}"; do
+            WS_WT_REPOS+=("$repo")
+            WS_WT_PATHS+=("$p")
+        done
+    done
+}
+
+ws_lists_in() {
+    local real i
+    real=$(realpath -m -- "$1")
+    WS_HITS=()
+    for i in "${!WS_WT_PATHS[@]}"; do
+        ! ws_within "${WS_WT_PATHS[i]}" "$real" || WS_HITS+=("$i")
+    done
+    ((${#WS_HITS[@]}))
 }
 
 ws_used_path() {
@@ -1501,63 +1680,27 @@ ws_used_path() {
         [[ $1 == "$3".* && ${1#"$3".} =~ ^[0-9]+$ ]]
 }
 
-ws_owner() {
-    local rec=$1 test=$2 repo p real
-    local -a paths=() repos=() found=() unread=() names=()
-    local -A seen=()
-    shift 2
-    if [[ -n $rec ]] && git --git-dir="$rec" rev-parse -q --git-dir >/dev/null 2>&1; then
-        mapfile -d '' paths < <(ws_linked "$rec")
-        if ! wait $!; then
-            echo "ws cannot read the worktree list of $(ws_shown "$(ws_main_of "$rec")")"
-            return 2
+ws_lists_used() {
+    local e=$1 orig at="" i
+    orig=$(realpath -m -- "$2")
+    [[ -z ${3-} ]] || at=$(realpath -m -- "$3")
+    WS_HITS=()
+    for i in "${!WS_WT_PATHS[@]}"; do
+        if ws_used_path "${WS_WT_PATHS[i]}" "$e" "$orig" || { [[ -n $at ]] && ws_within "${WS_WT_PATHS[i]}" "$at"; }; then
+            WS_HITS+=("$i")
         fi
-        for p in "${paths[@]}"; do
-            if "$test" "$p" "$@"; then
-                found+=("$rec"$'\t'"$p")
-                names+=("$(ws_shown "$(ws_main_of "$rec")")")
-            fi
-        done
-    fi
-    if ((${#found[@]} == 0)); then
-        mapfile -d '' repos < <(ws_project_repos)
-        for repo in "${repos[@]}"; do
-            real=$(realpath -m -- "$repo")
-            [[ -z ${seen[$real]+set} ]] || continue
-            seen[$real]=1
-            mapfile -d '' paths < <(ws_linked "$repo")
-            if ! wait $!; then
-                unread+=("$(ws_shown "$(ws_main_of "$repo")")")
-                continue
-            fi
-            for p in "${paths[@]}"; do
-                if "$test" "$p" "$@"; then
-                    found+=("$repo"$'\t'"$p")
-                    names+=("$(ws_shown "$(ws_main_of "$repo")")")
-                fi
-            done
-        done
-    fi
-    if ((${#unread[@]})); then
-        printf -v p '%s, ' "${unread[@]}"
-        echo "ws cannot read the worktree list of ${p%, }"
-        return 2
-    elif ((${#found[@]} == 1)); then
-        printf '%s\n' "${found[0]}"
-    elif ((${#found[@]} > 1)); then
-        printf -v p '%s, ' "${names[@]}"
-        echo "${#found[@]} worktrees match it, listed by ${p%, }"
-        return 2
-    elif [[ -z $rec ]]; then
-        echo "no repo in $(ws_shown "$WS_PROJECTS") lists it"
-        return 1
-    elif git --git-dir="$rec" rev-parse -q --git-dir >/dev/null 2>&1; then
-        echo "neither $(ws_shown "$(ws_main_of "$rec")") nor another repo in $(ws_shown "$WS_PROJECTS") lists it"
-        return 1
-    else
-        echo "its repo $(ws_shown "$(ws_main_of "$rec")") is gone, and no repo in $(ws_shown "$WS_PROJECTS") lists it"
-        return 1
-    fi
+    done
+    ((${#WS_HITS[@]}))
+}
+
+ws_gitfile_ok() {
+    local admin back=""
+    admin=$(ws_gitdir_of "$1") || return 1
+    admin=$(realpath -m -- "$admin")
+    [[ ${admin%/*} == "$(realpath -m -- "$2")/worktrees" ]] || return 1
+    { IFS= read -r back <"$admin/gitdir" || [[ -n $back ]]; } 2>/dev/null || return 1
+    [[ $back == /* ]] || back=$admin/$back
+    [[ $(realpath -m -- "$back") == "$(realpath -m -- "$1")/.git" ]]
 }
 
 ws_move_cmd() {
@@ -1569,43 +1712,44 @@ ws_move_cmd() {
     [[ $target == "$3" ]] || echo "$(ws_shown "$3") is taken, so that command puts it at $(ws_shown "$target")."
 }
 
-ws_listed_worktree_note() {
-    local lead=$1 repo=$2 w=$3 orig=$4 main line gitdir common verb=Move
-    main=$(ws_main_of "$repo")
-    common=$(git -C "$w" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
-    if [[ -n $common && $(realpath -m -- "$common") == "$(realpath -m -- "$repo")" ]]; then
-        lead+=" $(ws_shown "$main") lists it."
-    else
-        { IFS= read -r line <"$w/.git"; } 2>/dev/null || line=
-        gitdir=${line#gitdir: }
-        [[ $gitdir == /* ]] || gitdir=$w/$gitdir
-        if [[ $line == "gitdir: "?* && ! -e $gitdir ]]; then
-            lead+=" Its .git file points at $(ws_shown "$gitdir"), which is gone, so its main checkout moved."
+ws_hits_note() {
+    local lead=$1 d=$2 why=${3-} real i repo admin listed=""
+    real=$(realpath -m -- "$d")
+    repo=${WS_WT_REPOS[WS_HITS[0]]}
+    for i in "${WS_HITS[@]}"; do
+        if [[ ${WS_WT_PATHS[i]} == "$real" ]]; then
+            listed+="${listed:+, and }$(ws_repos_shown "${WS_WT_REPOS[i]}") lists it"
         else
-            lead+=" Its .git file does not point into $(ws_shown "$main")."
+            listed+="${listed:+, and }$(ws_repos_shown "${WS_WT_REPOS[i]}") lists a worktree in it, at $(ws_shown "${WS_WT_PATHS[i]}")"
+            : "${why:=ws moves a worktree only when it is the whole directory}"
         fi
-        lead+=" $(ws_shown "$main") lists it, so repair it from there first:"
-        printf '%s\n    git -C %q worktree repair\n' "$lead" "$main"
-        lead=
-        verb="Then move"
-    fi
-    if [[ -z $orig ]]; then
-        printf '%s%s it to a free path out of the trash with git -C %q worktree move %q and that path.\n' \
-            "${lead:+$lead }" "$verb" "$main" "$w"
+    done
+    if [[ -n $why ]]; then
+        :
+    elif ((${#WS_HITS[@]} > 1)); then
+        why="more than one repo lists it, so ws cannot tell which one owns it"
+    elif [[ -L $d/.git ]]; then
+        why="its .git is a symlink, so ws cannot tell which repo owns it"
+    elif ! admin=$(ws_gitdir_of "$d"); then
+        why="it holds no .git file that names a repo"
     else
-        printf '%s%s it out of the trash with:\n' "${lead:+$lead }" "$verb"
-        ws_move_cmd "$repo" "$w" "$orig"
+        admin=$(realpath -m -- "$admin")
+        if [[ ! -e $admin ]]; then
+            why="its .git file points at $(ws_shown "$admin"), which is gone, so ws cannot tell which repo owns it"
+        elif [[ ${admin%/*} != "$(realpath -m -- "$repo")/worktrees" ]]; then
+            why="its .git file points at $(ws_shown "$admin"), which is not in $(ws_repos_shown "$repo"), so ws cannot tell which repo owns it"
+        else
+            why="its .git file points at $(ws_shown "$admin"), which names another path, so ws cannot tell which repo owns it"
+        fi
     fi
+    printf '%s %s. ws keeps it, since %s.\n' "$lead" "${listed^}" "$why"
 }
 
 ws_dir_note() {
-    local d=$1 record=$2 lead=$3 orig="" common="" why w t loc inside
-    local -a gits=() tops=()
+    local d=$1 record=$2 lead=$3 orig="" why repo i
     local -A m=()
-    local -
-    set -o pipefail
     if [[ -n $record ]] && ws_meta_read "$record" m why; then
-        orig=${m[orig]} common=${m[common]}
+        orig=${m[orig]}
         lead+=" Its record says it came from $(ws_shown "$orig")."
     elif orig=$(ws_name_orig "$d"); then
         lead+=" Its trash name says it came from $(ws_shown "$orig")."
@@ -1614,45 +1758,34 @@ ws_dir_note() {
         printf '%s It is no directory, so ws keeps it.\n' "$lead"
         return
     fi
-    mapfile -d '' gits < <(find "$d" -maxdepth 3 -name .git -prune -printf '%h\0' 2>/dev/null | LC_ALL=C sort -z)
-    if ! wait $!; then
-        printf '%s ws cannot read every directory in it, so it keeps it.\n' "$lead"
+    if ((${#WS_WT_UNREAD[@]})); then
+        printf '%s ws keeps it, since it cannot read the worktree list of %s.\n' "$lead" \
+            "$(ws_repos_shown "${WS_WT_UNREAD[@]}")"
         return
     fi
-    for w in "${gits[@]}"; do
-        inside=0
-        for t in "${tops[@]}"; do
-            ! ws_within "$w" "$t" || inside=1
-        done
-        ((inside)) || tops+=("$w")
-    done
-    if ((${#tops[@]} == 0)); then
-        ws_plain_dir_note "$d" "$lead" "$common" "$orig"
-        return
-    elif ((${#tops[@]} > 1)); then
-        printf '%s It holds more than one repository, so ws keeps it.\n' "$lead"
+    if ! ws_lists_in "$d"; then
+        ws_plain_dir_note "$d" "$lead" "$orig" "${m[at]-}"
         return
     fi
-    w=${tops[0]}
-    [[ $w == "$d" ]] || lead+=" Git has its worktree inside it, at $(ws_shown "$w")."
-    if loc=$(ws_owner "$common" ws_is "$(realpath -m -- "$w")"); then
-        ws_listed_worktree_note "$lead" "${loc%%$'\t'*}" "$w" "$orig"
+    i=${WS_HITS[0]}
+    repo=${WS_WT_REPOS[i]}
+    if ((${#WS_HITS[@]} > 1)) || [[ ${WS_WT_PATHS[i]} != "$(realpath -m -- "$d")" ]] || ! ws_gitfile_ok "$d" "$repo"; then
+        ws_hits_note "$lead" "$d"
+    elif [[ -z $orig ]]; then
+        printf '%s %s lists it. Move it to a free path out of the trash with git -C %q worktree move %q and that path.\n' \
+            "$lead" "$(ws_repos_shown "$repo")" "$(ws_main_of "$repo")" "$d"
     else
-        printf '%s ws keeps it, since %s.\n' "$lead" "$loc"
+        printf '%s %s lists it. Move it out of the trash with:\n' "$lead" "$(ws_repos_shown "$repo")"
+        ws_move_cmd "$repo" "$d" "$orig"
     fi
 }
 
 ws_plain_dir_note() {
-    local d=$1 lead=$2 common=$3 orig=$4 e=${1%.purging} out loc="" listed=""
+    local d=$1 lead=$2 orig=$3 at=${4-} out
     local -a dirs=()
-    if [[ -z $common || -z $orig ]]; then
-        lead+=" It holds no worktree, and ws has no record that says where its worktree is."
-    elif ! loc=$(ws_owner "$common" ws_used_path "$e" "$orig"); then
-        lead+=" It holds no worktree, and ws cannot place its worktree, since $loc."
-        loc=
-    else
-        listed=${loc#*$'\t'}
-        lead+=" It holds no worktree. Git lists its worktree at $(ws_shown "$listed")."
+    lead+=" No repo lists a worktree in it."
+    if [[ -n $orig ]] && ws_lists_used "${d%.purging}" "$orig" "$at"; then
+        lead+=" Git lists its worktree at $(ws_shown "${WS_WT_PATHS[WS_HITS[0]]}")."
     fi
     if out=$(find "$d" ! -type d -print -quit 2>/dev/null) && [[ -z $out ]] &&
         mapfile -d '' dirs < <(find "$d" -depth -type d -print0 2>/dev/null) && wait $!; then
@@ -1662,9 +1795,18 @@ ws_plain_dir_note() {
     else
         printf '%s ws keeps what it holds.\n' "$lead"
     fi
-    if [[ -n $loc && $listed == "$orig"/* && -f $listed/.git ]]; then
-        printf 'Its worktree sits inside a directory another process made. Move it to a free path with:\n'
-        ws_move_cmd "${loc%%$'\t'*}" "$listed" "$orig"
+}
+
+ws_leftover_note() {
+    local d=$1 lead
+    lead="Kept $(ws_shown "$d"): it holds no record."
+    if ((${#WS_WT_UNREAD[@]})); then
+        printf '%s ws keeps it, since it cannot read the worktree list of %s.\n' "$lead" \
+            "$(ws_repos_shown "${WS_WT_UNREAD[@]}")"
+    elif ws_lists_in "$d"; then
+        ws_hits_note "$lead" "$d" "without a record ws cannot tell where it belongs"
+    else
+        ws_plain_dir_note "$d" "$lead" ""
     fi
 }
 
@@ -1683,7 +1825,7 @@ ws_orphan_note() {
 }
 
 ws_record_note() {
-    local record=$1 lead=$2 e=${1%.tmp} why loc rc listed
+    local record=$1 lead=$2 e=${1%.tmp} why i path orig kept="" out=""
     local -A m=()
     e=${e%.meta}
     if ! ws_meta_read "$record" m why; then
@@ -1691,41 +1833,50 @@ ws_record_note() {
         return 0
     fi
     lead+=" It was for $(ws_shown "${m[orig]}")."
-    loc=$(ws_owner "${m[common]}" ws_used_path "$e" "${m[orig]}") && rc=0 || rc=$?
-    listed=${loc#*$'\t'}
-    if ((rc == 1)) && [[ $record == *.meta ]]; then
-        printf '%s %s, so a purge or you removed it. Delete the record with:\n    rm -- %q\n' "$lead" "${loc^}" "$record"
-    elif ((rc)); then
-        printf '%s ws keeps it, since %s.\n' "$lead" "$loc"
-    elif [[ ! -f $listed/.git ]]; then
+    if ((${#WS_WT_UNREAD[@]})); then
+        printf '%s ws keeps it, since it cannot read the worktree list of %s.\n' "$lead" \
+            "$(ws_repos_shown "${WS_WT_UNREAD[@]}")"
+        return 0
+    fi
+    if ! ws_lists_used "$e" "${m[orig]}" "${m[at]-}"; then
+        if [[ $record == *.meta ]]; then
+            printf '%s No repo lists its worktree at a path ws used, so a purge or you removed it. Delete the record with:\n    rm -- %q\n' \
+                "$lead" "$record"
+        else
+            printf '%s ws keeps it, since it is unfinished and no repo lists its worktree at a path ws used.\n' "$lead"
+        fi
+        return 0
+    fi
+    orig=$(realpath -m -- "${m[orig]}")
+    for i in "${WS_HITS[@]}"; do
+        path=${WS_WT_PATHS[i]}
+        if [[ $path == "$orig" || ($path == "$orig".* && ${path#"$orig".} =~ ^[0-9]+$) ]]; then
+            out=$path
+        else
+            kept=$path
+        fi
+    done
+    if [[ -n $kept ]]; then
+        printf '%s Git lists its worktree at %s, so ws keeps the record.\n' "$lead" "$(ws_shown "$kept")"
+    elif [[ ! -f $out/.git ]]; then
         printf '%s Git lists its worktree at %s, which holds no .git file, so ws keeps the record.\n' "$lead" \
-            "$(ws_shown "$listed")"
-    elif ws_within "$listed" "$e" || ws_within "$listed" "$e.purging"; then
-        printf '%s Git lists its worktree at %s, in the trash, so ws keeps the record.\n' "$lead" "$(ws_shown "$listed")"
-    elif [[ $listed == "${m[orig]}"/* ]]; then
-        printf '%s Git lists its worktree at %s, inside a directory another process made. Move it to a free path with:\n' \
-            "$lead" "$(ws_shown "$listed")"
-        ws_move_cmd "${loc%%$'\t'*}" "$listed" "${m[orig]}"
+            "$(ws_shown "$out")"
     else
         printf '%s Git lists its worktree at %s, out of the trash, so the record is stale. Delete it with:\n    rm -- %q\n' \
-            "$lead" "$(ws_shown "$listed")" "$record"
+            "$lead" "$(ws_shown "$out")" "$record"
     fi
 }
 
 ws_trash_notes() {
     local rec meta e why repo
     local -A m=()
+    ws_snapshot_worktrees
     while IFS= read -r -d '' rec; do
         meta=${rec#*:} e=${meta%.meta}
         case $rec in
         orphan:*) ws_orphan_note "$meta" ;;
         unfinished:*) ws_record_note "$meta" "Unfinished record $(ws_shown "$meta") has no directory." ;;
-        files:*)
-            printf 'Kept %s: it holds files but no worktree, so they did not reach the archive. Move them with:\n' \
-                "$(ws_shown "$meta")"
-            printf '    mkdir -p -- %q && mv -nT -- %q %q\n' "$WS_TRASH/archive" "$meta" \
-                "$(ws_free_path "$WS_TRASH/archive/${meta##*/}")"
-            ;;
+        leftover:*) ws_leftover_note "$meta" ;;
         empty:*) printf 'Empty %s holds nothing. Remove it with:\n    rmdir -- %q\n' "$(ws_shown "$meta")" "$meta" ;;
         entry:*)
             if ! ws_meta_read "$meta" m why; then
@@ -1741,7 +1892,7 @@ ws_trash_notes() {
                 :
             elif ! repo=$(ws_entry_repo "$e"); then
                 ws_orphan_note "$e" "Kept $(ws_shown "$e"): $repo." "$meta"
-            elif [[ $repo != "${m[common]}" ]] && ws_clean_path "$repo" && ws_record_set "$meta" common "$repo"; then
+            elif [[ $repo != "${m[common]}" ]] && ws_clean_path "$repo" && ws_record_set "$meta" common "$repo" "$e"; then
                 echo "Record $(ws_shown "$meta") now names $(ws_shown "$(ws_main_of "$repo")"), which lists its worktree."
             fi
             ;;
@@ -1779,21 +1930,37 @@ ws_move() {
 }
 
 ws_entry_repo() {
-    local common rc
+    local common rc real real_common i other
     if [[ $1 == *[$'\t\n']* ]]; then
         echo "a tab or newline in its path"
     elif [[ -L $1 ]]; then
         echo "it is a symlink"
     elif [[ ! -d $1 ]]; then
         echo "its directory is missing"
+    elif [[ -L $1/.git ]]; then
+        echo "its .git is a symlink"
     elif [[ ! -f $1/.git ]]; then
         echo "it holds no .git file"
     elif ! common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
         echo "git cannot open it"
+    elif ((${#WS_WT_UNREAD[@]})); then
+        echo "ws cannot read the worktree list of $(ws_repos_shown "${WS_WT_UNREAD[@]}")"
     else
         ws_listed "$common" "$1" && rc=0 || rc=$?
         case $rc in
         0)
+            if ws_lists_in "$1"; then
+                real=$(realpath -m -- "$1")
+                real_common=$(realpath -m -- "$common")
+                for i in "${WS_HITS[@]}"; do
+                    if [[ ${WS_WT_PATHS[i]} != "$real" || $(realpath -m -- "${WS_WT_REPOS[i]}") != "$real_common" ]]; then
+                        other=it
+                        [[ ${WS_WT_PATHS[i]} == "$real" ]] || other=$(ws_shown "${WS_WT_PATHS[i]}")
+                        echo "$(ws_repos_shown "$common") lists it, and $(ws_repos_shown "${WS_WT_REPOS[i]}") lists $other too"
+                        return 1
+                    fi
+                done
+            fi
             printf '%s\n' "$common"
             return 0
             ;;
@@ -1865,6 +2032,7 @@ prune_restore() {
     local -a hits=() tickets=()
     local -A m=()
     [[ $want != */* ]] || want=$(realpath -m -- "$want")
+    ws_snapshot_worktrees
     while IFS= read -r -d '' rec; do
         [[ $rec == entry:* ]] || continue
         meta=${rec#*:} e=${meta%.meta}
@@ -1919,7 +2087,7 @@ ws_save_reflog() (
     wt=$1 common=$2 branch=$3 out=$4
     wtrefs=("${@:5}")
     set -o pipefail
-    tmp=$(mktemp -d -- "$WS_TRASH/.tmp.$$.XXXXXX") || exit 1
+    tmp=$(ws_tmp_dir) || exit 1
     trap 'rm -rf -- "$tmp"' EXIT
     git -C "$wt" log -g --format=%H HEAD ${branch:+"refs/heads/$branch"} "${wtrefs[@]}" -- >"$tmp/tips" ||
         exit 1
@@ -1963,21 +2131,59 @@ ws_save_reflog() (
     echo "Saved $n commit(s) that only its reflogs held to $(ws_shown "$out")"
 )
 
+ws_pid_ns() {
+    local ns
+    ns=$(readlink /proc/self/ns/pid 2>/dev/null) || return 1
+    [[ $ns =~ ^pid:\[([0-9]+)\]$ ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+ws_tmp_dir() {
+    local ns
+    ns=$(ws_pid_ns) || ns=0
+    mktemp -d -- "$WS_TRASH/.tmp.$$.$ns.XXXXXX"
+}
+
+# /proc lists only this pid namespace, so a pid from another namespace
+# says nothing about whether that run is alive. The last NSpid field is
+# the pid a process has in its own namespace.
 ws_drop_dead_tmp() {
-    local d
+    local d name ns pid run_ns why
+    ns=$(ws_pid_ns) || ns=
     for d in "$WS_TRASH"/.tmp.*; do
-        [[ ${d##*/} =~ ^\.tmp\.([0-9]+)\.[A-Za-z0-9]{6}$ && -d $d && ! -L $d ]] || continue
-        [[ ! -e /proc/${BASH_REMATCH[1]} ]] || continue
-        if rm -rf -- "$d"; then
+        name=${d##*/} why=
+        [[ -d $d && ! -L $d ]] || continue
+        if [[ $name =~ ^\.tmp\.([0-9]+)\.([0-9]+)\.[A-Za-z0-9]{6}$ ]]; then
+            pid=${BASH_REMATCH[1]} run_ns=${BASH_REMATCH[2]}
+            [[ -n $ns && $run_ns == "$ns" && ! -e /proc/$pid ]] || continue
+        elif [[ $name =~ ^\.tmp\.([0-9]+)\.[A-Za-z0-9]{6}$ ]]; then
+            pid=${BASH_REMATCH[1]}
+            if [[ $ns != "$WS_PROC_PID_INIT_INO" ]]; then
+                why="ws runs outside the host's pid namespace, so it cannot tell whether run $pid is gone"
+            elif grep -qsE "^NSpid:.*[[:space:]]$pid\$" /proc/[0-9]*/status; then
+                why="a process with pid $pid runs"
+            fi
+        elif [[ $name =~ ^\.tmp\.[A-Za-z0-9]{6}$ ]]; then
+            why="its name holds no pid, so ws cannot tell whether that run is gone"
+        else
+            continue
+        fi
+        if [[ -n $why ]]; then
+            echo "Kept $(ws_shown "$d"): an older ws run made it, and $why. Delete it when no ws runs."
+        elif rm -rf -- "$d"; then
             echo "Removed $(ws_shown "$d"), which a ws run that died left behind."
         fi
     done
 }
 
 ws_archive_ticket() {
-    local tdir=$1 adir
-    if [[ $tdir == "$WS_TRASH" ]] || ws_holds_repo "$tdir" || rmdir -- "$tdir" 2>/dev/null; then
+    local tdir=$1 adir why
+    if [[ $tdir == "$WS_TRASH" ]] || ws_holds_entries "$tdir" || rmdir -- "$tdir" 2>/dev/null; then
         return 0
+    fi
+    if why=$(ws_ticket_blocker "$tdir"); then
+        echo "Kept $(ws_shown "$tdir"): $why"
+        return 1
     fi
     adir=$(ws_free_path "$WS_TRASH/archive/${tdir##*/}")
     if mkdir -p -- "$adir" && ws_move_entries "$tdir" "$adir"; then
@@ -2032,7 +2238,10 @@ prune_purge_one() {
             ws_record_at "$e.meta" "$WS_MOVED_TO"
         fi
         echo "Kept $(ws_shown "${WS_MOVED_TO:-$purging}"): $reason"
-        [[ -n $WS_MOVED_TO ]] || ws_orphan_note "$purging"
+        if [[ -z $WS_MOVED_TO ]]; then
+            ws_snapshot_worktrees
+            ws_orphan_note "$purging"
+        fi
         return 1
     fi
     rm -f -- "$e.meta"
@@ -2053,6 +2262,7 @@ prune_purge() {
     cutoff=$(($(date +%s) - 10#${older%d} * 86400))
     stamp=$(date -u -d "@$cutoff" +%Y%m%dT%H%M%SZ)
     : >"$d/entries"
+    ws_snapshot_worktrees
     while IFS= read -r -d '' rec; do
         [[ $rec == entry:* ]] || continue
         meta=${rec#*:} e=${meta%.meta} rel=${meta#"$WS_TRASH"/}
