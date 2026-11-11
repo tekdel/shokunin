@@ -72,7 +72,6 @@ fi
 # Tool Integrations
 # ============================================================================
 
-# ws pick keybinding (Ctrl+f)
 bindkey -s '^f' "ws pick\n"
 
 # Starship prompt (comment out if using Oh My Zsh theme)

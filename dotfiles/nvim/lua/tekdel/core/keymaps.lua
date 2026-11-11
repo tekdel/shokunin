@@ -35,7 +35,6 @@ map('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus up' })
 map('n', '<C-d>', '<C-d>zz')
 map('n', '<C-u>', '<C-u>zz')
 
--- ws pick
 map('n', '<C-f>', '<cmd>silent !tmux neww ws pick<CR>')
 
 -- Make file executable

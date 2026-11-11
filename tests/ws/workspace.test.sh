@@ -49,8 +49,7 @@ gh_calls() {
     wc -l <"$FX/gh.log"
 }
 
-# The list command of tmux-sessionizer as it was at master 79aff3a.
-sessionizer_rows() {
+tmux_sessionizer_rows() {
     {
         find ~/projects -mindepth 1 -maxdepth 1 -type d 2>/dev/null
         echo "$HOME/claude-knowledge-vault"
@@ -93,6 +92,8 @@ test_new() {
     assert_eq "the session works in the ticket" "$WS_ROOT/t1" "$(session_path t1)"
     assert "the claude window runs claude -n t1" wait_for_line "$FX/claude.log" '-n t1'
     assert "new says how to attach outside tmux" grep -qx 'Attach with: tmux attach -t t1' <<<"$out"
+    ws new v1.2 feat/v alpha >/dev/null 2>&1
+    assert_eq "an id with a dot gets its own session" "claude shell env" "$(windows_of v1.2)"
 }
 
 test_new_existing_branch() {
@@ -357,7 +358,7 @@ test_pick_lists_what_the_sessionizer_listed() {
             missing=1
             printf '      missing: %s\n' "$row"
         }
-    done < <(sessionizer_rows)
+    done < <(tmux_sessionizer_rows)
     assert_eq "pick lists every row tmux-sessionizer listed" 0 "$missing"
     assert_eq "tickets come first" "$WS_ROOT/t2" "$(head -n 1 <<<"$head")"
     assert_eq "a dir in WS_ROOT without .ws comes after the tickets" "$WS_ROOT/t1" "$(sed -n 2p <<<"$head")"

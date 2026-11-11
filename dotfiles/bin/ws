@@ -32,7 +32,7 @@ declare -gA WS_COMMANDS=(
     [status]="refresh the status cache, or print how many sessions wait on you"
 )
 declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=() P_STATES=()
-declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=()
+declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=() R_PATH=() R_TEXT=()
 declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
 declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=()
@@ -2438,8 +2438,6 @@ ticket_check_id() {
     fi
 }
 
-# The vault's ticket loader parses .ws the same way: KEY=value lines, one
-# pair of quotes stripped, nothing expanded.
 ticket_read() {
     local file=$1/.ws line key value n=0 shown
     local -n tr_kv=$2
@@ -2482,8 +2480,6 @@ ticket_read() {
     fi
 }
 
-# A shell that sources .ws must read the same values as the loader, so a
-# value never holds what double quotes would expand.
 ticket_line() {
     if [[ $2 == *[\"\$\`\\[:cntrl:]]* ]]; then
         echo "ws: $1 holds a double quote, \$, backquote, backslash, or control character" >&2
@@ -2522,10 +2518,8 @@ ticket_write() {
     return 1
 }
 
-# Usage: ticket_update <dir> [KEY value]... A key written ?KEY is set only
-# while it is empty.
 ticket_update() {
-    local dir=$1 fd key rc=0
+    local dir=$1 fd mode=set rc=0
     local -A kv=()
     shift
     exec {fd}<"$dir" || return 1
@@ -2536,10 +2530,16 @@ ticket_update() {
         echo "ws: $REPLY" >&2
         rc=1
     else
-        while (($# >= 2)); do
-            key=${1#\?}
-            if [[ $1 != \?* || -z ${kv[$key]-} ]]; then
-                kv[$key]=$2
+        while (($#)); do
+            case $1 in
+            set | default)
+                mode=$1
+                shift
+                continue
+                ;;
+            esac
+            if [[ $mode == set || -z ${kv[$1]-} ]]; then
+                kv[$1]=$2
             fi
             shift 2
         done
@@ -2549,9 +2549,6 @@ ticket_update() {
     return "$rc"
 }
 
-# Fills T_IDS with the tickets in WS_ROOT, their fields in T_STAGE,
-# T_BRANCH, T_REPOS, and T_ENV, the reason a .ws does not parse in T_BAD,
-# and T_PLAIN with the directories that hold no .ws.
 ticket_scan() {
     local dir id
     local -A kv=()
@@ -2613,30 +2610,23 @@ ticket_checked_out() {
     return 1
 }
 
-# Prints ok when the ticket already holds the worktree, add when ws can
-# make it, or why it cannot.
-ticket_wt_plan() {
-    local dir=$1 repo=$2 branch=$3 main=$WS_PROJECTS/$2 wt=$1/$2 common head where
+ticket_wt_ready() {
+    local wt=$1/$2 main=$WS_PROJECTS/$2 common head
+    [[ -d $wt && ! -L $wt && -f $wt/.git ]] &&
+        common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+        [[ $(realpath -m -- "$common") == "$(realpath -m -- "$main/.git")" ]] &&
+        head=$(git -C "$wt" symbolic-ref -q HEAD) && [[ $head == "refs/heads/$3" ]]
+}
+
+ticket_wt_blocker() {
+    local wt=$1/$2 main=$WS_PROJECTS/$2 where
     if [[ ! -d $main/.git || -L $main/.git ]]; then
         echo "$(ws_shown "$main") is not a git checkout"
-        return 1
+    elif [[ -e $wt || -L $wt ]]; then
+        echo "$(ws_shown "$wt") exists and is not a worktree of $(ws_shown "$main") on $3"
+    elif where=$(ticket_checked_out "$main" "$3"); then
+        echo "$3 is checked out in $(ws_shown "$where")"
     fi
-    if [[ -e $wt || -L $wt ]]; then
-        if [[ -d $wt && ! -L $wt && -f $wt/.git ]] &&
-            common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
-            [[ $(realpath -m -- "$common") == "$(realpath -m -- "$main/.git")" ]] &&
-            head=$(git -C "$wt" symbolic-ref -q HEAD) && [[ $head == "refs/heads/$branch" ]]; then
-            echo ok
-            return 0
-        fi
-        echo "$(ws_shown "$wt") exists and is not a worktree of $(ws_shown "$main") on $branch"
-        return 1
-    fi
-    if where=$(ticket_checked_out "$main" "$branch"); then
-        echo "$branch is checked out in $(ws_shown "$where")"
-        return 1
-    fi
-    echo add
 }
 
 ticket_wt_add() {
@@ -2717,7 +2707,7 @@ ws_switch() {
 }
 
 ticket_make() {
-    local id=$1 branch=$2 ticket=$3 topic=$4 dir repo where fail=0
+    local id=$1 branch=$2 ticket=$3 topic=$4 dir repo why fail=0
     local -a repos=() add=() old=() extra=()
     local -A kv=() seen=()
     shift 4
@@ -2751,10 +2741,14 @@ ticket_make() {
         [[ -z ${seen[$repo]+set} ]] || continue
         seen[$repo]=1
         repos+=("$repo")
-        if ! where=$(ticket_wt_plan "$dir" "$repo" "$branch"); then
-            echo "ws: $where" >&2
+        if ticket_wt_ready "$dir" "$repo" "$branch"; then
+            continue
+        fi
+        why=$(ticket_wt_blocker "$dir" "$repo" "$branch")
+        if [[ -n $why ]]; then
+            echo "ws: $why" >&2
             fail=1
-        elif [[ $where == add ]]; then
+        else
             add+=("$repo")
         fi
     done
@@ -2763,8 +2757,8 @@ ticket_make() {
     mkdir -p -- "$dir" || return 1
     [[ -z $ticket ]] || extra+=(WS_TICKET "$ticket")
     [[ -z $topic ]] || extra+=(WS_TOPIC "$topic")
-    ticket_update "$dir" WS_ID "$id" WS_BRANCH "$branch" WS_REPOS "${repos[*]}" "${extra[@]}" \
-        '?WS_TOPIC' "$id" '?WS_STAGE' spec '?WS_CREATED' "$(date +%F)" || return 1
+    ticket_update "$dir" set WS_ID "$id" WS_BRANCH "$branch" WS_REPOS "${repos[*]}" "${extra[@]}" \
+        default WS_TOPIC "$id" WS_STAGE spec WS_CREATED "$(date +%F)" || return 1
     for repo in "${add[@]}"; do
         ticket_wt_add "$dir" "$repo" "$branch" || fail=1
     done
@@ -2804,7 +2798,6 @@ ws_new() {
     ticket_make "$1" "$2" "$ticket" "$topic" "${@:3}"
 }
 
-# Prints why ws adopt cannot move the worktree whose facts it gets.
 ticket_adopt_blocker() {
     local why
     why=$(ws_fact "$1" unreadable) && {
@@ -2914,8 +2907,6 @@ ws_adopt() {
     ticket_make "$id" "$branch" "" "" "${repos[@]}"
 }
 
-# Reads the status cache into S_CWD and S_WAIT, one entry per Claude
-# session, and P_STATES, the PR states of each ticket.
 status_read() {
     local kind a b
     S_CWD=() S_WAIT=() P_STATES=()
@@ -2982,8 +2973,8 @@ status_refresh() {
     fi
     [[ -d $HOME ]] || return 1
     mkdir -p -- "$WS_CACHE_DIR" || return 1
-    if [[ ${WS_REFRESH_FD-} =~ ^[0-9]+$ ]] && { : >&"$WS_REFRESH_FD"; } 2>/dev/null; then
-        fd=$WS_REFRESH_FD
+    if [[ ${WS_HELD_LOCK_FD-} =~ ^[0-9]+$ ]] && { : >&"$WS_HELD_LOCK_FD"; } 2>/dev/null; then
+        fd=$WS_HELD_LOCK_FD
     else
         exec {fd}>>"$WS_CACHE_DIR/refresh.lock" || return 1
     fi
@@ -3012,8 +3003,6 @@ status_refresh() {
     return 1
 }
 
-# The child takes over the lock this process holds, so a caller that
-# waits on the lock waits for the refresh to end.
 status_refresh_bg() {
     local fd self
     if [[ ! -d $HOME ]] || ! mkdir -p -- "$WS_CACHE_DIR" 2>/dev/null; then
@@ -3021,7 +3010,7 @@ status_refresh_bg() {
     fi
     { exec {fd}>>"$WS_CACHE_DIR/refresh.lock"; } 2>/dev/null || return 0
     if flock -n "$fd" && self=$(realpath -e -- "${BASH_SOURCE[0]}"); then
-        WS_REFRESH_FD=$fd setsid -f bash "$self" status --refresh </dev/null >/dev/null 2>&1 || true
+        WS_HELD_LOCK_FD=$fd setsid -f bash "$self" status --refresh </dev/null >/dev/null 2>&1 || true
     fi
     exec {fd}>&-
 }
@@ -3040,7 +3029,7 @@ ws_status() {
         ;;
     0:)
         status_refresh || return 1
-        pick_rows tickets
+        ticket_list
         ;;
     1:-h | 1:--help) ticket_usage ;;
     *)
@@ -3050,13 +3039,11 @@ ws_status() {
     esac
 }
 
-# Prints one row per ticket, then, unless the mode is tickets, one row
-# per directory in WS_ROOT without a .ws, in WS_PROJECTS, and the vault.
-# A row is <path><TAB><text>, or only the text in tickets mode.
-pick_rows() {
-    local mode=$1 id dir i n best len stage idx rank waiting pr env text line
+pick_build() {
+    local id dir i n best len stage idx rank waiting pr env text
     local -a rows=() more=() reals=() order=()
     local -A seen=() wait_of=() stage_rank=()
+    R_PATH=() R_TEXT=()
     n=0
     for stage in $WS_STAGES; do
         stage_rank[$stage]=$((n++))
@@ -3066,15 +3053,13 @@ pick_rows() {
     for id in "${T_IDS[@]}"; do
         rows+=("$WS_ROOT/$id")
     done
-    if [[ $mode != tickets ]]; then
-        mapfile -d '' more < <(find -H "$WS_PROJECTS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | LC_ALL=C sort -z)
-        [[ ! -d $WS_VAULT ]] || more+=("$WS_VAULT")
-        for dir in "${T_PLAIN[@]}" "${more[@]}"; do
-            [[ $dir != *[$'\t\n']* && -z ${seen[$dir]+set} ]] || continue
-            seen[$dir]=1
-            rows+=("$dir")
-        done
-    fi
+    mapfile -d '' more < <(find -H "$WS_PROJECTS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | LC_ALL=C sort -z)
+    [[ ! -d $WS_VAULT ]] || more+=("$WS_VAULT")
+    for dir in "${T_PLAIN[@]}" "${more[@]}"; do
+        [[ $dir != *[$'\t\n']* && -z ${seen[$dir]+set} ]] || continue
+        seen[$dir]=1
+        rows+=("$dir")
+    done
     if ((${#rows[@]} && ${#S_CWD[@]})); then
         mapfile -d '' reals < <(realpath -m -z -- "${rows[@]}")
         for i in "${!S_CWD[@]}"; do
@@ -3106,11 +3091,6 @@ pick_rows() {
             printf '%s\t%s\t%s\t%s\n' "$rank" "$idx" "$id" "$i"
         done | LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3 | cut -f4
     )
-    if [[ $mode == tickets && ${#order[@]} -eq 0 ]]; then
-        echo "No tickets in $(ws_shown "$WS_ROOT")"
-        return 0
-    fi
-
     for i in "${order[@]}"; do
         id=${T_IDS[i]}
         waiting=
@@ -3124,17 +3104,33 @@ pick_rows() {
                 "${T_BRANCH[$id]}"
             text=${text%"${text##*[! ]}"}
         fi
-        if [[ $mode == tickets ]]; then
-            printf '%s\n' "$text"
-        else
-            printf '%s\t%s\n' "${rows[i]}" "$text"
-        fi
+        R_PATH+=("${rows[i]}")
+        R_TEXT+=("$text")
     done
-    [[ $mode != tickets ]] || return 0
     for ((i = ${#T_IDS[@]}; i < ${#rows[@]}; i++)); do
-        line=${rows[i]/#"$HOME/"/\~/}
-        ((${wait_of[$i]:-0} == 0)) || line+="  ${wait_of[$i]} waiting"
-        printf '%s\t%s\n' "${rows[i]}" "$line"
+        text=${rows[i]/#"$HOME/"/\~/}
+        ((${wait_of[$i]:-0} == 0)) || text+="  ${wait_of[$i]} waiting"
+        R_PATH+=("${rows[i]}")
+        R_TEXT+=("$text")
+    done
+}
+
+pick_print() {
+    local i
+    pick_build
+    for i in "${!R_PATH[@]}"; do
+        printf '%s\t%s\n' "${R_PATH[i]}" "${R_TEXT[i]}"
+    done
+}
+
+ticket_list() {
+    local i
+    pick_build
+    if ((${#T_IDS[@]} == 0)); then
+        echo "No tickets in $(ws_shown "$WS_ROOT")"
+    fi
+    for ((i = 0; i < ${#T_IDS[@]}; i++)); do
+        printf '%s\n' "${R_TEXT[i]}"
     done
 }
 
@@ -3168,7 +3164,7 @@ ws_pick() {
     local sel out
     case "$#:${1-}" in
     1:--print)
-        pick_rows all
+        pick_print
         return
         ;;
     1:-h | 1:--help)
@@ -3186,7 +3182,7 @@ ws_pick() {
         return 1
     fi
     status_refresh_bg
-    sel=$(pick_rows all | fzf --delimiter=$'\t' --with-nth=2.. --tiebreak=index --prompt='ws> ') || return 0
+    sel=$(pick_print | fzf --delimiter=$'\t' --with-nth=2.. --tiebreak=index --prompt='ws> ') || return 0
     if [[ -n ${TMUX-} ]]; then
         if ! out=$(pick_open "${sel%%$'\t'*}" 2>&1); then
             tmux display-message -- "${out:-ws: cannot open ${sel%%$'\t'*}}"
@@ -3199,7 +3195,7 @@ ws_pick() {
 
 ws_ls() {
     case "$#:${1-}" in
-    0:) pick_rows tickets ;;
+    0:) ticket_list ;;
     1:-h | 1:--help) ticket_usage ;;
     *)
         ticket_usage >&2
@@ -3237,7 +3233,7 @@ ws_stage() {
         echo "ws: no ticket $(ws_shown "$dir")" >&2
         return 1
     fi
-    ticket_update "$dir" WS_STAGE "$stage" || return 1
+    ticket_update "$dir" set WS_STAGE "$stage" || return 1
     echo "${dir##*/} is at $stage"
     [[ $stage == building ]] || return 0
     ticket_scan
