@@ -114,8 +114,11 @@ fake_proc() {
         mkdir -p "$dir/ns" &&
             printf 'Name:\tfake%s\nUid:\t%s\t%s\t%s\t%s\n' "$pid" "$EUID" "$EUID" "$EUID" "$EUID" >"$dir/status" &&
             printf '%s (fake%s) S %s 0 0 0\n' "$pid" "$pid" "$ppid" >"$dir/stat" &&
-            ln -s "$ns" "$dir/ns/mnt" &&
-            { [[ -z $cwd ]] || ln -s "$cwd" "$dir/cwd"; }
+            if [[ -n $cwd ]]; then
+                ln -s "$ns" "$dir/ns/mnt" && ln -s "$cwd" "$dir/cwd"
+            else
+                : >"$dir/ns/mnt" && : >"$dir/cwd"
+            fi
     } || abort "cannot make fake process $pid"
 }
 
