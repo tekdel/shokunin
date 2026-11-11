@@ -237,6 +237,7 @@ ws_cwd_count() {
     real=$(realpath -e -- "$1") || return 1
     self=$(readlink -- "$WS_PROC/self/ns/mnt" 2>/dev/null) || self=
     while IFS=$'\t' read -r -d '' proc link; do
+        [[ -n $link ]] || continue
         if [[ $proc == */ns/mnt ]]; then
             [[ $link == "$self" ]] || foreign[${proc%/ns/mnt}]=1
         else
