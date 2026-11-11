@@ -190,6 +190,12 @@ test_new_refuses() {
     assert_eq "new refuses a malformed .ws" 1 "$rc"
     assert "it says which line" grep -qF "line 2 of ~/work/t6/.ws is not KEY=value" <<<"$out"
     assert_eq "it leaves the malformed .ws alone" $'WS_ID=t6\nnot a pair' "$(cat "$WS_ROOT/t6/.ws")"
+
+    mkdir -p "$WS_ROOT/t7"
+    printf 'WS_ID=other\n' >"$WS_ROOT/t7/.ws"
+    out=$(ws new t7 feat/q alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a .ws whose WS_ID is not its directory" 1 "$rc"
+    assert "it names the mismatch" grep -qF "WS_ID in ~/work/t7/.ws is not t7" <<<"$out"
 }
 
 test_ws_file_writes() {
@@ -409,6 +415,11 @@ test_status() {
     assert_eq "a refresh within WS_PR_TTL asks gh nothing" "$before" "$(gh_calls)"
     WS_PR_TTL=0 ws status --refresh
     assert "a refresh past WS_PR_TTL asks gh again" test "$(gh_calls)" -gt "$before"
+    ws new t2 feat/z beta >/dev/null 2>&1
+    add_pr beta feat/z MERGED 3 "$(head_of "$WS_ROOT/t2/beta")"
+    ws status --refresh
+    assert "a refresh within WS_PR_TTL asks gh for a ticket the cache lacks" \
+        grep -qE '^t2 +spec +pr:merged +feat/z$' <<<"$(ws ls)"
 
     agents 'not json'
     ws status --refresh

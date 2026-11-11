@@ -2966,7 +2966,8 @@ status_prs() {
 }
 
 status_refresh() {
-    local fd now out sessions=null prs="" old_time tmp
+    local fd now out sessions=null prs="" old_time tmp id
+    local -a ids=()
     if ! [[ $WS_PR_TTL =~ ^[0-9]+$ ]]; then
         echo "ws: WS_PR_TTL must be a number of seconds" >&2
         return 1
@@ -2991,7 +2992,12 @@ status_refresh() {
     old_time=$(jq -r '.prs | select(type == "object" and (.tickets | type) == "object") | .time | numbers | floor' \
         "$WS_CACHE_DIR/status.json" 2>/dev/null) || old_time=
     if [[ $old_time =~ ^[0-9]+$ ]] && ((now - old_time < WS_PR_TTL)); then
-        prs=$(jq -c '.prs' "$WS_CACHE_DIR/status.json" 2>/dev/null) || prs=
+        ticket_scan
+        for id in "${T_IDS[@]}"; do
+            [[ -n ${T_BAD[$id]+set} || -z ${T_BRANCH[$id]} ]] || ids+=("$id")
+        done
+        prs=$(jq -c '.prs as $p | if all($ARGS.positional[]; . as $id | $p.tickets | has($id)) then $p else empty end' \
+            --args "${ids[@]}" <"$WS_CACHE_DIR/status.json" 2>/dev/null) || prs=
     fi
     [[ -n $prs ]] || prs=$(status_prs "$now") || prs=null
     tmp=$(mktemp -- "$WS_CACHE_DIR/.status.XXXXXX") || return 1
