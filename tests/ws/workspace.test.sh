@@ -213,8 +213,8 @@ test_new_refuses() {
 test_ws_file_writes() {
     local rc
     new_fixture_no_ticket
-    ws new --ticket PB-1 --topic topic-a t1 feat/x alpha >/dev/null 2>&1
-    assert_eq "--ticket sets WS_TICKET" PB-1 "$(ws_value t1 WS_TICKET)"
+    ws new --ticket T-1 --topic topic-a t1 feat/x alpha >/dev/null 2>&1
+    assert_eq "--ticket sets WS_TICKET" T-1 "$(ws_value t1 WS_TICKET)"
     assert_eq "--topic sets WS_TOPIC" topic-a "$(ws_value t1 WS_TOPIC)"
     printf 'WS_URLS="web=http://localhost:4400 api=http://localhost:4401"\nWS_EXTRA=kept\n' >>"$WS_ROOT/t1/.ws"
     ws stage t1 building >/dev/null
