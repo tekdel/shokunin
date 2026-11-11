@@ -2672,16 +2672,22 @@ ticket_claude_md() {
     return 1
 }
 
+ticket_session_foreign() {
+    local path
+    tmux has-session -t "=$1" 2>/dev/null || return 1
+    path=$(tmux display-message -p -t "=$1:" '#{session_path}') || path=
+    [[ $(realpath -m -- "$path") != "$(realpath -m -- "$2")" ]] || return 1
+    echo "tmux session $1 works in $(ws_shown "$path"), not $(ws_shown "$2")"
+}
+
 ticket_session() {
-    local id=$1 dir=$2 path
+    local id=$1 dir=$2 why
     local -a have=()
-    if tmux has-session -t "=$id" 2>/dev/null; then
-        path=$(tmux display-message -p -t "=$id:" '#{session_path}') || return 1
-        if [[ $(realpath -m -- "$path") != "$(realpath -m -- "$dir")" ]]; then
-            echo "ws: tmux session $id works in $(ws_shown "$path"), not $(ws_shown "$dir")" >&2
-            return 1
-        fi
-    else
+    if why=$(ticket_session_foreign "$id" "$dir"); then
+        echo "ws: $why" >&2
+        return 1
+    fi
+    if ! tmux has-session -t "=$id" 2>/dev/null; then
         tmux new-session -d -s "$id" -c "$dir" -n shell || return 1
     fi
     mapfile -t have < <(tmux list-windows -t "=$id:" -F '#{window_name}')
@@ -2753,6 +2759,10 @@ ticket_make() {
             add+=("$repo")
         fi
     done
+    if why=$(ticket_session_foreign "$id" "$dir"); then
+        echo "ws: $why" >&2
+        fail=1
+    fi
     ((fail == 0)) || return 1
 
     mkdir -p -- "$dir" || return 1

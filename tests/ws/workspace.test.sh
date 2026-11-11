@@ -175,6 +175,12 @@ test_new_refuses() {
     assert_eq "WS_ROOT holds only t1" t1 "$(cd "$WS_ROOT" && find . -mindepth 1 -maxdepth 1 -printf '%P\n')"
     refute "a branch name runs nothing" test -e "$FX/pwned"
 
+    tmux new-session -d -s t9 -c "$WS_PROJECTS"
+    out=$(ws new t9 feat/q alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses an id whose tmux session works elsewhere" 1 "$rc"
+    assert "it names the session's directory" grep -qF "tmux session t9 works in ~/projects, not ~/work/t9" <<<"$out"
+    refute "it makes nothing first" test -e "$WS_ROOT/t9"
+
     out=$(ws new t4 feat/q gamma 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a repo that is not in WS_PROJECTS" 1 "$rc"
     assert "it names the missing checkout" grep -qF "~/projects/gamma is not a git checkout" <<<"$out"
