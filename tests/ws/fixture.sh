@@ -13,8 +13,7 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   vault/               WS_VAULT
   gitconfig            GIT_CONFIG_GLOBAL: identity, and github.com/fixture
                        URLs rewritten to origins/
-  bin/gh               gh shim, answers pr list -R github.com/<owner>/<repo>
-                       from prs.tsv
+  bin/gh               gh shim, answers pr list from prs.tsv
   prs.tsv              repo, branch, state, number, headRefOid, and
                        isCrossRepository per PR: true, false (the
                        default), null, or missing to leave it out
@@ -172,10 +171,6 @@ if [[ -f $root/gh.slow ]]; then
     sleep "$(<"$root/gh.slow")"
     printf 'end %s %s\n' "$(date +%s.%N)" "$args" >>"$root/gh.times"
 fi
-[[ $repo == github.com/*/* ]] || {
-    echo "gh shim: -R must be github.com/<owner>/<repo>: $args" >&2
-    exit 3
-}
 name=${repo##*/}
 if [[ -f $root/gh.fail ]] && { [[ ! -s $root/gh.fail ]] || grep -qx "$name" "$root/gh.fail"; }; then
     echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2
