@@ -50,6 +50,10 @@ assert_eq() {
 drop_fixtures() {
     local dir
     for dir in "${_sandboxes[@]}"; do
+        if [[ -x $dir/root/bin/tmux ]]; then
+            "$dir/root/bin/tmux" kill-server 2>/dev/null
+            flock -w 10 "$dir/root/.cache/ws/refresh.lock" true 2>/dev/null
+        fi
         chmod -R u+rwx "$dir" 2>/dev/null
         rm -rf "$dir"
     done
@@ -57,6 +61,14 @@ drop_fixtures() {
 }
 
 new_fixture() {
+    make_fixture
+}
+
+new_fixture_no_ticket() {
+    make_fixture --no-ticket
+}
+
+make_fixture() {
     local sandbox
     drop_fixtures
     unset FX WS_TRASH
@@ -64,7 +76,7 @@ new_fixture() {
     sandbox=$(mktemp -d "${TMPDIR:-/tmp}/ws-test.XXXXXX") || abort "cannot make a sandbox"
     _sandboxes+=("$sandbox")
     PATH=$_base_path
-    bash "$WS_TESTS/fixture.sh" "$sandbox/root" >/dev/null || abort "fixture.sh failed"
+    bash "$WS_TESTS/fixture.sh" "$@" "$sandbox/root" >/dev/null || abort "fixture.sh failed"
     # shellcheck source=/dev/null
     source "$sandbox/root/env.sh" || abort "cannot source env.sh"
     _sandboxes+=("$TMUX_TMPDIR")
@@ -86,6 +98,10 @@ ws_guard() {
     done
     for cmd in docker podman; do
         path=$(command -v "$cmd") || continue
+        [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
+    done
+    for cmd in claude tmux; do
+        path=$(type -P "$cmd") || abort "ws refused: no $cmd on PATH"
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
 }

@@ -6,15 +6,33 @@ WS_GH_TIMEOUT=${WS_GH_TIMEOUT:-60}
 WS_PROC=${WS_PROC:-/proc}
 WS_TRASH=${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}
 WS_REGENERABLE=${WS_REGENERABLE-node_modules dist dist-test build coverage prisma-client .next .turbo target __pycache__ .cache}
+WS_VAULT=${WS_VAULT:-$HOME/claude-knowledge-vault}
+WS_CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/ws
+WS_PR_TTL=${WS_PR_TTL:-300}
 
 WS_OID_RE='^[0-9a-f]{40}([0-9a-f]{24})?$'
 WS_STAMP_RE='[0-9]{8}T[0-9]{6}Z(\.[0-9]+)?'
 WS_META_KEYS="orig common branch head ticket pr state oid time"
 WS_PROC_PID_INIT_INO=4026531836
+WS_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+WS_BRANCH_RE='^[A-Za-z0-9][A-Za-z0-9._/+@-]*$'
+WS_KEYS="WS_ID WS_TICKET WS_BRANCH WS_REPOS WS_TOPIC WS_STAGE WS_SCENARIOS_SHA256 WS_SLOT WS_URLS WS_CREATED"
+WS_STAGES="spec planned building verifying qa review merged"
+WS_OPERATOR_STAGES="planned qa review"
+WS_BUILDING_LIMIT=5
 
 declare -gA WS_COMMANDS=(
+    [adopt]="move existing worktrees of one branch into a ticket"
+    [ls]="list the tickets"
+    [new]="make or repair a ticket: worktrees, .ws, CLAUDE.md, and a tmux session"
+    [pick]="pick a ticket, a project, or the vault and switch to its tmux session"
     [prune]="list worktrees whose PR merged or closed, --apply moves them to the trash"
+    [rm]="stop a ticket's sessions and move its worktrees to the trash"
+    [stage]="set the stage of a ticket"
+    [status]="refresh the status cache, or print how many sessions wait on you"
 )
+declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=() P_STATES=()
+declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=()
 declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
 declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=()
@@ -2359,6 +2377,993 @@ ws_prune() {
     esac
     rm -rf "$d"
     return "$rc"
+}
+
+ticket_usage() {
+    cat <<'EOF'
+usage: ws new [--ticket <key>] [--topic <name>] <id> <branch> <repo>...
+       ws adopt <id> <worktree>...
+       ws ls
+       ws pick [--print]
+       ws stage [<id>] <stage>
+       ws status [--refresh | --waiting]
+       ws rm <id>
+
+A ticket is the directory $WS_ROOT/<id>. It holds .ws, the ticket state
+that only ws writes, a CLAUDE.md that ws writes, and one git worktree of
+$WS_PROJECTS/<repo> per repo, all on one branch. Its tmux session is
+named <id> and has the windows claude, shell, and env.
+
+  new     make what is missing of the ticket: the worktrees, .ws,
+          CLAUDE.md, and the tmux session, whose claude window runs
+          claude -n <id>. Then switch to the session. A branch that
+          exists in neither the repo nor origin starts from origin's
+          default branch with no upstream. A rerun adds new repos and
+          keeps the stage.
+  adopt   move linked worktrees of one branch into the ticket with git
+          worktree move, then do what new does. No process may work in
+          them and no container may mount them.
+  ls      list the tickets with their stage, the Claude sessions that
+          wait on you, PR state, env state, and branch.
+  pick    list the tickets, then every directory in $WS_PROJECTS, then
+          the vault, in fzf. Tickets with waiting sessions come first,
+          then tickets at planned, qa, or review. Enter switches to the
+          tmux session of the pick and makes it when it is missing.
+          --print prints the list as <path><TAB><row>.
+  stage   set the stage, one of spec planned building verifying qa
+          review merged. Without <id>, the ticket of the current
+          directory. Warns when more than 5 tickets are in building.
+  status  --refresh asks claude agents --json and gh, and writes
+          ~/.cache/ws/status.json. PR state is asked again only when it
+          is WS_PR_TTL seconds old, 300 by default. --waiting prints
+          "N waiting" for every Claude session that waits on you. pick
+          and --waiting start a refresh in the background. Without a
+          flag, status refreshes and runs ls.
+  rm      refuse when a worktree has a KEEP reason of ws prune -h other
+          than the processes of the ticket's own sessions, stop the
+          ticket's background Claude sessions with claude stop, kill
+          its tmux session, and move the worktrees and the ticket files
+          to the trash. ws prune --restore <id> brings it back.
+EOF
+}
+
+ticket_name_ok() {
+    [[ $1 =~ $WS_NAME_RE ]]
+}
+
+ticket_check_id() {
+    if ! ticket_name_ok "$1"; then
+        echo "ws: ticket id '$1' must start with a letter or digit and hold only letters, digits, dots, dashes, and underscores" >&2
+        return 1
+    fi
+}
+
+# The vault's ticket loader parses .ws the same way: KEY=value lines, one
+# pair of quotes stripped, nothing expanded.
+ticket_read() {
+    local file=$1/.ws line key value n=0 shown
+    local -n tr_kv=$2
+    tr_kv=()
+    REPLY=
+    shown=${file/#"$HOME/"/\~/}
+    if [[ ! -f $file || ! -r $file ]]; then
+        REPLY="$shown is not a readable file"
+        return 1
+    fi
+    if (($(wc -c <"$file") > 65536)); then
+        REPLY="$shown is over 64 KB"
+        return 1
+    fi
+    while IFS= read -r line || [[ -n $line ]]; do
+        n=$((n + 1))
+        line=${line%$'\r'}
+        [[ ! $line =~ ^[[:space:]]*(#|$) ]] || continue
+        if [[ ! $line =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            REPLY="line $n of $shown is not KEY=value"
+            return 1
+        fi
+        key=${BASH_REMATCH[1]}
+        value=${BASH_REMATCH[2]}
+        if [[ $value =~ ^\"(.*)\"$ || $value =~ ^\'(.*)\'$ ]]; then
+            value=${BASH_REMATCH[1]}
+        elif [[ $value == [\"\']* ]]; then
+            REPLY="line $n of $shown has an unclosed quote"
+            return 1
+        fi
+        tr_kv["$key"]=$value
+    done <"$file"
+    if ! ticket_name_ok "${tr_kv[WS_ID]-}" || [[ ${tr_kv[WS_ID]} != "${1##*/}" ]]; then
+        REPLY="WS_ID in $shown is not ${1##*/}"
+        return 1
+    fi
+    if [[ -n ${tr_kv[WS_TOPIC]-} ]] && ! ticket_name_ok "${tr_kv[WS_TOPIC]}"; then
+        REPLY="WS_TOPIC in $shown is not a plain name"
+        return 1
+    fi
+}
+
+# A shell that sources .ws must read the same values as the loader, so a
+# value never holds what double quotes would expand.
+ticket_line() {
+    if [[ $2 == *[\"\$\`\\[:cntrl:]]* ]]; then
+        echo "ws: $1 holds a double quote, \$, backquote, backslash, or control character" >&2
+        return 1
+    fi
+    if [[ $2 == *[!A-Za-z0-9._/:@%+=,-]* ]]; then
+        REPLY="$1=\"$2\""
+    else
+        REPLY="$1=$2"
+    fi
+}
+
+ticket_write() {
+    local dir=$1 key out="" tmp LC_ALL=C
+    local -n tw=$2
+    local -A known=()
+    for key in $WS_KEYS; do
+        known[$key]=1
+        ticket_line "$key" "${tw[$key]-}" || return 1
+        out+=$REPLY$'\n'
+    done
+    while IFS= read -r key; do
+        [[ -n $key && -z ${known[$key]+set} ]] || continue
+        ticket_line "$key" "${tw[$key]}" || return 1
+        out+=$REPLY$'\n'
+    done < <(printf '%s\n' "${!tw[@]}" | sort)
+    if ((${#out} > 65536)); then
+        echo "ws: $dir/.ws would be over 64 KB" >&2
+        return 1
+    fi
+    tmp=$(mktemp -- "$dir/.ws.XXXXXX") || return 1
+    if printf '%s' "$out" >"$tmp" && mv -T -- "$tmp" "$dir/.ws"; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+}
+
+# Usage: ticket_update <dir> [KEY value]... A key written ?KEY is set only
+# while it is empty.
+ticket_update() {
+    local dir=$1 fd key rc=0
+    local -A kv=()
+    shift
+    exec {fd}<"$dir" || return 1
+    if ! flock -w 10 "$fd"; then
+        echo "ws: $(ws_shown "$dir") stayed locked for 10 seconds" >&2
+        rc=1
+    elif [[ -e $dir/.ws || -L $dir/.ws ]] && ! ticket_read "$dir" kv; then
+        echo "ws: $REPLY" >&2
+        rc=1
+    else
+        while (($# >= 2)); do
+            key=${1#\?}
+            if [[ $1 != \?* || -z ${kv[$key]-} ]]; then
+                kv[$key]=$2
+            fi
+            shift 2
+        done
+        ticket_write "$dir" kv || rc=1
+    fi
+    exec {fd}<&-
+    return "$rc"
+}
+
+# Fills T_IDS with the tickets in WS_ROOT, their fields in T_STAGE,
+# T_BRANCH, T_REPOS, and T_ENV, the reason a .ws does not parse in T_BAD,
+# and T_PLAIN with the directories that hold no .ws.
+ticket_scan() {
+    local dir id
+    local -A kv=()
+    T_IDS=() T_PLAIN=()
+    T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=()
+    for dir in "$WS_ROOT"/*/; do
+        dir=${dir%/}
+        [[ -d $dir && ! -L $dir && $dir != *[$'\t\n']* ]] || continue
+        id=${dir##*/}
+        if [[ ! -e $dir/.ws && ! -L $dir/.ws ]]; then
+            T_PLAIN+=("$dir")
+            continue
+        fi
+        T_IDS+=("$id")
+        if ! ticket_read "$dir" kv; then
+            T_BAD[$id]=$REPLY
+            continue
+        fi
+        T_STAGE[$id]=${kv[WS_STAGE]-}
+        T_BRANCH[$id]=${kv[WS_BRANCH]-}
+        T_REPOS[$id]=${kv[WS_REPOS]-}
+        T_ENV[$id]=
+        if [[ -n ${kv[WS_URLS]-} ]]; then
+            T_ENV[$id]=up
+        elif [[ -n ${kv[WS_SLOT]-} ]]; then
+            T_ENV[$id]=down
+        fi
+    done
+}
+
+ticket_here() {
+    local dir root rel
+    dir=$(pwd -P)
+    root=$(realpath -m -- "$WS_ROOT")
+    if [[ $dir == "$root"/* ]]; then
+        rel=${dir#"$root"/}
+        if [[ -e $WS_ROOT/${rel%%/*}/.ws ]]; then
+            printf '%s\n' "$WS_ROOT/${rel%%/*}"
+            return 0
+        fi
+    fi
+    echo "ws: $(ws_shown "$PWD") is not inside a ticket in $(ws_shown "$WS_ROOT"); run ws stage <id> <stage>" >&2
+    return 1
+}
+
+ticket_checked_out() {
+    local f path=""
+    local -a fields=()
+    mapfile -d '' fields < <(git -C "$1" worktree list --porcelain -z 2>/dev/null)
+    for f in "${fields[@]}"; do
+        case $f in
+        "worktree "*) path=${f#worktree } ;;
+        "branch refs/heads/$2")
+            printf '%s\n' "$path"
+            return 0
+            ;;
+        esac
+    done
+    return 1
+}
+
+# Prints ok when the ticket already holds the worktree, add when ws can
+# make it, or why it cannot.
+ticket_wt_plan() {
+    local dir=$1 repo=$2 branch=$3 main=$WS_PROJECTS/$2 wt=$1/$2 common head where
+    if [[ ! -d $main/.git || -L $main/.git ]]; then
+        echo "$(ws_shown "$main") is not a git checkout"
+        return 1
+    fi
+    if [[ -e $wt || -L $wt ]]; then
+        if [[ -d $wt && ! -L $wt && -f $wt/.git ]] &&
+            common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+            [[ $(realpath -m -- "$common") == "$(realpath -m -- "$main/.git")" ]] &&
+            head=$(git -C "$wt" symbolic-ref -q HEAD) && [[ $head == "refs/heads/$branch" ]]; then
+            echo ok
+            return 0
+        fi
+        echo "$(ws_shown "$wt") exists and is not a worktree of $(ws_shown "$main") on $branch"
+        return 1
+    fi
+    if where=$(ticket_checked_out "$main" "$branch"); then
+        echo "$branch is checked out in $(ws_shown "$where")"
+        return 1
+    fi
+    echo add
+}
+
+ticket_wt_add() {
+    local wt=$1/$2 repo=$2 branch=$3 main=$WS_PROJECTS/$2 base from
+    if git -C "$main" remote get-url origin >/dev/null 2>&1 &&
+        ! GIT_TERMINAL_PROMPT=0 timeout -k 5 60 git -C "$main" fetch -q origin </dev/null; then
+        echo "ws: cannot fetch origin of $repo, so $branch starts from what $(ws_shown "$main") has" >&2
+    fi
+    if git -C "$main" show-ref --verify -q "refs/heads/$branch"; then
+        git -C "$main" worktree add -q "$wt" "$branch" </dev/null || return 1
+        from="the existing branch"
+    elif git -C "$main" show-ref --verify -q "refs/remotes/origin/$branch"; then
+        git -C "$main" worktree add -q --track -b "$branch" "$wt" "origin/$branch" </dev/null || return 1
+        from="tracking origin/$branch"
+    else
+        base=$(git -C "$main" symbolic-ref -q --short refs/remotes/origin/HEAD) || base=HEAD
+        git -C "$main" worktree add -q --no-track -b "$branch" "$wt" "$base" </dev/null || return 1
+        from="a new branch from $base"
+    fi
+    echo "Made $(ws_shown "$wt"), $from"
+}
+
+ticket_claude_md() {
+    local dir=$1 id=$2 branch=$3 repo tmp
+    shift 3
+    tmp=$(mktemp -- "$dir/.CLAUDE.md.XXXXXX") || return 1
+    if {
+        echo "# Ticket $id"
+        echo
+        echo "ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
+        echo
+        echo "- Each repo directory here is a git worktree on branch \`$branch\`."
+        for repo; do
+            echo "  - \`$repo/\` belongs to \`$(ws_shown "$WS_PROJECTS/$repo")\`."
+        done
+        echo "- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on."
+        echo "- Log progress with \`$(ws_shown "$WS_VAULT/bin/vault-log") $id \"<what changed>\"\`."
+    } >"$tmp" && mv -T -- "$tmp" "$dir/CLAUDE.md"; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+}
+
+ticket_session() {
+    local id=$1 dir=$2 path
+    local -a have=()
+    if tmux has-session -t "=$id" 2>/dev/null; then
+        path=$(tmux display-message -p -t "=$id:" '#{session_path}') || return 1
+        if [[ $(realpath -m -- "$path") != "$(realpath -m -- "$dir")" ]]; then
+            echo "ws: tmux session $id works in $(ws_shown "$path"), not $(ws_shown "$dir")" >&2
+            return 1
+        fi
+    else
+        tmux new-session -d -s "$id" -c "$dir" -n shell || return 1
+    fi
+    mapfile -t have < <(tmux list-windows -t "=$id:" -F '#{window_name}')
+    if [[ " ${have[*]} " != *" claude "* ]]; then
+        tmux new-window -d -b -t "=$id:{start}" -n claude -c "$dir" claude -n "$id" || return 1
+        tmux select-window -t "=$id:claude" || true
+    fi
+    if [[ " ${have[*]} " != *" shell "* ]]; then
+        tmux new-window -d -a -t "=$id:{end}" -n shell -c "$dir" || return 1
+    fi
+    if [[ " ${have[*]} " != *" env "* ]]; then
+        tmux new-window -d -a -t "=$id:{end}" -n env -c "$dir" || return 1
+    fi
+}
+
+ws_switch() {
+    if [[ -n ${TMUX-} ]]; then
+        tmux switch-client -t "=$1"
+    elif [[ -t 0 && -t 1 ]]; then
+        tmux attach-session -t "=$1"
+    else
+        echo "Attach with: tmux attach -t $1"
+    fi
+}
+
+ticket_make() {
+    local id=$1 branch=$2 ticket=$3 topic=$4 dir repo where fail=0
+    local -a repos=() add=() old=() extra=()
+    local -A kv=() seen=()
+    shift 4
+    ticket_check_id "$id" || return 1
+    if ! [[ $branch =~ $WS_BRANCH_RE ]] || ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+        echo "ws: '$branch' is not a branch name ws takes" >&2
+        return 1
+    fi
+    dir=$WS_ROOT/$id
+    if [[ -L $dir || (-e $dir && ! -d $dir) ]]; then
+        echo "ws: $(ws_shown "$dir") is not a directory" >&2
+        return 1
+    fi
+    if [[ -e $dir/.ws || -L $dir/.ws ]]; then
+        if ! ticket_read "$dir" kv; then
+            echo "ws: $REPLY" >&2
+            return 1
+        fi
+        if [[ -n ${kv[WS_BRANCH]-} && ${kv[WS_BRANCH]} != "$branch" ]]; then
+            echo "ws: ticket $id is on branch ${kv[WS_BRANCH]}, not $branch" >&2
+            return 1
+        fi
+        read -r -a old <<<"${kv[WS_REPOS]-}"
+    fi
+    for repo in "${old[@]}" "$@"; do
+        if ! ticket_name_ok "$repo"; then
+            echo "ws: '$repo' is not a repo name" >&2
+            fail=1
+            continue
+        fi
+        [[ -z ${seen[$repo]+set} ]] || continue
+        seen[$repo]=1
+        repos+=("$repo")
+        if ! where=$(ticket_wt_plan "$dir" "$repo" "$branch"); then
+            echo "ws: $where" >&2
+            fail=1
+        elif [[ $where == add ]]; then
+            add+=("$repo")
+        fi
+    done
+    ((fail == 0)) || return 1
+
+    mkdir -p -- "$dir" || return 1
+    [[ -z $ticket ]] || extra+=(WS_TICKET "$ticket")
+    [[ -z $topic ]] || extra+=(WS_TOPIC "$topic")
+    ticket_update "$dir" WS_ID "$id" WS_BRANCH "$branch" WS_REPOS "${repos[*]}" "${extra[@]}" \
+        '?WS_TOPIC' "$id" '?WS_STAGE' spec '?WS_CREATED' "$(date +%F)" || return 1
+    for repo in "${add[@]}"; do
+        ticket_wt_add "$dir" "$repo" "$branch" || fail=1
+    done
+    ticket_claude_md "$dir" "$id" "$branch" "${repos[@]}" || fail=1
+    ticket_session "$id" "$dir" || return 1
+    ((fail == 0)) || return 1
+    ws_switch "$id"
+}
+
+ws_new() {
+    local ticket="" topic=""
+    while (($#)); do
+        case $1 in
+        --ticket | --topic)
+            if (($# < 2)) || ! ticket_name_ok "$2"; then
+                echo "ws: $1 takes a plain name" >&2
+                return 1
+            fi
+            if [[ $1 == --ticket ]]; then ticket=$2; else topic=$2; fi
+            shift 2
+            ;;
+        -h | --help)
+            ticket_usage
+            return 0
+            ;;
+        -*)
+            ticket_usage >&2
+            return 1
+            ;;
+        *) break ;;
+        esac
+    done
+    if (($# < 3)); then
+        ticket_usage >&2
+        return 1
+    fi
+    ticket_make "$1" "$2" "$ticket" "$topic" "${@:3}"
+}
+
+# Prints why ws adopt cannot move the worktree whose facts it gets.
+ticket_adopt_blocker() {
+    local why
+    why=$(ws_fact "$1" unreadable) && {
+        echo "ws cannot read it: $(ws_detail "$why")"
+        return
+    }
+    why=$(ws_fact "$1" container) && {
+        echo "$(ws_detail "$why") mounts it"
+        return
+    }
+    if [[ $(ws_fact "$1" in-use) != 0 ]]; then
+        echo "a process works in it"
+    elif [[ $(ws_fact "$1" locked) != 0 ]]; then
+        echo "it is locked"
+    elif [[ $(ws_fact "$1" submodules) != 0 ]]; then
+        echo "it has submodules, which git worktree move cannot move"
+    elif [[ -z $(ws_fact "$1" branch) ]]; then
+        echo "its HEAD is detached"
+    fi
+}
+
+ws_adopt() {
+    local id dir real d why main repo branch="" i fail=0
+    local -a reals=() commons=() repos=() branches=()
+    local -A kv=() seen=()
+    case ${1-} in
+    -h | --help)
+        ticket_usage
+        return 0
+        ;;
+    esac
+    if (($# < 2)); then
+        ticket_usage >&2
+        return 1
+    fi
+    id=$1
+    shift
+    ticket_check_id "$id" || return 1
+    WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
+    ws_env_ok || return 1
+    ws_engine_mounts
+    d=$(mktemp -d) || return 1
+    for dir; do
+        if ! real=$(realpath -e -- "$dir" 2>/dev/null) || [[ ! -d $real ]]; then
+            echo "ws: $dir is not a directory" >&2
+            fail=1
+            continue
+        fi
+        if [[ ! -f $real/.git || -L $real/.git ]]; then
+            echo "ws: $(ws_shown "$real") is not a linked worktree" >&2
+            fail=1
+            continue
+        fi
+        ws_wt_facts "$real" >"$d/facts" 2>/dev/null
+        why=$(ticket_adopt_blocker "$d/facts")
+        if [[ -n $why ]]; then
+            echo "ws: $(ws_shown "$real"): $why" >&2
+            fail=1
+            continue
+        fi
+        main=$(ws_decode "$(ws_fact "$d/facts" main)")
+        repo=${main##*/}
+        if ! ticket_name_ok "$repo" || [[ $(realpath -m -- "$WS_PROJECTS/$repo") != "$(realpath -m -- "$main")" ]]; then
+            echo "ws: $(ws_shown "$real") belongs to $(ws_shown "$main"), which is not a repo in $(ws_shown "$WS_PROJECTS")" >&2
+            fail=1
+            continue
+        fi
+        if [[ -n ${seen[$repo]+set} ]]; then
+            echo "ws: $(ws_shown "$real") and $(ws_shown "${seen[$repo]}") are both worktrees of $repo" >&2
+            fail=1
+            continue
+        fi
+        if [[ -e $WS_ROOT/$id/$repo || -L $WS_ROOT/$id/$repo ]]; then
+            echo "ws: $(ws_shown "$WS_ROOT/$id/$repo") exists" >&2
+            fail=1
+            continue
+        fi
+        seen[$repo]=$real
+        reals+=("$real")
+        commons+=("$(ws_decode "$(ws_fact "$d/facts" common)")")
+        repos+=("$repo")
+        branches+=("$(ws_decode "$(ws_fact "$d/facts" branch)")")
+    done
+    rm -rf -- "$d"
+    for i in "${!branches[@]}"; do
+        [[ -n $branch ]] || branch=${branches[i]}
+        if [[ ${branches[i]} != "$branch" ]]; then
+            echo "ws: the worktrees are on different branches: $branch and ${branches[i]}" >&2
+            fail=1
+            break
+        fi
+    done
+    if [[ -e $WS_ROOT/$id/.ws ]] && ticket_read "$WS_ROOT/$id" kv && [[ -n ${kv[WS_BRANCH]-} && ${kv[WS_BRANCH]} != "$branch" ]]; then
+        echo "ws: ticket $id is on branch ${kv[WS_BRANCH]}, not $branch" >&2
+        fail=1
+    fi
+    ((fail == 0)) || return 1
+
+    mkdir -p -- "$WS_ROOT/$id" || return 1
+    for i in "${!reals[@]}"; do
+        if ! ws_move "${commons[i]}" "${reals[i]}" "$WS_ROOT/$id/${repos[i]}"; then
+            echo "ws: stopped; run ws adopt $id again with the worktrees that did not move" >&2
+            return 1
+        fi
+        echo "Moved $(ws_shown "${reals[i]}") to $(ws_shown "$WS_ROOT/$id/${repos[i]}")"
+    done
+    ticket_make "$id" "$branch" "" "" "${repos[@]}"
+}
+
+# Reads the status cache into S_CWD and S_WAIT, one entry per Claude
+# session, and P_STATES, the PR states of each ticket.
+status_read() {
+    local kind a b
+    S_CWD=() S_WAIT=() P_STATES=()
+    [[ -f $WS_CACHE_DIR/status.json ]] || return 0
+    while IFS=$'\t' read -r kind a b; do
+        case $kind in
+        S)
+            S_WAIT+=("$a")
+            S_CWD+=("$b")
+            ;;
+        P) P_STATES[$a]=$b ;;
+        esac
+    done < <(jq -r '
+        ((.claude.sessions // []) | if type == "array" then .[] else empty end
+            | select(type == "object" and (.cwd | type) == "string" and (.cwd | test("[\t\n]") | not))
+            | "S\t\(if .waiting == true then 1 else 0 end)\t\(.cwd)"),
+        ((.prs.tickets // {}) | if type == "object" then to_entries[] else empty end
+            | select((.key | test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and (.value | type) == "array")
+            | "P\t\(.key)\t\(.value | map(strings | select(test("^[a-z-]+$"))) | join(","))")' \
+        "$WS_CACHE_DIR/status.json" 2>/dev/null)
+}
+
+status_prs() {
+    local now=$1 d id repo common line key state
+    local -a repos=()
+    local -A ids_of=()
+    d=$(mktemp -d) || return 1
+    ticket_scan
+    for id in "${T_IDS[@]}"; do
+        [[ -z ${T_BAD[$id]+set} && -n ${T_BRANCH[$id]} ]] || continue
+        read -r -a repos <<<"${T_REPOS[$id]}"
+        for repo in "${repos[@]}"; do
+            ticket_name_ok "$repo" || continue
+            common=$(git -C "$WS_PROJECTS/$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
+            line=$(ws_record common "$common" branch "${T_BRANCH[$id]}")
+            [[ -n ${ids_of[$line]+set} ]] || printf '%s\n' "$line" >>"$d/want"
+            ids_of[$line]+=" $id"
+        done
+    done
+    : >"$d/states"
+    if [[ -s $d/want ]]; then
+        ws_pr_states --head <"$d/want" >"$d/prs" || true
+        while IFS= read -r line; do
+            [[ $line == pr$'\t'* ]] || continue
+            key=$(printf 'common=%s\tbranch=%s' "$(ws_get "$line" common)" "$(ws_get "$line" branch)")
+            state=$(ws_get "$line" state) || continue
+            for id in ${ids_of[$key]-}; do
+                printf '%s\t%s\n' "$id" "$state" >>"$d/states"
+            done
+        done <"$d/prs"
+    fi
+    jq -cRn --argjson now "$now" '
+        def rank: {open: 0, merged: 1, closed: 2, "no-pr": 3}[.] // 4;
+        {time: $now, tickets: ([inputs | split("\t")] | group_by(.[0])
+            | map({key: .[0][0], value: (map(.[1]) | unique | sort_by(rank))}) | from_entries)}' <"$d/states"
+    rm -rf -- "$d"
+}
+
+status_refresh() {
+    local fd now out sessions=null prs="" old_time tmp
+    if ! [[ $WS_PR_TTL =~ ^[0-9]+$ ]]; then
+        echo "ws: WS_PR_TTL must be a number of seconds" >&2
+        return 1
+    fi
+    [[ -d $HOME ]] || return 1
+    mkdir -p -- "$WS_CACHE_DIR" || return 1
+    if [[ ${WS_REFRESH_FD-} =~ ^[0-9]+$ ]] && { : >&"$WS_REFRESH_FD"; } 2>/dev/null; then
+        fd=$WS_REFRESH_FD
+    else
+        exec {fd}>>"$WS_CACHE_DIR/refresh.lock" || return 1
+    fi
+    if ! flock -w 60 "$fd"; then
+        echo "ws: another status refresh held the lock for 60 seconds" >&2
+        return 1
+    fi
+    printf -v now '%(%s)T' -1
+    if out=$(timeout -k 2 10 claude agents --json </dev/null 2>/dev/null); then
+        sessions=$(jq -c 'if type == "array" then [.[] | select(type == "object" and (.cwd | type) == "string")
+            | {cwd, waiting: (.status == "waiting" or .state == "blocked")}] else error("not a list") end' \
+            <<<"$out" 2>/dev/null) || sessions=null
+    fi
+    old_time=$(jq -r '.prs | select(type == "object" and (.tickets | type) == "object") | .time | numbers | floor' \
+        "$WS_CACHE_DIR/status.json" 2>/dev/null) || old_time=
+    if [[ $old_time =~ ^[0-9]+$ ]] && ((now - old_time < WS_PR_TTL)); then
+        prs=$(jq -c '.prs' "$WS_CACHE_DIR/status.json" 2>/dev/null) || prs=
+    fi
+    [[ -n $prs ]] || prs=$(status_prs "$now") || prs=null
+    tmp=$(mktemp -- "$WS_CACHE_DIR/.status.XXXXXX") || return 1
+    if jq -n --argjson now "$now" --argjson sessions "${sessions:-null}" --argjson prs "${prs:-null}" \
+        '{claude: {time: $now, sessions: $sessions}, prs: $prs}' >"$tmp" && mv -T -- "$tmp" "$WS_CACHE_DIR/status.json"; then
+        return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+}
+
+# The child takes over the lock this process holds, so a caller that
+# waits on the lock waits for the refresh to end.
+status_refresh_bg() {
+    local fd self
+    if [[ ! -d $HOME ]] || ! mkdir -p -- "$WS_CACHE_DIR" 2>/dev/null; then
+        return 0
+    fi
+    { exec {fd}>>"$WS_CACHE_DIR/refresh.lock"; } 2>/dev/null || return 0
+    if flock -n "$fd" && self=$(realpath -e -- "${BASH_SOURCE[0]}"); then
+        WS_REFRESH_FD=$fd setsid -f bash "$self" status --refresh </dev/null >/dev/null 2>&1 || true
+    fi
+    exec {fd}>&-
+}
+
+ws_status() {
+    local n=0 w
+    case "$#:${1-}" in
+    1:--refresh) status_refresh ;;
+    1:--waiting)
+        status_read
+        for w in "${S_WAIT[@]}"; do
+            ((w != 1)) || n=$((n + 1))
+        done
+        ((n == 0)) || echo "$n waiting"
+        status_refresh_bg
+        ;;
+    0:)
+        status_refresh || return 1
+        pick_rows tickets
+        ;;
+    1:-h | 1:--help) ticket_usage ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+}
+
+# Prints one row per ticket, then, unless the mode is tickets, one row
+# per directory in WS_ROOT without a .ws, in WS_PROJECTS, and the vault.
+# A row is <path><TAB><text>, or only the text in tickets mode.
+pick_rows() {
+    local mode=$1 id dir i n best len stage idx rank waiting pr env text line
+    local -a rows=() more=() reals=() order=()
+    local -A seen=() wait_of=() stage_rank=()
+    n=0
+    for stage in $WS_STAGES; do
+        stage_rank[$stage]=$((n++))
+    done
+    ticket_scan
+    status_read
+    for id in "${T_IDS[@]}"; do
+        rows+=("$WS_ROOT/$id")
+    done
+    if [[ $mode != tickets ]]; then
+        mapfile -d '' more < <(find -H "$WS_PROJECTS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | LC_ALL=C sort -z)
+        [[ ! -d $WS_VAULT ]] || more+=("$WS_VAULT")
+        for dir in "${T_PLAIN[@]}" "${more[@]}"; do
+            [[ $dir != *[$'\t\n']* && -z ${seen[$dir]+set} ]] || continue
+            seen[$dir]=1
+            rows+=("$dir")
+        done
+    fi
+    if ((${#rows[@]} && ${#S_CWD[@]})); then
+        mapfile -d '' reals < <(realpath -m -z -- "${rows[@]}")
+        for i in "${!S_CWD[@]}"; do
+            [[ ${S_WAIT[i]} == 1 ]] || continue
+            best=-1 len=0
+            for n in "${!reals[@]}"; do
+                if [[ ${S_CWD[i]} == "${reals[n]}" || ${S_CWD[i]} == "${reals[n]}"/* ]] && ((${#reals[n]} > len)); then
+                    best=$n len=${#reals[n]}
+                fi
+            done
+            ((best < 0)) || wait_of[$best]=$((${wait_of[$best]:-0} + 1))
+        done
+    fi
+
+    mapfile -t order < <(
+        for i in "${!T_IDS[@]}"; do
+            id=${T_IDS[i]}
+            stage=${T_STAGE[$id]-}
+            idx=9
+            [[ -z $stage || -z ${stage_rank[$stage]+set} ]] || idx=${stage_rank[$stage]}
+            rank=2
+            if [[ -n ${T_BAD[$id]+set} ]]; then
+                rank=3
+            elif ((${wait_of[$i]:-0})); then
+                rank=0
+            elif [[ -n $stage && " $WS_OPERATOR_STAGES " == *" $stage "* ]]; then
+                rank=1
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$rank" "$idx" "$id" "$i"
+        done | LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3 | cut -f4
+    )
+    if [[ $mode == tickets && ${#order[@]} -eq 0 ]]; then
+        echo "No tickets in $(ws_shown "$WS_ROOT")"
+        return 0
+    fi
+
+    for i in "${order[@]}"; do
+        id=${T_IDS[i]}
+        waiting=
+        ((${wait_of[$i]:-0} == 0)) || waiting="${wait_of[$i]} waiting"
+        if [[ -n ${T_BAD[$id]+set} ]]; then
+            printf -v text '%-16s %s' "$id" "malformed .ws: ${T_BAD[$id]}"
+        else
+            pr=${P_STATES[$id]:+pr:${P_STATES[$id]}}
+            env=${T_ENV[$id]:+env:${T_ENV[$id]}}
+            printf -v text '%-16s %-10s %-10s %-16s %-9s %s' "$id" "${T_STAGE[$id]:-?}" "$waiting" "$pr" "$env" \
+                "${T_BRANCH[$id]}"
+            text=${text%"${text##*[! ]}"}
+        fi
+        if [[ $mode == tickets ]]; then
+            printf '%s\n' "$text"
+        else
+            printf '%s\t%s\n' "${rows[i]}" "$text"
+        fi
+    done
+    [[ $mode != tickets ]] || return 0
+    for ((i = ${#T_IDS[@]}; i < ${#rows[@]}; i++)); do
+        line=${rows[i]/#"$HOME/"/\~/}
+        ((${wait_of[$i]:-0} == 0)) || line+="  ${wait_of[$i]} waiting"
+        printf '%s\t%s\n' "${rows[i]}" "$line"
+    done
+}
+
+pick_open() {
+    local path=$1 name f
+    local -A kv=()
+    if [[ $path == "$WS_ROOT"/* && ${path#"$WS_ROOT"/} != */* && -e $path/.ws ]]; then
+        if ! ticket_read "$path" kv; then
+            echo "ws: $REPLY" >&2
+            return 1
+        fi
+        ticket_session "${kv[WS_ID]}" "$path" || return 1
+        ws_switch "${kv[WS_ID]}"
+        return
+    fi
+    name=${path##*/}
+    name=${name//./_}
+    if ! tmux has-session -t "=$name" 2>/dev/null; then
+        tmux new-session -d -s "$name" -c "$path" || return 1
+        for f in "$path/.tmux-ready" "$HOME/.tmux-ready"; do
+            if [[ -f $f ]]; then
+                tmux send-keys -t "=$name:" "source $(printf %q "$f")" C-m
+                break
+            fi
+        done
+    fi
+    ws_switch "$name"
+}
+
+ws_pick() {
+    local sel out
+    case "$#:${1-}" in
+    1:--print)
+        pick_rows all
+        return
+        ;;
+    1:-h | 1:--help)
+        ticket_usage
+        return 0
+        ;;
+    0:) ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+    if ! command -v fzf >/dev/null; then
+        echo "ws: fzf is not installed" >&2
+        return 1
+    fi
+    status_refresh_bg
+    sel=$(pick_rows all | fzf --delimiter=$'\t' --with-nth=2.. --tiebreak=index --prompt='ws> ') || return 0
+    if [[ -n ${TMUX-} ]]; then
+        if ! out=$(pick_open "${sel%%$'\t'*}" 2>&1); then
+            tmux display-message -- "${out:-ws: cannot open ${sel%%$'\t'*}}"
+            return 1
+        fi
+    else
+        pick_open "${sel%%$'\t'*}"
+    fi
+}
+
+ws_ls() {
+    case "$#:${1-}" in
+    0:) pick_rows tickets ;;
+    1:-h | 1:--help) ticket_usage ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+}
+
+ws_stage() {
+    local stage dir id n=0
+    case "$#:${1-}" in
+    1:-h | 1:--help)
+        ticket_usage
+        return 0
+        ;;
+    1:*)
+        stage=$1
+        dir=$(ticket_here) || return 1
+        ;;
+    2:*)
+        ticket_check_id "$1" || return 1
+        dir=$WS_ROOT/$1
+        stage=$2
+        ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+    if [[ " $WS_STAGES " != *" $stage "* ]]; then
+        echo "ws: the stage must be one of: $WS_STAGES" >&2
+        return 1
+    fi
+    if [[ -L $dir || ! -d $dir || ! -e $dir/.ws ]]; then
+        echo "ws: no ticket $(ws_shown "$dir")" >&2
+        return 1
+    fi
+    ticket_update "$dir" WS_STAGE "$stage" || return 1
+    echo "${dir##*/} is at $stage"
+    [[ $stage == building ]] || return 0
+    ticket_scan
+    for id in "${T_IDS[@]}"; do
+        [[ ${T_STAGE[$id]-} != building ]] || n=$((n + 1))
+    done
+    if ((n > WS_BUILDING_LIMIT)); then
+        echo "ws: $n tickets are in building, more than $WS_BUILDING_LIMIT. Finish one before you start another." >&2
+    fi
+}
+
+ticket_stop_sessions() {
+    local id=$1 real=$2 out sid path
+    local -a ids=()
+    if out=$(timeout -k 2 10 claude agents --json </dev/null 2>/dev/null) &&
+        out=$(jq -r --arg d "$real" '.[] | select(type == "object" and (.id | type) == "string" and (.cwd | type) == "string")
+            | select(.cwd == $d or (.cwd | startswith($d + "/"))) | select(.state == "working" or .state == "blocked")
+            | .id | select(test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))' <<<"$out" 2>/dev/null); then
+        [[ -z $out ]] || mapfile -t ids <<<"$out"
+        for sid in "${ids[@]}"; do
+            if timeout -k 2 30 claude stop "$sid" </dev/null >/dev/null 2>&1; then
+                echo "Stopped Claude session $sid"
+            else
+                echo "ws: claude stop $sid failed" >&2
+            fi
+        done
+    else
+        echo "ws: claude agents --json failed, so ws stopped no background session" >&2
+    fi
+    if tmux has-session -t "=$id" 2>/dev/null; then
+        path=$(tmux display-message -p -t "=$id:" '#{session_path}' 2>/dev/null) || path=
+        if [[ $(realpath -m -- "$path") == "$real" ]]; then
+            if tmux kill-session -t "=$id"; then
+                echo "Killed tmux session $id"
+            fi
+        else
+            echo "ws: tmux session $id works in $(ws_shown "$path"), so ws leaves it" >&2
+        fi
+    fi
+}
+
+ws_rm() {
+    local id dir real here d i n why fail=0
+    local -a wts=()
+    case "$#:${1-}" in
+    1:-h | 1:--help)
+        ticket_usage
+        return 0
+        ;;
+    1:*) id=$1 ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+    ticket_check_id "$id" || return 1
+    dir=$WS_ROOT/$id
+    if [[ -L $dir || ! -d $dir || ! -e $dir/.ws ]]; then
+        echo "ws: no ticket $(ws_shown "$dir")" >&2
+        return 1
+    fi
+    real=$(realpath -e -- "$dir") || return 1
+    here=$(pwd -P)
+    if [[ $here == "$real" || $here == "$real"/* ]]; then
+        echo "ws: you are in $(ws_shown "$dir"); cd out of it first" >&2
+        return 1
+    fi
+    if [[ -n ${TMUX-} && $(tmux display-message -p '#{session_name}' 2>/dev/null) == "$id" ]]; then
+        echo "ws: this is the tmux session of $id; switch to another session first" >&2
+        return 1
+    fi
+    WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
+    ws_env_ok || return 1
+    ws_engine_mounts
+    d=$(mktemp -d) || return 1
+    mapfile -t wts < <(ws_worktrees "$dir")
+    for i in "${!wts[@]}"; do
+        ws_wt_facts "${wts[i]}" >"$d/$i" 2>/dev/null
+        sed 's/^in-use=.*/in-use=0/' "$d/$i" >"$d/$i.pre"
+        why=$(ws_keep_why "$d/$i.pre")
+        if [[ -n $why ]]; then
+            echo "ws: $(ws_shown "${wts[i]}"): ${why#KEEP }" >&2
+            fail=1
+        fi
+    done
+    if ((fail)); then
+        rm -rf -- "$d"
+        echo "ws: kept $id; ws prune -h explains each reason" >&2
+        return 1
+    fi
+
+    ticket_stop_sessions "$id" "$real"
+    for ((n = 0; n < 50; n++)); do
+        why=$(ws_cwd_count "$dir") || break
+        ((why != 0)) || break
+        sleep 0.1
+    done
+    WS_SCANNED_REPOS=()
+    for i in "${!wts[@]}"; do
+        WS_SCANNED_REPOS+=("$(ws_decode "$(ws_fact "$d/$i" common)")")
+    done
+    ws_engine_mounts
+    : "${WS_STAMP:=$(date -u +%Y%m%dT%H%M%SZ)}"
+    for i in "${!wts[@]}"; do
+        ws_wt_facts "${wts[i]}" >"$d/$i" 2>/dev/null
+        why=$(ws_keep_why "$d/$i")
+        if [[ -n $why ]]; then
+            echo "Kept $(ws_shown "${wts[i]}"): ${why#KEEP }"
+            fail=1
+        elif ! ws_trash_move "${wts[i]}" "$d/$i" pr "" state "" oid ""; then
+            fail=1
+        fi
+    done
+    rm -rf -- "$d"
+    if [[ -z ${WS_TICKET_TRASH[$dir]-} ]] && ((fail == 0)); then
+        WS_TICKET_TRASH[$dir]=$(ws_free_path "$WS_TRASH/$WS_STAMP" "-$id")
+        mkdir -p -- "${WS_TICKET_TRASH[$dir]}" || return 1
+    fi
+    if [[ -n ${WS_TICKET_TRASH[$dir]-} ]]; then
+        ws_trash_ticket_files "$dir"
+    fi
+    [[ ! -e $dir ]] || fail=1
+    if ((fail)); then
+        return 1
+    fi
+    echo "Removed ticket $id. ws prune --restore $id brings it back."
 }
 
 main() {
