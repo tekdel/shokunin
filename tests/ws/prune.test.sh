@@ -1427,16 +1427,28 @@ lost_commit() {
 }
 
 reachable() {
-    local repo=$WS_PROJECTS/alpha bundle
-    if git -C "$repo" rev-list --all --reflog | grep -qx "$1"; then
-        return 0
-    fi
+    local oid=$1 repo bundle
+    shift
+    for repo in "$WS_PROJECTS"/*/.git "$@"; do
+        if [[ -d $repo ]] && git --git-dir="$repo" rev-list --all --reflog 2>/dev/null | grep -x "$oid" >/dev/null; then
+            return 0
+        fi
+    done
     for bundle in "$(trash_dir)"/archive/*.bundle; do
-        if [[ -f $bundle ]] && git -C "$repo" bundle list-heads "$bundle" | grep -q "^$1 "; then
+        if [[ -f $bundle ]] && git bundle list-heads "$bundle" 2>/dev/null | grep "^$oid " >/dev/null; then
             return 0
         fi
     done
     return 1
+}
+
+head_only_commit() {
+    local branch
+    branch=$(git -C "$1" symbolic-ref -q --short HEAD) || abort "cannot read the branch of $1"
+    git -C "$1" checkout -q --detach || abort "cannot detach $1"
+    commit_file "$1" "$2.txt" "$2"
+    head_of "$1"
+    git -C "$1" checkout -q "$branch" || abort "cannot check out $branch in $1"
 }
 
 test_purge_keeps_entries_it_cannot_bundle() {
@@ -1607,7 +1619,8 @@ time.sleep(30)' "$FX/hidden.ready" &
     out=$(ws prune --purge --older-than 0d <<<y 2>/dev/null)
     assert_eq "an entry is KEEP unreadable while a process of ours hides its working directory" "KEEP unreadable" \
         "$(action_of "$out" "$entry")"
-    assert "the table names that process" grep -q "process 300 " <<<"$(detail_of "$out" "$entry")"
+    assert_eq "the table names that process" "process 300 (fake300) hides its working directory" \
+        "$(detail_of "$out" "$entry")"
     assert "purge keeps the entry" is_worktree "$entry"
 }
 
@@ -1870,8 +1883,7 @@ test_vanished_process() {
     fake_proc 240 1 "$FX"
     fake_proc 250 240
     fake_proc 300 250
-    mkdir "$WS_PROC/1000"
-    ln -s "$WS_PROC/1000/exited" "$WS_PROC/1000/status"
+    ln -s "$FX/exited" "$WS_PROC/1000"
     out=$(ws prune 2>/dev/null)
     assert_eq "a process that exits during the scan never hides a later process of ours" "KEEP unreadable" \
         "$(action_of "$out" "$WS_PROJECTS/alpha-merged")"
@@ -2083,7 +2095,7 @@ fi"
 }
 
 test_partial_remove() {
-    local variant m entry out cmd lost
+    local variant m entry out lost
     for variant in ignored git-first root; do
         new_fixture
         m=$WS_PROJECTS/alpha-merged
@@ -2105,17 +2117,12 @@ test_partial_remove() {
         esac
         out=$(ws prune --purge --older-than 0d <<<y 2>&1)
         refute "purge never tries to move back a worktree git no longer knows" grep -q "is not a working tree" <<<"$out"
-        cmd=$(grep -m1 '^ *chmod u+w -- ' <<<"$out")
         out=$(ws prune --restore nothing-like-this 2>&1)
-        assert_eq "restore lists one next step for it" 1 "$(grep -c '^ .*alpha-merged.purging' <<<"$out")"
-        bash -c "$cmd" >/dev/null 2>&1
-        refute "after a $variant partial remove, its printed step leaves nothing of it in the trash" \
-            compgen -G "$(trash_dir)/*alpha-merged*"
-        assert "that step keeps what git could not delete in the archive" \
-            compgen -G "$(trash_dir)/archive/*-alpha-merged/*"
+        assert "after a $variant partial remove, restore lists what is left" grep -q "alpha-merged.purging" <<<"$out"
+        refute "it prints no step that moves or deletes what is left" grep -q '^    .*alpha-merged' <<<"$out"
+        assert "the notes settle" settle
+        assert "what git could not delete stays in the trash" compgen -G "$(trash_dir)/*-alpha-merged.purging/*"
         assert "its reflog commit is in a bundle" reachable "$lost"
-        out=$(ws prune --restore nothing-like-this 2>&1)
-        refute "restore then lists nothing of it" grep -q alpha-merged <<<"$out"
     done
 }
 
@@ -2195,7 +2202,16 @@ follow_notes() {
 }
 
 destructive_note() {
-    grep -Eq '^ {4}.*(rm |rmdir |mv -T|mv -nT)' <<<"$1"
+    grep -Eq '^ {4}.*(rm |mv -T|mv -nT)' <<<"$1"
+}
+
+# rev-list --reflog still walks a stale worktree's reflogs until git worktree prune drops them.
+settle() {
+    local repo
+    follow_notes || return 1
+    for repo in "$WS_PROJECTS"/*/.git "$@"; do
+        [[ ! -d $repo ]] || git --git-dir="$repo" worktree prune || return 1
+    done
 }
 
 nothing_in_trash() {
@@ -2226,8 +2242,8 @@ test_engine_down_needs_every_line() {
         "$FX/bin/podman" >"$FX/wrap/podman"
     chmod +x "$FX/wrap/podman"
     out=$(PATH=$FX/wrap:$PATH ws prune 2>/dev/null)
-    assert_eq "an engine that times out is an error, whatever it printed" "KEEP unreadable" "$(action_of "$out" "$m")"
-    assert "the row says it timed out after 30 s" grep -q "podman ps timed out after 30 s" <<<"$(detail_of "$out" "$m")"
+    assert_eq "an engine that exits 124 is an error, whatever it printed" "KEEP unreadable" "$(action_of "$out" "$m")"
+    assert "the row names what it printed" grep -q "podman ps failed: WARN" <<<"$(detail_of "$out" "$m")"
 }
 
 test_engine_down_with_running_containers() {
@@ -2321,6 +2337,7 @@ test_container_processes() {
     local m=$WS_PROJECTS/alpha-merged out
     fake_proc 240 1 "$FX"
     fake_proc 700 1 "" "" containerd-shim-runc-v2
+    fake_cmdline 700 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 4f2a -address /run/containerd/containerd.sock
     fake_proc 701 700
     fake_proc 702 701
     fake_proc 710 1 "" "" conmon
@@ -2335,6 +2352,15 @@ test_container_processes() {
         "$(action_of "$out" "$m")"
     assert "the row names that process" grep -q "process 712 " <<<"$(detail_of "$out" "$m")"
     mv "$FX/bin/podman-off" "$FX/bin/podman"
+    fake_proc 740 1 "" "" containerd-shim-runc-v2
+    fake_cmdline 740 /usr/bin/containerd-shim-runc-v2 -namespace k8s.io -id 9c1d -address /run/k3s/containerd/containerd.sock
+    fake_proc 741 740
+    fake_proc 742 741
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a process below a containerd-shim of another containerd namespace hides its directory" "KEEP unreadable" \
+        "$(action_of "$out" "$m")"
+    assert "the row names that process" grep -q "process 742 " <<<"$(detail_of "$out" "$m")"
+    rm -r "$WS_PROC/740" "$WS_PROC/741" "$WS_PROC/742"
     fake_proc 720 999
     out=$(ws prune 2>/dev/null)
     assert_eq "a hidden process whose parent has no entry fails closed" "KEEP unreadable" "$(action_of "$out" "$m")"
@@ -2506,7 +2532,7 @@ fi'
     rm "$FX/bin/git"
     out=$(notes)
     assert "the next run says where git put the worktree" \
-        grep -qF "to ~/${entry#"$HOME/"}.purging/${entry##*/}." <<<"$out"
+        grep -qF "inside it, at ~/${entry#"$HOME/"}.purging/${entry##*/}." <<<"$out"
     refute "it never says the dir has no record" grep -q "alpha-merged.purging has no record" <<<"$out"
     refute "it prints no archive move or rm while that dir holds the worktree" destructive_note "$out"
     assert "the notes settle" follow_notes
@@ -2526,7 +2552,7 @@ test_notes_follow_a_moved_main_checkout() {
     out=$(notes)
     assert "the note says the main checkout moved" grep -q "so its main checkout moved" <<<"$out"
     assert "its first step repairs the worktree from there" \
-        grep -qx "    git -C ~/projects/alpha-moved worktree repair ~/${entry#"$HOME/"}" <<<"${out//$HOME/\~}"
+        grep -qx "    git -C ~/projects/alpha-moved worktree repair" <<<"${out//$HOME/\~}"
     refute "it prints no archive move or rm" destructive_note "$out"
     assert "the notes settle" follow_notes
     assert "following them puts the worktree back" is_worktree "$m"
@@ -2561,6 +2587,7 @@ fi'
     m=$WS_PROJECTS/alpha-merged
     ws prune --apply <<<y >/dev/null 2>&1
     entry=$(trash_of "$m")
+    echo "at=$FX/earlier" >>"$entry.meta"
     fake_git "if [[ \$2 == worktree && \$3 == move && \$5 == $(printf %q "$m") ]]; then
     mkdir -p \"\$5/logs\"
 elif [[ \$2 == worktree && \$3 == move && \$5 == $(printf %q "$entry") ]]; then
@@ -2571,6 +2598,7 @@ fi"
     assert "restore names where the worktree is after both moves nested" \
         grep -qF "it is at ~/${entry#"$HOME/"}/${entry##*/}" <<<"$out"
     assert "its record holds that path" grep -qx "at=$entry/${entry##*/}" "$entry.meta"
+    assert_eq "and only that path" 1 "$(grep -c '^at=' "$entry.meta")"
     assert "the notes settle" follow_notes
     assert "following them leaves the worktree listed out of the trash" is_worktree "$m.2"
     assert "and leaves nothing of it in the trash" nothing_in_trash alpha-merged
@@ -2587,16 +2615,21 @@ test_trash_temp_dirs_are_not_listed() {
 }
 
 test_ticket_files_never_hold_a_worktree() {
-    new_fixture
-    local b=$WS_ROOT/t1/beta entry nested
-    ws prune --apply <<<y >/dev/null 2>&1
-    entry=$(trash_of "$b")
-    nested=$entry.n/${entry##*/}
-    mkdir "$entry.n"
-    git -C "$entry" worktree move "$entry" "$nested"
-    rm "$entry.meta"
-    follow_notes
-    assert "no note moves a dir that holds a worktree one level down to the archive" is_worktree "$nested"
+    local depth b entry nested
+    for depth in 1 3; do
+        new_fixture
+        b=$WS_ROOT/t1/beta
+        ws prune --apply <<<y >/dev/null 2>&1
+        entry=$(trash_of "$b")
+        nested=$entry.n/${entry##*/}
+        [[ $depth == 1 ]] || nested=$entry.n/x/y
+        mkdir -p "${nested%/*}"
+        git -C "$entry" worktree move "$entry" "$nested"
+        rm "$entry.meta"
+        assert "the notes settle with a worktree $depth levels down in a ticket dir" settle
+        assert "no note moves it to the archive" test -z "$(find "$(trash_dir)" -path '*/archive/*' -name .git)"
+        assert "following them moves it out of the trash" is_worktree "$WS_ROOT/t1/beta.n"
+    done
 }
 
 test_restore_nest_then_kill() {
@@ -2619,6 +2652,407 @@ fi"
     assert "the notes settle" follow_notes
     assert "following them leaves the worktree listed out of the trash" is_worktree "$m.2"
     assert "and leaves nothing of it in the trash" nothing_in_trash alpha-merged
+}
+
+test_notes_trust_the_repo_that_lists_the_worktree() {
+    local variant m entry lost out
+    for variant in live stale; do
+        new_fixture
+        m=$WS_PROJECTS/alpha-merged
+        lost=$(head_only_commit "$m" l1)
+        ws prune --apply <<<y >/dev/null 2>&1
+        entry=$(trash_of "$m")
+        if [[ $variant == live ]]; then
+            echo "gitdir: $WS_PROJECTS/beta/.git/worktrees/beta" >"$entry/.git"
+        else
+            git -C "$WS_PROJECTS/beta" worktree add -q --detach "$FX/ghost" && rm -r "$FX/ghost"
+            echo "gitdir: $WS_PROJECTS/beta/.git/worktrees/ghost" >"$entry/.git"
+        fi
+        out=$(notes)
+        refute "an entry whose .git names a $variant worktree of another repo gets no archive move or rm" \
+            destructive_note "$out"
+        assert "its note repairs it from the repo that lists it, with no path" \
+            grep -qxF "$(printf '    git -C %q worktree repair' "$WS_PROJECTS/alpha")" <<<"$out"
+        assert "following the notes and pruning settles" settle
+        assert "the worktree is out of the trash" is_worktree "$m"
+        assert "the commit only its HEAD reflog held survives" reachable "$lost"
+        assert "the other repo's worktree stays where it was" is_worktree "$(trash_of "$WS_ROOT/t1/beta")"
+    done
+}
+
+test_notes_after_a_reclone() {
+    local variant m entry lost out old
+    for variant in inside samename outside; do
+        new_fixture
+        m=$WS_PROJECTS/alpha-merged
+        lost=$(head_only_commit "$m" l1)
+        ws prune --apply <<<y >/dev/null 2>&1
+        entry=$(trash_of "$m")
+        old=$WS_PROJECTS/alpha-old
+        [[ $variant != outside ]] || old=$FX/elsewhere/alpha
+        mkdir -p "${old%/*}"
+        mv "$WS_PROJECTS/alpha" "$old"
+        git clone -q https://github.com/fixture/alpha.git "$WS_PROJECTS/alpha" || abort "cannot clone alpha"
+        if [[ $variant == samename ]]; then
+            git -C "$WS_PROJECTS/alpha" worktree add -q -b other "$FX/x/alpha-merged" || abort "cannot add a worktree"
+        fi
+        out=$(notes)
+        refute "after a reclone $variant, no note archives or deletes the entry" destructive_note "$out"
+        assert "following the notes and pruning every repo settles" settle "$old/.git"
+        assert "the commit only its HEAD reflog held survives" reachable "$lost" "$old/.git"
+        if [[ $variant == outside ]]; then
+            assert "with the old repo outside WS_PROJECTS, the entry keeps its files" test -f "$entry/work.txt"
+            assert "and the old repo still lists it" grep -qxF "worktree $entry" \
+                <<<"$(git -C "$old" worktree list --porcelain)"
+        else
+            assert "the worktree is out of the trash" is_worktree "$m"
+            assert "the old repo lists it" grep -qxF "worktree $m" <<<"$(git -C "$old" worktree list --porcelain)"
+        fi
+    done
+}
+
+test_notes_with_copies_of_the_main_checkout() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged entry lost out
+    lost=$(head_only_commit "$m" l1)
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    cp -a "$WS_PROJECTS/alpha" "$WS_PROJECTS/alpha-copy"
+    cp -a "$WS_PROJECTS/alpha" "$WS_PROJECTS/alpha-copy2"
+    mkdir -p "$FX/elsewhere"
+    mv "$WS_PROJECTS/alpha" "$FX/elsewhere/alpha"
+    out=$(notes)
+    assert "with two copies that list the entry, its note names both" \
+        grep -q "listed by ~/projects/alpha-copy, ~/projects/alpha-copy2" <<<"$out"
+    refute "and prints no step" grep -q '^    ' <<<"$out"
+    assert "the entry stays" test -f "$entry/work.txt"
+    rm -r "$WS_PROJECTS/alpha-copy2"
+    assert "with one copy left, following the notes and pruning settles" settle "$FX/elsewhere/alpha/.git"
+    assert "the worktree is out of the trash" is_worktree "$m"
+    assert "the commit only its HEAD reflog held survives" reachable "$lost"
+}
+
+test_notes_find_a_worktree_two_levels_down() {
+    local variant m entry lost out
+    for variant in meta meta.tmp; do
+        new_fixture
+        m=$WS_PROJECTS/alpha-merged
+        lost=$(head_only_commit "$m" l1)
+        ws prune --apply <<<y >/dev/null 2>&1
+        entry=$(trash_of "$m")
+        [[ $variant == meta ]] || mv "$entry.meta" "$entry.meta.tmp"
+        git -C "$WS_PROJECTS/alpha" worktree move "$entry" "$FX/aside"
+        mkdir -p "$entry/x"
+        git -C "$WS_PROJECTS/alpha" worktree move "$FX/aside" "$entry/x/y"
+        out=$(notes)
+        refute "an entry with a $variant record and its worktree two levels down gets no archive move or rm" \
+            destructive_note "$out"
+        assert "its note names where the worktree is" grep -qF "inside it, at ~/${entry#"$HOME/"}/x/y." <<<"$out"
+        assert "following the notes and pruning settles" settle
+        assert "the worktree is out of the trash" is_worktree "$m"
+        assert "the commit only its HEAD reflog held survives" reachable "$lost"
+        assert "nothing of it stays in the trash" nothing_in_trash alpha-merged
+    done
+}
+
+test_notes_when_a_worktree_list_fails() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged c=$WS_PROJECTS/alpha-closed entry centry lost out
+    lost=$(head_only_commit "$m" l1)
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    centry=$(trash_of "$c")
+    mv "$entry.meta" "$entry.meta.tmp"
+    git -C "$WS_PROJECTS/alpha" worktree move "$centry" "$c"
+    fake_git 'if [[ " $* " == *" worktree list "* ]]; then echo "fatal: simulated" >&2; exit 128; fi'
+    out=$(notes)
+    rm "$FX/bin/git"
+    refute "no note prints a step while git worktree list fails" grep -q '^    ' <<<"$out"
+    assert "the notes say ws cannot read the worktree list" \
+        grep -q "ws cannot read the worktree list of ~/projects/alpha" <<<"$out"
+    refute "they never say git does not list a worktree" grep -q "does not list" <<<"$out"
+    assert "an entry whose repo cannot list its worktrees says why it stays" \
+        grep -q "^Kept ~/.*-t1/beta: ws cannot read the worktree list of ~/projects/beta\." <<<"$out"
+    assert "the record of a worktree out of the trash stays" test -f "$centry.meta"
+    assert "following the notes and pruning settles once the list works" settle
+    assert "the worktree is out of the trash" is_worktree "$m"
+    assert "the commit only its HEAD reflog held survives" reachable "$lost"
+    assert "nothing of it stays in the trash" nothing_in_trash alpha-merged
+}
+
+test_notes_follow_a_main_checkout_with_odd_paths() {
+    local name m lost
+    for name in 'al pha' $'al\npha'; do
+        new_fixture
+        m=$WS_PROJECTS/alpha-merged
+        lost=$(head_only_commit "$m" l1)
+        ws prune --apply <<<y >/dev/null 2>&1
+        mv "$WS_PROJECTS/alpha" "$WS_PROJECTS/$name"
+        assert "following the notes and pruning settles after the main checkout moves to $(printf %q "$name")" settle
+        assert "the worktree is out of the trash" is_worktree "$m"
+        assert "the commit only its HEAD reflog held survives" reachable "$lost"
+        assert "nothing of it stays in the trash" nothing_in_trash alpha-merged
+    done
+}
+
+test_one_step_per_worktree() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged entry out
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    git -C "$WS_PROJECTS/alpha" worktree move "$entry" "$entry.purging"
+    mkdir "$entry"
+    echo made by another process >"$entry/blocker.txt"
+    out=$(ws prune --restore nothing-like-this 2>&1)
+    assert_eq "a worktree at the .purging name of an entry another process took gets one move" 1 \
+        "$(grep -c ' worktree move ' <<<"$out")"
+    assert "following the notes and pruning settles" settle
+    assert "the worktree is out of the trash" is_worktree "$m"
+    assert "the other process's file stays" test -f "$entry/blocker.txt"
+}
+
+test_record_follows_a_repaired_repo() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged entry out
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    mv "$WS_PROJECTS/alpha" "$WS_PROJECTS/alpha-moved"
+    git -C "$WS_PROJECTS/alpha-moved" worktree repair >/dev/null 2>&1
+    out=$(ws prune --restore nothing-like-this 2>&1)
+    assert "ws says the record names the repo git now lists the worktree in" \
+        grep -q "^Record ~/.*-alpha-merged.meta now names ~/projects/alpha-moved" <<<"$out"
+    assert_eq "the record holds that repo" "$WS_PROJECTS/alpha-moved/.git" "$(sed -n 's/^common=//p' "$entry.meta")"
+    ws prune --restore alpha-merged >/dev/null 2>&1
+    assert "the entry restores from there" is_worktree "$m"
+    refute "and leaves no record" test -e "$entry.meta"
+
+    new_fixture
+    m=$WS_PROJECTS/alpha-merged
+    ws prune --apply <<<y >/dev/null 2>&1
+    mv "$WS_PROJECTS/alpha" "$WS_PROJECTS/al"$'\n'"pha"
+    git -C "$WS_PROJECTS/al"$'\n'"pha" worktree repair >/dev/null 2>&1
+    ws prune --restore nothing-like-this >/dev/null 2>&1
+    ws prune --restore alpha-merged >/dev/null 2>&1
+    assert "an entry whose repo moved to a path with a newline still restores" is_worktree "$m"
+}
+
+test_record_of_a_gone_worktree_stays() {
+    new_fixture
+    local c=$WS_PROJECTS/alpha-closed entry out
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$c")
+    git -C "$WS_PROJECTS/alpha" worktree move "$entry" "$c"
+    rm -r "$c"
+    out=$(notes)
+    assert "a record whose worktree git lists at a path that is gone is listed" \
+        grep -q "lists its worktree at ~/projects/alpha-closed, which holds no .git file" <<<"$out"
+    refute "it is never deleted" grep -q "rm -- .*alpha-closed.meta" <<<"$out"
+}
+
+test_purging_dir_in_a_ticket_is_no_ticket_file() {
+    new_fixture
+    local t=$WS_ROOT/t8 tdir
+    two_worktree_ticket "$t"
+    tdir=$(trash_of "$t/alpha")
+    tdir=${tdir%/*}
+    mv "$tdir/beta" "$tdir/beta.purging"
+    rm "$tdir/beta.purging/.git" "$tdir/beta.meta"
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    assert "purge deletes the other worktree of the ticket" test ! -e "$tdir/alpha"
+    assert "a .purging dir left in the ticket dir stays in place" test -f "$tdir/beta.purging/feat-t8b.txt"
+    assert "the ticket's files stay with it" test -f "$tdir/CLAUDE.md"
+}
+
+test_dead_runs_leave_no_temp_dirs() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged lost real left
+    lost=$(head_only_commit "$m" l1)
+    ws prune --apply <<<y >/dev/null 2>&1
+    real=$(PATH=$_base_path command -v ln)
+    printf '#!/usr/bin/env bash\nif [[ ${*: -1} == *.bundle ]]; then\n    %q "$@"\n    kill -KILL "$(ps -o ppid= -p "$PPID")" "$PPID"\n    exit 1\nfi\nexec %q "$@"\n' \
+        "$real" "$real" >"$FX/bin/ln"
+    chmod +x "$FX/bin/ln"
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    rm "$FX/bin/ln"
+    left=$(compgen -G "$(trash_dir)/.tmp.*")
+    assert "a purge killed while it saves a bundle leaves its temp dir" test -n "$left"
+    mkdir "$(trash_dir)/.tmp.$$.keepme"
+    ws prune --restore nothing-like-this >/dev/null 2>&1
+    refute "the next run removes the temp dir of the dead run" test -e "$left"
+    assert "it keeps the temp dir of a run that still runs" test -d "$(trash_dir)/.tmp.$$.keepme"
+    assert "the commit only its HEAD reflog held survives" reachable "$lost"
+}
+
+test_bundle_link_never_replaces_a_file() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged entry lost real bundle
+    lost=$(head_only_commit "$m" l1)
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    bundle=$(trash_dir)/archive/${entry##*/}.bundle
+    real=$(PATH=$_base_path command -v ln)
+    printf '#!/usr/bin/env bash\n[[ ${*: -1} != *.bundle ]] || echo someone-elses >"${*: -1}"\nexec %q "$@"\n' "$real" \
+        >"$FX/bin/ln"
+    chmod +x "$FX/bin/ln"
+    ws prune --purge --older-than 0d <<<y >/dev/null 2>&1
+    rm "$FX/bin/ln"
+    assert_eq "a file that appears at the bundle path just before the link stays as it was" someone-elses \
+        "$(<"$bundle")"
+    assert "the entry stays" is_worktree "$entry"
+    assert "the commit only its HEAD reflog held survives" reachable "$lost"
+}
+
+wrap_engine() {
+    mkdir -p "$FX/wrap"
+    printf '#!/usr/bin/env bash\n%s\nexec %q "$@"\n' "$2" "$FX/bin/$1" >"$FX/wrap/$1"
+    chmod +x "$FX/wrap/$1"
+}
+
+test_inspect_accounts_for_every_container() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged out
+    add_container docker web bind "$m"
+    add_container docker other bind "$FX/elsewhere"
+    wrap_engine docker "[[ \$1 != inspect ]] || exec $(printf %q "$FX/bin/docker") inspect id-other"
+    out=$(PATH=$FX/wrap:$PATH ws prune --apply <<<y 2>/dev/null)
+    assert_eq "inspect that exits 0 without one container ps listed is an error" "KEEP unreadable" \
+        "$(action_of "$out" "$m")"
+    assert "the row names that container" grep -q "docker inspect did not answer for container id-web" \
+        <<<"$(detail_of "$out" "$m")"
+    assert "the worktree stays in place" is_worktree "$m"
+
+    rm -r "$FX/wrap"
+    echo id-gone >"$FX/docker.gone"
+    wrap_engine docker "if [[ \$1 == inspect ]]; then $(printf %q "$FX/bin/docker") \"\$@\"; rc=\$?; echo 'Error: permission denied' >&2; exit \$rc; fi"
+    out=$(PATH=$FX/wrap:$PATH ws prune 2>/dev/null)
+    assert_eq "an inspect error line next to a gone container is an error" "KEEP unreadable" "$(action_of "$out" "$m")"
+    assert "the row names that line" grep -q "docker inspect failed: Error: permission denied" \
+        <<<"$(detail_of "$out" "$m")"
+}
+
+test_engine_exit_codes() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged out err
+    add_container docker web bind "$m"
+    wrap_engine docker '[[ $1 != ps ]] || exit 1'
+    out=$(PATH=$FX/wrap:$PATH ws prune 2>/dev/null)
+    assert_eq "an engine that fails with no message is an error, not a stopped daemon" "KEEP unreadable" \
+        "$(action_of "$out" "$m")"
+    assert "the row names the exit code" grep -q "docker ps failed: exit code 1" <<<"$(detail_of "$out" "$m")"
+
+    wrap_engine docker '[[ $1 != ps ]] || kill -KILL $$'
+    out=$(PATH=$FX/wrap:$PATH ws prune 2>/dev/null)
+    assert_eq "an engine killed at once is an error" "KEEP unreadable" "$(action_of "$out" "$m")"
+    assert "it is no timeout" grep -q "docker ps failed: exit code 137" <<<"$(detail_of "$out" "$m")"
+
+    wrap_engine docker 'if [[ $1 == ps ]]; then echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2; kill -KILL $$; fi'
+    out=$(PATH=$FX/wrap:$PATH ws prune 2>/dev/null)
+    assert_eq "an engine killed after it says the daemon is down is an error" "KEEP unreadable" "$(action_of "$out" "$m")"
+
+    rm -r "$FX/wrap"
+    printf '#!/usr/bin/env bash\n[[ " $* " != *" inspect "* ]] || kill -KILL $$\nexec %q "$@"\n' \
+        "$(PATH=$_base_path command -v timeout)" >"$FX/bin/timeout"
+    chmod +x "$FX/bin/timeout"
+    out=$(ws prune 2>"$FX/err")
+    err=$(<"$FX/err")
+    rm "$FX/bin/timeout"
+    assert_eq "an inspect killed by a signal is an error" "KEEP unreadable" "$(action_of "$out" "$m")"
+    refute "bash prints no job notice for it" grep -q Killed <<<"$err"
+
+    set_containers docker '[{Id: "id-a", Name: "/a", Mounts: [{Type: "bind", Source: "projects/alpha-merged"}]}]'
+    out=$(ws prune 2>/dev/null)
+    assert "a jq error names its input, not a temp path" grep -q "(at <stdin>:" <<<"$(detail_of "$out" "$m")"
+}
+
+test_engine_down_with_other_runtimes() {
+    local runtime m out
+    for runtime in crun runc runsc-sandbox conmon-rs; do
+        new_fixture
+        m=$WS_PROJECTS/alpha-merged
+        echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" \
+            >"$FX/docker.err"
+        fake_proc 600 1 "" "" "$runtime"
+        out=$(ws prune 2>/dev/null)
+        assert_eq "a stopped daemon with $runtime still running makes the worktree KEEP unreadable" "KEEP unreadable" \
+            "$(action_of "$out" "$m")"
+    done
+}
+
+test_process_status_must_be_read() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged out real
+    fake_proc 240 1 "$FX"
+    fake_proc 250 240 "$FX"
+    fake_proc 300 250
+    chmod 000 "$WS_PROC/300/status"
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a process of ours whose status file ws cannot read hides its directory" "KEEP unreadable" \
+        "$(action_of "$out" "$m")"
+    assert "the row names that process" grep -q "process 300 " <<<"$(detail_of "$out" "$m")"
+    chmod 644 "$WS_PROC/300/status"
+
+    real=$(PATH=$_base_path command -v awk)
+    printf '#!/usr/bin/env bash\nif [[ " $* " == *" me="* ]]; then cat >/dev/null; exit 0; fi\nexec %q "$@"\n' "$real" \
+        >"$FX/bin/awk"
+    chmod +x "$FX/bin/awk"
+    out=$(ws prune 2>/dev/null)
+    assert_eq "an awk that exits 0 with no output makes every worktree KEEP unreadable" \
+        "REMOVE 0  KEEP 9 (unreadable 9)" "$(tail -n 1 <<<"$out")"
+    printf '#!/usr/bin/env bash\nif [[ " $* " == *" me="* ]]; then %q "$@" | head -c 3; exit 0; fi\nexec %q "$@"\n' \
+        "$real" "$real" >"$FX/bin/awk"
+    out=$(ws prune 2>/dev/null)
+    rm "$FX/bin/awk"
+    assert_eq "an awk whose output is cut makes every worktree KEEP unreadable" \
+        "REMOVE 0  KEEP 9 (unreadable 9)" "$(tail -n 1 <<<"$out")"
+}
+
+test_zombie_rows_name_the_parent() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged out
+    fake_proc 240 1 "$FX"
+    fake_proc 650 240 "$FX" "" bash
+    fake_zombie 700 650 sh
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a zombie of ours makes the worktree KEEP unreadable" "KEEP unreadable" "$(action_of "$out" "$m")"
+    assert_eq "the row says whose zombie it is" "process 700 (sh) is a zombie child of process 650 (bash)" \
+        "$(detail_of "$out" "$m")"
+}
+
+test_notes_ask_the_recorded_repo_first() {
+    new_fixture
+    local g=$FX/outside/gamma t=$WS_ROOT/t9 entry out
+    git clone -q https://github.com/fixture/alpha.git "$g" || abort "cannot clone gamma"
+    mkdir -p "$t"
+    git -C "$g" worktree add -q -b feat/t9g "$t/gamma" || abort "cannot add a worktree of gamma"
+    commit_file "$t/gamma" g.txt gamma
+    git -C "$t/gamma" push -q -u origin feat/t9g || abort "cannot push feat/t9g"
+    add_pr alpha feat/t9g MERGED 90 "$(head_of "$t/gamma")"
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$t/gamma")
+    mv "$entry.meta" "$entry.meta.tmp"
+    out=$(notes)
+    assert "the note moves the worktree from the repo its record names, outside WS_PROJECTS" \
+        grep -qF "git -C $(printf %q "$g") worktree move $(printf %q "$entry")" <<<"$out"
+    assert "following the notes settles" settle
+    assert "the worktree is back in its ticket" is_worktree "$t/gamma"
+}
+
+test_notes_keep_a_dir_with_two_worktrees() {
+    new_fixture
+    local m=$WS_PROJECTS/alpha-merged c=$WS_PROJECTS/alpha-closed entry centry out
+    ws prune --apply <<<y >/dev/null 2>&1
+    entry=$(trash_of "$m")
+    centry=$(trash_of "$c")
+    git -C "$WS_PROJECTS/alpha" worktree move "$entry" "$FX/aside"
+    mkdir "$entry"
+    git -C "$WS_PROJECTS/alpha" worktree move "$FX/aside" "$entry/a"
+    git -C "$WS_PROJECTS/alpha" worktree move "$centry" "$entry/b"
+    out=$(ws prune --restore nothing-like-this 2>&1)
+    assert "an entry that holds two worktrees says so" grep -q "alpha-merged: .*more than one repository" <<<"$out"
+    refute "and prints no move for either" grep -q " worktree move .*${entry##*/}/[ab] " <<<"$out"
+    assert "following the notes and pruning settles" settle
+    assert "the first worktree stays where it is" is_worktree "$entry/a"
+    assert "the second too" is_worktree "$entry/b"
 }
 
 run_test test_dry_run
@@ -2717,4 +3151,23 @@ run_test test_double_nest_keeps_the_record
 run_test test_trash_temp_dirs_are_not_listed
 run_test test_ticket_files_never_hold_a_worktree
 run_test test_restore_nest_then_kill
+run_test test_notes_trust_the_repo_that_lists_the_worktree
+run_test test_notes_after_a_reclone
+run_test test_notes_with_copies_of_the_main_checkout
+run_test test_notes_find_a_worktree_two_levels_down
+run_test test_notes_when_a_worktree_list_fails
+run_test test_notes_follow_a_main_checkout_with_odd_paths
+run_test test_one_step_per_worktree
+run_test test_record_follows_a_repaired_repo
+run_test test_record_of_a_gone_worktree_stays
+run_test test_purging_dir_in_a_ticket_is_no_ticket_file
+run_test test_dead_runs_leave_no_temp_dirs
+run_test test_bundle_link_never_replaces_a_file
+run_test test_inspect_accounts_for_every_container
+run_test test_engine_exit_codes
+run_test test_engine_down_with_other_runtimes
+run_test test_process_status_must_be_read
+run_test test_zombie_rows_name_the_parent
+run_test test_notes_ask_the_recorded_repo_first
+run_test test_notes_keep_a_dir_with_two_worktrees
 finish

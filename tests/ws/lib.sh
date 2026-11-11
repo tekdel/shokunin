@@ -131,6 +131,18 @@ fake_proc() {
     } || abort "cannot make fake process $pid"
 }
 
+fake_cmdline() {
+    local pid=$1
+    shift
+    printf '%s\0' "$@" >"$WS_PROC/$pid/cmdline" || abort "cannot write the command line of fake process $pid"
+}
+
+fake_zombie() {
+    fake_proc "$1" "$2" "" "" "$3"
+    printf 'Name:\t%s\nState:\tZ (zombie)\nPPid:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$3" "$2" "$EUID" "$EUID" "$EUID" "$EUID" \
+        >"$WS_PROC/$1/status" || abort "cannot make fake zombie $1"
+}
+
 add_container() {
     local engine=$1 name=$2 type=$3 source=$4
     {
