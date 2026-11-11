@@ -2,7 +2,7 @@
 
 # Force tmux - if not in tmux, start a new session
 if [[ -z "$TMUX" ]] && [[ -n "$DISPLAY" || -n "$WAYLAND_DISPLAY" ]]; then
-    exec tmux new-session
+    exec tmux new-session -A -s main
 fi
 
 # Path to Oh My Zsh installation
@@ -72,8 +72,7 @@ fi
 # Tool Integrations
 # ============================================================================
 
-# tmux-sessionizer keybinding (Ctrl+f)
-bindkey -s '^f' "tmux-sessionizer\n"
+bindkey -s '^f' "ws pick\n"
 
 # Starship prompt (comment out if using Oh My Zsh theme)
 # if command -v starship >/dev/null 2>&1; then

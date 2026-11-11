@@ -3,9 +3,10 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: fixture.sh <root>
+usage: fixture.sh [--no-ticket] <root>
 
 Builds a ws sandbox at <root>, which must not exist or be empty.
+--no-ticket leaves out work/t1.
 
   origins/<repo>.git   bare origins for alpha and beta
   projects/            WS_PROJECTS: main clones and linked worktrees
@@ -23,6 +24,14 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   gh.out               create it to make gh print its content instead
   gh.slow              holds seconds for gh to sleep, and logs start and
                        end times to gh.times
+  bin/claude           claude shim: agents --json prints agents.json,
+                       stop <id> marks that session stopped, agents
+                       alone prints a banner and waits for a line, and
+                       anything else prints its arguments and sleeps
+  agents.json          the sessions claude agents --json lists, [] at
+                       first
+  claude.log           one line per claude call
+  bin/tmux             runs the real tmux on the socket name wsfx
   bin/docker           container engine shims, answer ps -q --no-trunc
   bin/podman           and inspect from <engine>.json
   <engine>.json        the running containers, [] at first: objects with
@@ -41,6 +50,11 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
 EOF
 }
 
+ticket=1
+if [[ ${1-} == --no-ticket ]]; then
+    ticket=0
+    shift
+fi
 [[ $# -eq 1 && $1 != -h && $1 != --help ]] || {
     usage >&2
     exit 1
@@ -53,8 +67,10 @@ root=$(cd "$1" && pwd)
 }
 
 projects=$root/projects
-mkdir -p "$root/origins" "$projects/notes" "$root/work/t1" "$root/vault" "$root/bin" \
+real_tmux=$(command -v tmux) || real_tmux=
+mkdir -p "$root/origins" "$projects/notes" "$root/work" "$root/vault" "$root/bin" \
     "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state"
+: >"$root/.zshrc"
 # A socket path under <root> can pass the 108-byte limit.
 tmux_dir=$(mktemp -d /tmp/wsx.XXXXXX)
 trap 'rm -rf -- "$tmux_dir"' EXIT
@@ -127,8 +143,10 @@ add_worktree alpha "$projects/alpha-closed" feat/closed
 add_worktree alpha "$projects/alpha-open" feat/open
 add_worktree alpha "$projects/alpha-nopr" feat/nopr
 git -C "$projects/alpha" worktree add -q --detach "$projects/alpha-detached"
-add_worktree alpha "$root/work/t1/alpha" feat/ticket
-add_worktree beta "$root/work/t1/beta" feat/ticket
+if ((ticket)); then
+    add_worktree alpha "$root/work/t1/alpha" feat/ticket
+    add_worktree beta "$root/work/t1/beta" feat/ticket
+fi
 
 : >"$root/prs.tsv"
 pr alpha feat/merged CLOSED 1 "$projects/alpha-merged"
@@ -137,11 +155,11 @@ pr alpha feat/dirty MERGED 3 "$projects/alpha-dirty"
 pr alpha feat/unpushed MERGED 4 "$projects/alpha-unpushed"
 pr alpha feat/closed CLOSED 5 "$projects/alpha-closed"
 pr alpha feat/open OPEN 6 "$projects/alpha-open"
-pr alpha feat/ticket OPEN 7 "$root/work/t1/alpha"
+((ticket == 0)) || pr alpha feat/ticket OPEN 7 "$root/work/t1/alpha"
 pr alpha feat/open MERGED 9 "$projects/alpha-open"
 pr alpha feat/merged CLOSED 10 "$projects/alpha-merged"
 pr alpha feat/dirty MERGED 11 "$projects/alpha-dirty"
-pr beta feat/ticket MERGED 1 "$root/work/t1/beta"
+((ticket == 0)) || pr beta feat/ticket MERGED 1 "$root/work/t1/beta"
 
 echo more >>"$projects/alpha-unpushed/work.txt"
 git -C "$projects/alpha-unpushed" commit -qam "local only"
@@ -245,4 +263,41 @@ chmod +x "$root/bin/docker"
 cp "$root/bin/docker" "$root/bin/podman"
 echo '[]' >"$root/docker.json"
 echo '[]' >"$root/podman.json"
+
+cat >"$root/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+printf '%s\n' "$*" >>"$root/claude.log"
+case ${1-} in
+agents)
+    if [[ " $* " == *" --json "* ]]; then
+        cat "$root/agents.json"
+        exit 0
+    fi
+    echo "claude agents (fixture shim)"
+    read -r _ || true
+    ;;
+stop | kill)
+    jq -e --arg id "${2-}" 'any(.[]; .id == $id)' "$root/agents.json" >/dev/null || {
+        echo "No background session ${2-}" >&2
+        exit 1
+    }
+    jq --arg id "$2" 'map(if .id == $id then .state = "stopped" | del(.pid, .status, .waitingFor) else . end)' \
+        "$root/agents.json" >"$root/agents.json.new"
+    mv "$root/agents.json.new" "$root/agents.json"
+    ;;
+*)
+    echo "claude $* (fixture shim)"
+    exec sleep infinity
+    ;;
+esac
+EOF
+chmod +x "$root/bin/claude"
+echo '[]' >"$root/agents.json"
+
+if [[ -n $real_tmux ]]; then
+    printf '#!/usr/bin/env bash\nexec %q -L wsfx "$@"\n' "$real_tmux" >"$root/bin/tmux"
+    chmod +x "$root/bin/tmux"
+fi
 trap - EXIT
