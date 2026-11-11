@@ -35,8 +35,8 @@ map('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus up' })
 map('n', '<C-d>', '<C-d>zz')
 map('n', '<C-u>', '<C-u>zz')
 
--- Tmux sessionizer
-map('n', '<C-f>', '<cmd>silent !tmux neww tmux-sessionizer<CR>')
+-- ws pick
+map('n', '<C-f>', '<cmd>silent !tmux neww ws pick<CR>')
 
 -- Make file executable
 map('n', '<leader>x', '<cmd>!chmod +x %<CR>', { silent = true })
