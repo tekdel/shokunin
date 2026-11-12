@@ -127,7 +127,7 @@ EOF
 test_up() {
     local out rc real envp
     new_fixture_no_ticket
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     envp=$(env_pane t1)
     shell_ready "$envp"
     real=$(realpath -e "$WS_ROOT/t1")
@@ -169,7 +169,7 @@ test_up_passes_the_profiles_of_the_ticket_repos() {
     new_fixture_no_ticket
     add_repo gamma
     ws_config 'WS_DEFAULT_REPOS=alpha' 'WS_UP_PROFILES="beta:worker gamma:portal gamma:worker"'
-    ws new t1 feat/x beta gamma >/dev/null 2>&1
+    ws new t1 feat/x +beta +gamma >/dev/null 2>&1
     real=$(realpath -e "$WS_ROOT/t1")
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 0" 0 "$rc"
@@ -189,7 +189,7 @@ test_up_names_the_repos_without_a_service() {
     add_repo gamma
     add_repo delta
     ws_config 'WS_DEFAULT_REPOS=alpha' 'WS_UP_PROFILES=gamma:portal'
-    ws new --only t1 feat/x delta beta >/dev/null 2>&1
+    ws new --only t1 feat/x +delta +beta >/dev/null 2>&1
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up of a ticket with no default or mapped repo exits 0" 0 "$rc"
     assert_eq "it runs dockyard up as before, so the core stack starts" 1 "$(dockyard_calls "up feat/x")"
@@ -198,7 +198,7 @@ test_up_names_the_repos_without_a_service() {
         "$(grep -F "no dockyard service" <<<"$out")"
 
     rm "$XDG_CONFIG_HOME/ws/config"
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     out=$(ws up t2 2>&1) && rc=0 || rc=$?
     refute "without either setting, up names no repo" grep -qF "no dockyard service" <<<"$out"
     assert_eq "and runs dockyard up as before" 1 "$(dockyard_calls "up feat/y")"
@@ -208,7 +208,7 @@ test_up_refuses_a_bad_profile_pair() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_UP_PROFILES="beta:portal gamma"'
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 1 on a WS_UP_PROFILES word that is not repo:profile" 1 "$rc"
     assert_eq "it names the word and the config" \
@@ -224,7 +224,7 @@ test_up_migrate() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_UP_MIGRATE="beta=npx prisma migrate deploy; alpha = bin/migrate --to=head;"'
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
     assert_eq "up --migrate exits 0" 0 "$rc"
     assert_eq "it runs dockyard up first" 1 "$(dockyard_calls "up feat/x")"
@@ -257,7 +257,7 @@ test_up_migrate_stops_at_the_first_failure() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_UP_MIGRATE="alpha=bin/migrate; beta=bin/migrate"'
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     echo "alpha 3" >"$FX/docker.exec-exit"
     out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
     assert_eq "up --migrate exits with the status of the command that failed" 3 "$rc"
@@ -273,7 +273,7 @@ test_up_migrate_without_commands() {
     local out rc
     new_fixture_no_ticket
     add_repo gamma
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
     assert_eq "up --migrate with no WS_UP_MIGRATE exits 0" 0 "$rc"
     assert_eq "it says in one line that there is nothing to migrate" 1 \
@@ -293,7 +293,7 @@ test_up_migrate_needs_the_containers() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_UP_MIGRATE="alpha=bin/migrate; beta=bin/migrate"'
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     { jq 'map(select(.Labels["com.docker.compose.service"] != "beta"))' "$FX/docker.json" >"$FX/docker.json.new" &&
         mv "$FX/docker.json.new" "$FX/docker.json"; } || abort "cannot stop the beta container"
@@ -315,7 +315,7 @@ test_up_migrate_refuses_a_bad_setting() {
         "alpha=bin/a; alpha=bin/b|ws: WS_UP_MIGRATE in the environment gives alpha more than one command"
     )
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     for value in "${bad[@]}"; do
         out=$(WS_UP_MIGRATE=${value%%|*} ws up --migrate t1 2>&1) && rc=0 || rc=$?
         assert_eq "up --migrate exits 1 on WS_UP_MIGRATE=${value%%|*}" 1 "$rc"
@@ -337,7 +337,7 @@ test_up_migrate_after_wait() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_UP_MIGRATE=alpha=bin/migrate'
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     answer 4100 200
     answer 8100 200
     out=$(WS_UP_TIMEOUT=10 ws up --wait --migrate t1 2>&1) && rc=0 || rc=$?
@@ -367,7 +367,7 @@ test_up_help_documents_migrate() {
 test_up_twice() {
     local out rc pane envp
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     envp=$(env_pane t1)
     shell_ready "$envp"
     ws up t1 >/dev/null 2>&1
@@ -416,7 +416,7 @@ test_up_twice() {
 test_down() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     out=$(ws down t1 2>&1) && rc=0 || rc=$?
     assert_eq "down exits 0" 0 "$rc"
@@ -457,7 +457,7 @@ test_down() {
     assert_eq "it clears the URLs" "" "$(ws_value t1 WS_URLS)"
     rm "$FX/dockyard.down-fail"
 
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     out=$(ws down t2 2>&1) && rc=0 || rc=$?
     assert_eq "down of a ticket without an env exits 0" 0 "$rc"
     assert "it says the ticket has no env" grep -qxF "t2 has no env." <<<"$out"
@@ -467,7 +467,7 @@ test_down() {
 test_up_fails() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     touch "$FX/dockyard.lock"
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up exits with dockyard's status 2 on a lock problem" 2 "$rc"
@@ -487,7 +487,7 @@ test_up_fails() {
     rm "$FX/dockyard.build"
 
     echo x- >"$FX/dockyard.prefix"
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     out=$(ws up t2 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 1 when dockyard names the stack another way" 1 "$rc"
     assert "it names both stack names" grep -qxF "ws: dockyard named the stack 'x-feat-y', not feat-y" <<<"$out"
@@ -507,7 +507,7 @@ test_up_fails() {
 test_up_wait() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     answer 4100 000 200
     answer 8100 404
     out=$(WS_UP_TIMEOUT=10 ws up t1 --wait 2>&1) && rc=0 || rc=$?
@@ -560,7 +560,7 @@ test_up_needs_a_ticket() {
 test_rm_stops_the_env_first() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     out=$(ws rm t1 2>&1) && rc=0 || rc=$?
     assert_eq "rm of a ticket whose env runs exits 0" 0 "$rc"
@@ -586,8 +586,8 @@ test_rm_stops_the_env_first() {
 test_rm_purge() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     ws up t2 >/dev/null 2>&1
     assert_eq "the second ticket gets slot 2" 2 "$(ws_value t2 WS_SLOT)"
@@ -627,7 +627,7 @@ test_rm_purge() {
 test_purge_checks_the_record_again() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     mkdir "$FX/elsewhere"
     echo "$FX/elsewhere" >"$FX/dockyard.steal"
@@ -643,8 +643,8 @@ test_purge_checks_the_record_again() {
 test_another_tickets_stack() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/a-b alpha >/dev/null 2>&1
-    ws new t2 feature/feat-a-b beta >/dev/null 2>&1
+    ws new t1 feat/a-b +alpha >/dev/null 2>&1
+    ws new t2 feature/feat-a-b +beta >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     out=$(ws up t2 2>&1) && rc=0 || rc=$?
     assert_eq "up of a branch whose stack another ticket holds exits 1" 1 "$rc"
@@ -667,7 +667,7 @@ test_another_tickets_stack() {
     assert_eq "the holder keeps its volumes" 2 "$(volumes_of feat-a-b)"
 
     dockyard up feat/z >/dev/null 2>&1
-    ws new t3 feat/z alpha >/dev/null 2>&1
+    ws new t3 feat/z +alpha >/dev/null 2>&1
     out=$(ws down t3 2>&1) && rc=0 || rc=$?
     assert "down leaves a stack that has no workspace" \
         grep -qxF "ws: dockyard stack feat-z is registered with no workspace, so ws leaves it" <<<"$out"
@@ -680,14 +680,14 @@ test_another_tickets_stack() {
 test_stack_name_follows_dockyard() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 fix/Alpha_Beta.2 alpha >/dev/null 2>&1
+    ws new t1 fix/Alpha_Beta.2 +alpha >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     assert_eq "up finds the record that dockyard names alpha-beta-2" 1 "$(ws_value t1 WS_SLOT)"
     out=$(ws down t1 2>&1) && rc=0 || rc=$?
     assert_eq "down finds it too" 1 "$(dockyard_calls "down fix/Alpha_Beta.2")"
     assert_eq "and stops it" 0 "$(containers_of alpha-beta-2)"
 
-    ws new t2 feat/A_-b_ beta >/dev/null 2>&1
+    ws new t2 feat/A_-b_ +beta >/dev/null 2>&1
     ws up t2 >/dev/null 2>&1
     assert_eq "up finds the record of a branch whose name squeezes to feat-a-b" 2 "$(ws_value t2 WS_SLOT)"
 
@@ -701,7 +701,7 @@ test_stack_name_follows_dockyard() {
 test_claude_md_env_block() {
     local before
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     assert "a new ticket's CLAUDE.md says no env runs" \
         grep -qxF "No dockyard env runs for this ticket. \`ws up\` starts one." "$WS_ROOT/t1/CLAUDE.md"
     echo "my notes" >>"$WS_ROOT/t1/CLAUDE.md"
@@ -713,26 +713,26 @@ test_claude_md_env_block() {
     refute "down takes the URLs out" grep -qF "http://localhost" "$WS_ROOT/t1/CLAUDE.md"
     assert "down keeps the notes" grep -qx "my notes" "$WS_ROOT/t1/CLAUDE.md"
 
-    ws new t2 feat/y alpha >/dev/null 2>&1
+    ws new t2 feat/y +alpha >/dev/null 2>&1
     ws up t2 >/dev/null 2>&1
-    ws new t2 feat/y alpha beta >/dev/null 2>&1
+    ws new t2 feat/y +alpha +beta >/dev/null 2>&1
     assert "new rewrites an unedited file that holds URLs with the new repo" \
         grep -qF "\`beta/\` belongs to \`~/projects/beta\`" "$WS_ROOT/t2/CLAUDE.md"
     assert "and keeps the URLs" grep -qxF -- "- web-ui: http://localhost:4200" "$WS_ROOT/t2/CLAUDE.md"
 
-    ws new t3 feat/z alpha >/dev/null 2>&1
+    ws new t3 feat/z +alpha >/dev/null 2>&1
     claude_md_of_2_0_72 t3 feat/z alpha >"$WS_ROOT/t3/CLAUDE.md"
     ws up t3 >/dev/null 2>&1
     assert "up rewrites an unedited file that ws 2.0.72 wrote" \
         grep -qxF -- "- web-ui: http://localhost:4300" "$WS_ROOT/t3/CLAUDE.md"
 
-    ws new t4 feat/w alpha >/dev/null 2>&1
+    ws new t4 feat/w +alpha >/dev/null 2>&1
     { claude_md_of_2_0_72 t4 feat/w alpha && echo "my notes"; } >"$WS_ROOT/t4/CLAUDE.md"
     before=$(cat "$WS_ROOT/t4/CLAUDE.md")
     ws up t4 >/dev/null 2>&1
     assert_eq "up leaves an edited file without an env block as it was" "$before" "$(cat "$WS_ROOT/t4/CLAUDE.md")"
 
-    ws new t5 feat/v alpha >/dev/null 2>&1
+    ws new t5 feat/v +alpha >/dev/null 2>&1
     grep -vxF '<!-- /ws env -->' "$WS_ROOT/t5/CLAUDE.md" >"$FX/t5.md" && echo "my notes" >>"$FX/t5.md"
     cp "$FX/t5.md" "$WS_ROOT/t5/CLAUDE.md"
     ws up t5 >/dev/null 2>&1
@@ -743,7 +743,7 @@ test_claude_md_env_block() {
 test_env_pane_keeps_user_programs() {
     local out rc pane kid cmd envp user
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     envp=$(env_pane t1)
     shell_ready "$envp"
     mkdir "$FX/userbin"
@@ -794,7 +794,7 @@ test_env_pane_keeps_user_programs() {
 test_env_pane_after_the_tail() {
     local out pane orphan i envp
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     envp=$(env_pane t1)
     shell_ready "$envp"
     touch "$FX/docker.logs-exit"
@@ -848,7 +848,7 @@ test_env_pane_after_the_tail() {
 test_up_from_the_shell_pane() {
     local out rc envp shellp pane kid i
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     envp=$(env_pane t1) shellp=$(shell_pane t1)
     shell_ready "$envp"
     shell_ready "$shellp"
@@ -882,7 +882,7 @@ test_up_from_the_shell_pane() {
 test_up_prefers_the_env_pane() {
     local envp pane
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     envp=$(env_pane t1)
     tmux new-window -d -a -t "=t1:{end}" -n env -c "$WS_ROOT/t1"
     shell_ready "$envp"
@@ -897,7 +897,7 @@ test_up_prefers_the_env_pane() {
 test_up_in_a_session_of_an_older_ws() {
     local out rc pane shellp kid
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     remake_session t1 claude shell env
     shellp=$(shell_pane t1)
     shell_ready "=t1:env"
@@ -945,7 +945,7 @@ test_up_in_a_session_of_an_older_ws() {
 test_up_makes_the_env_pane() {
     local pane
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     remake_session t1 claude shell
     pane=$(pane_of "$(shell_pane t1)")
     ws up t1 >/dev/null 2>&1
@@ -966,7 +966,7 @@ test_up_makes_the_env_pane() {
 test_up_splits_below_every_tiled_pane() {
     local left right float envp
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     remake_session t1 claude shell
     left=$(tmux display-message -p -t "=t1:shell" '#{pane_id}')
     right=$(tmux split-window -h -d -t "$left" -P -F '#{pane_id}')
@@ -999,7 +999,7 @@ test_help_names_the_split_shell_window() {
 test_up_urls_that_do_not_fit() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     ws up t1 >/dev/null 2>&1
     echo '[]' >"$FX/docker.json"
     echo "http://localhost:4100/\$(id)" >"$FX/dockyard.web-url"
@@ -1010,7 +1010,7 @@ test_up_urls_that_do_not_fit() {
     assert_eq ".ws holds no URLs of the earlier up" "" "$(ws_value t1 WS_URLS)"
     assert "ls shows env:down" grep -q " env:down " <<<"$(ls_row t1)"
 
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     ws up t2 >/dev/null 2>&1
     assert_eq "a first up records the slot alone" 2 "$(ws_value t2 WS_SLOT)"
 }
@@ -1018,8 +1018,8 @@ test_up_urls_that_do_not_fit() {
 test_up_names_the_ticket_that_holds_the_stack() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feature/c-d alpha >/dev/null 2>&1
-    ws new t2 c/d beta >/dev/null 2>&1
+    ws new t1 feature/c-d +alpha >/dev/null 2>&1
+    ws new t2 c/d +beta >/dev/null 2>&1
     realpath -e "$WS_ROOT/t1" >"$FX/dockyard.claim"
     out=$(ws up t2 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 1 when another up claims the stack first" 1 "$rc"
@@ -1032,7 +1032,7 @@ test_up_names_the_ticket_that_holds_the_stack() {
 test_claude_md_markers() {
     local out
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     {
         echo "# My notes"
         echo '```'
@@ -1050,13 +1050,13 @@ test_claude_md_markers() {
     ws down t1 >/dev/null 2>&1
     assert_eq "down leaves it too" "$(cat "$FX/t1.md")" "$(cat "$WS_ROOT/t1/CLAUDE.md")"
 
-    ws new t2 feat/y alpha >/dev/null 2>&1
+    ws new t2 feat/y +alpha >/dev/null 2>&1
     { echo "<!-- /ws env -->" && cat "$WS_ROOT/t2/CLAUDE.md"; } >"$FX/t2.md"
     cp "$FX/t2.md" "$WS_ROOT/t2/CLAUDE.md"
     ws up t2 >/dev/null 2>&1
     assert_eq "up leaves a file with a second end marker as it was" "$(cat "$FX/t2.md")" "$(cat "$WS_ROOT/t2/CLAUDE.md")"
 
-    ws new t3 feat/z alpha >/dev/null 2>&1
+    ws new t3 feat/z +alpha >/dev/null 2>&1
     grep -vxF "<!-- /ws env -->" "$WS_ROOT/t3/CLAUDE.md" >"$FX/t3.md"
     sed -i '1i <!-- /ws env -->' "$FX/t3.md"
     cp "$FX/t3.md" "$WS_ROOT/t3/CLAUDE.md"
@@ -1068,7 +1068,7 @@ test_claude_md_markers() {
 test_claude_md_keeps_the_file() {
     local f
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     f=$WS_ROOT/t1/CLAUDE.md
     printf 'my notes\n\n\n' >>"$f"
     chmod 640 "$f"
@@ -1082,7 +1082,7 @@ test_claude_md_keeps_the_file() {
     ws down t1 >/dev/null 2>&1
     assert "down writes through the same link" grep -qF "is down and keeps slot 1." "$FX/t1-link"
 
-    ws new t2 feat/y alpha >/dev/null 2>&1
+    ws new t2 feat/y +alpha >/dev/null 2>&1
     chmod 444 "$WS_ROOT/t2/CLAUDE.md"
     cp "$WS_ROOT/t2/CLAUDE.md" "$FX/t2.md"
     ws up t2 >/dev/null 2>&1
@@ -1093,7 +1093,7 @@ test_claude_md_keeps_the_file() {
 test_drop_fixtures_waits_for_the_panes() {
     local pid sandbox
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     tmux respawn-pane -k -t "$(env_pane t1)" bash -c "trap 'sleep 1; : >\"\$HOME/late\"' HUP; sleep infinity & wait"
     pid=$(tmux display-message -p -t "$(env_pane t1)" '#{pane_pid}')
     child_of "$pid" >/dev/null || abort "the env pane does not run its sleep"

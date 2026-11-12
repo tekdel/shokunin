@@ -23,6 +23,9 @@ WS_META_KEYS="orig common branch head ticket pr state oid time"
 WS_PROC_PID_INIT_INO=4026531836
 WS_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 WS_BRANCH_RE='^[A-Za-z0-9][A-Za-z0-9._/+@-]*$'
+WS_KEY_RE='^[A-Za-z][A-Za-z0-9]*-[0-9]+$'
+WS_ID_MAX=48
+WS_ID_FILLER=" a an and at by for from in of on the to with "
 WS_KEYS="WS_ID WS_TICKET WS_BRANCH WS_REPOS WS_TOPIC WS_STAGE WS_SCENARIOS_SHA256 WS_SLOT WS_URLS WS_CREATED"
 WS_STAGES="spec planned building verifying qa review merged"
 WS_OPERATOR_STAGES="planned qa review"
@@ -37,7 +40,7 @@ declare -gA WS_COMMANDS=(
     [done]="set a ticket to merged, run vault-consolidate, and offer ws rm"
     [down]="stop the dockyard env of a ticket and keep its slot"
     [ls]="list the tickets"
-    [new]="make or repair a ticket of the default and named repos, with its tmux session"
+    [new]="make or repair the ticket of a Jira key or a name, with its worktrees and tmux session"
     [pick]="pick a ticket, the projects folder, a project, or the vault and switch to its tmux session"
     [prune]="list worktrees whose PR merged or closed, --apply moves them to the trash"
     [rm]="stop a ticket's sessions and env and move its worktrees to the trash"
@@ -47,12 +50,13 @@ declare -gA WS_COMMANDS=(
     [up]="start the dockyard env of a ticket and record its slot and URLs"
     [verify]="run the holdout scenarios of a ticket against its env in a background Claude session"
 )
-declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=() P_STATES=()
+declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_BAD=() P_STATES=() WS_FETCHED=()
 declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=() R_PATH=() R_TEXT=()
 declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
 declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=() WS_CWD_PIDS=()
 declare -ga TICKET_OLD=() TICKET_REPOS=() TICKET_ADD=()
+TICKET_KEY=
 WS_ENGINE_ERR="ws did not ask the container engines"
 WS_ENGINES_OK=
 WS_MOVED_TO=
@@ -2498,8 +2502,8 @@ ws_prune() {
 
 ticket_usage() {
     cat <<'EOF'
-usage: ws new [--ticket <key>] [--topic <name>] [--only] <id> <branch> [<repo>...]
-       ws adopt <id> <worktree>...
+usage: ws new [--only] <key|name> [<words>|<branch>] [+<repo>...]
+       ws adopt <key|name> <worktree>...
        ws ls
        ws pick [--print]
        ws stage [<id>] <stage>
@@ -2517,25 +2521,36 @@ that denies Claude edits of the ticket's scenarios, .ws, and evidence,
 and one git worktree of $WS_PROJECTS/<repo> per repo, all on one branch.
 Its tmux session is named <id> and has the windows claude and shell. The
 shell window has an interactive shell on top and the env pane below,
-about 40% of its height, where ws up tails the container logs. Ids,
---ticket, and --topic take ASCII letters, digits, dots, dashes, and
-underscores.
+about 40% of its height, where ws up tails the container logs. An id
+takes ASCII letters, digits, dots, dashes, and underscores. Every
+command that takes an <id> also takes the Jira key of the ticket.
+<topic> is WS_TOPIC in .ws, which ws new sets to the id.
 
   new     make what is missing of the ticket: the worktrees, .ws,
           CLAUDE.md, .claude/settings.json, and the tmux session, whose
           claude window runs claude -n <id>. Then switch to the
-          session. A branch that exists in neither the repo nor origin
-          starts from origin's default branch with no upstream. A new
-          ticket gets the default repos first, then the repos you name,
+          session. A first argument such as ABC-12 is a Jira key, which
+          .ws keeps as WS_TICKET. With only the key, the branch is the
+          one branch that holds the key in the ticket's repos, local or
+          on origin. Words make the branch feat/ABC-12-<words>, and an
+          argument with a / is the branch itself. The id is the key
+          without its dash and up to three words of the branch after
+          it, such as abc12-sync-reports. Any other first argument is
+          a name, which is the id, on the branch feat/<name> or
+          feat/<words>. A branch that exists in neither the repo nor
+          origin starts from origin's default branch with no upstream.
+          A new ticket gets the default repos first, then each +<repo>,
           each once. --only skips the defaults and takes at least one
-          repo. A rerun adds only the repos you name, never the
-          defaults, and keeps the stage. It writes CLAUDE.md again only
-          while nobody has edited it, and adds the deny rules to a
+          +<repo>. A rerun finds the ticket by its id or key, repairs
+          it, adds only the +<repo>s, never the defaults, and keeps the
+          branch and the stage. It writes CLAUDE.md again only while
+          nobody has edited it, and adds the deny rules to a
           settings.json that someone edited.
   adopt   move linked worktrees of one branch into the ticket with git
           worktree move, then do what new does with exactly those
-          repos. No process may work in them, no container may mount
-          them, and no other ticket may hold them.
+          repos. A key takes its id from their branch, as new does.
+          No process may work in them, no container may mount them,
+          and no other ticket may hold them.
   ls      list the tickets with their stage, the Claude sessions that
           wait on you, PR state, env state, and branch.
   pick    list the tickets, then $WS_PROJECTS itself, then the other
@@ -2647,7 +2662,7 @@ ${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines and
 WS_DEFAULT_REPOS lists the default repos of ws new, the repos whose
 services dockyard starts without a profile. An empty WS_DEFAULT_REPOS
 in the environment turns the defaults off. Without defaults, ws new
-needs at least one repo. WS_UP_PROFILES holds <repo>:<profile> pairs
+needs at least one +<repo>. WS_UP_PROFILES holds <repo>:<profile> pairs
 for ws up.
 
 WS_UP_MIGRATE holds <repo>=<command> entries for ws up --migrate,
@@ -2832,7 +2847,7 @@ ticket_scan() {
     local dir id
     local -A kv=()
     T_IDS=() T_PLAIN=()
-    T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=()
+    T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_BAD=()
     for dir in "$WS_ROOT"/*/; do
         dir=${dir%/}
         [[ -d $dir && ! -L $dir && $dir != *[$'\t\n']* ]] || continue
@@ -2849,6 +2864,7 @@ ticket_scan() {
         T_STAGE[$id]=${kv[WS_STAGE]-}
         T_BRANCH[$id]=${kv[WS_BRANCH]-}
         T_REPOS[$id]=${kv[WS_REPOS]-}
+        T_KEY[$id]=${kv[WS_TICKET]-}
         T_ENV[$id]=
         if [[ -n ${kv[WS_URLS]-} ]]; then
             T_ENV[$id]=up
@@ -2877,11 +2893,44 @@ ticket_here() {
     return 1
 }
 
+ticket_is_key() {
+    local LC_ALL=C
+    [[ $1 =~ $WS_KEY_RE ]]
+}
+
+# The id of an existing ticket wins over a key of the same shape, so the ids an older ws made keep working.
+# REPLY is the id, or empty for a key that no ticket has. TICKET_KEY is the key, or empty for an id.
+ticket_lookup() {
+    local id key LC_ALL=C
+    local -a ids=()
+    TICKET_KEY=
+    REPLY=$1
+    ticket_check_id "$1" || return 1
+    if [[ -e $WS_ROOT/$1/.ws || -L $WS_ROOT/$1/.ws ]] || ! ticket_is_key "$1"; then
+        return 0
+    fi
+    TICKET_KEY=${1^^}
+    ticket_scan
+    for id in "${T_IDS[@]}"; do
+        key=${T_KEY[$id]-}
+        [[ ${key^^} != "$TICKET_KEY" ]] || ids+=("$id")
+    done
+    if ((${#ids[@]} > 1)); then
+        echo "ws: the tickets ${ids[*]} all have the key $TICKET_KEY; name one by its id" >&2
+        return 1
+    fi
+    REPLY=${ids[0]-}
+}
+
 ticket_target() {
     local dir
     if (($# > 1)); then
-        ticket_check_id "$2" || return 1
-        dir=$WS_ROOT/$2
+        ticket_lookup "$2" || return 1
+        if [[ -z $REPLY ]]; then
+            echo "ws: no ticket has the key $TICKET_KEY" >&2
+            return 1
+        fi
+        dir=$WS_ROOT/$REPLY
     else
         dir=$(ticket_here "$1") || return 1
     fi
@@ -2931,12 +2980,19 @@ ticket_wt_blocker() {
     fi
 }
 
-ticket_wt_add() {
-    local wt=$1/$2 repo=$2 branch=$3 main=$WS_PROJECTS/$2 base from
+ticket_fetch() {
+    local main=$WS_PROJECTS/$1
+    [[ -z ${WS_FETCHED[$1]+set} ]] || return 0
+    WS_FETCHED[$1]=1
     if git -C "$main" remote get-url origin >/dev/null 2>&1 &&
         ! GIT_TERMINAL_PROMPT=0 timeout -k 5 60 git -C "$main" fetch -q origin </dev/null; then
-        echo "ws: cannot fetch origin of $repo, so $branch starts from what $(ws_shown "$main") has" >&2
+        echo "ws: cannot fetch origin of $1, so $2 what $(ws_shown "$main") has" >&2
     fi
+}
+
+ticket_wt_add() {
+    local wt=$1/$2 repo=$2 branch=$3 main=$WS_PROJECTS/$2 base from
+    ticket_fetch "$repo" "$branch starts from"
     if git -C "$main" show-ref --verify -q "refs/heads/$branch"; then
         git -C "$main" worktree add -q "$wt" "$branch" </dev/null || return 1
         from="the existing branch"
@@ -3055,6 +3111,11 @@ ticket_claude_refresh() {
 ticket_stack_name() {
     local s=$1 LC_ALL=C
     [[ ! $s =~ ^(feature|fix|hotfix|release)/(.*)$ ]] || s=${BASH_REMATCH[2]}
+    ws_slug "$s"
+}
+
+ws_slug() {
+    local s=$1 LC_ALL=C
     s=${s,,}
     s=${s//[^a-z0-9-]/-}
     while [[ $s == *--* ]]; do
@@ -3380,15 +3441,14 @@ ticket_deny_edits() {
 }
 
 ticket_make() {
-    local id=$1 branch=$2 ticket=$3 topic=$4 dir=$WS_ROOT/$1 repo fail=0
+    local id=$1 branch=$2 key=$3 dir=$WS_ROOT/$1 repo fail=0
     local -a extra=()
     local -A kv=()
-    shift 4
+    shift 3
     ticket_check "$id" "$branch" "" "$@" || return 1
 
     mkdir -p -- "$dir" || return 1
-    [[ -z $ticket ]] || extra+=(WS_TICKET "$ticket")
-    [[ -z $topic ]] || extra+=(WS_TOPIC "$topic")
+    [[ -z $key ]] || extra+=(WS_TICKET "$key")
     ticket_update "$dir" set WS_ID "$id" WS_BRANCH "$branch" WS_REPOS "${TICKET_REPOS[*]}" "${extra[@]}" \
         default WS_TOPIC "$id" WS_STAGE spec WS_CREATED "$(date +%F)" || return 1
     for repo in "${TICKET_ADD[@]}"; do
@@ -3442,23 +3502,82 @@ ticket_defaults() {
     ((fail == 0))
 }
 
+# REPLY is the text after the last place where the branch holds the key as a whole token, so ABC-12 is in
+# feat/ABC-12-x and abc-12 but not in ABC-121.
+ticket_key_in() {
+    local LC_ALL=C re branch
+    branch=${2,,}
+    re="^(.*[^a-z0-9])?${1,,}([^a-z0-9].*)?\$"
+    [[ $branch =~ $re ]] || return 1
+    REPLY=${BASH_REMATCH[2]}
+}
+
+# The id of a key is the key without its dash and up to three words of the branch after the key, or of its last
+# part when it lacks the key, with filler words left out: feat/AB-1-fix-the-login-page gives ab1-fix-login-page.
+ticket_derive_id() {
+    local key=$1 branch=$2 id word n=0 LC_ALL=C
+    local -a words=()
+    id=${key,,}
+    id=${id/-/}
+    ticket_key_in "$key" "$branch" || REPLY=${branch##*/}
+    IFS='-_/' read -r -a words <<<"${REPLY,,}"
+    for word in "${words[@]}"; do
+        word=${word//[^a-z0-9]/}
+        [[ -n $word && $WS_ID_FILLER != *" $word "* ]] || continue
+        ((${#id} + 1 + ${#word} <= WS_ID_MAX)) || break
+        id+=-$word
+        ((++n < 3)) || break
+    done
+    if [[ -e $WS_ROOT/$id/.ws || -L $WS_ROOT/$id/.ws ]]; then
+        echo "ws: the id $id is taken by the ticket in $(ws_shown "$WS_ROOT/$id"), which is not $key; give other words or a branch" >&2
+        return 1
+    fi
+    REPLY=$id
+}
+
+ticket_find_branch() {
+    local key=$1 hint=$2 repo ref name
+    local -a searched=()
+    local -A where=()
+    shift 2
+    for repo; do
+        if ! { ticket_name_ok "$repo" && ticket_repo_ok "$repo"; }; then
+            echo "ws: $(ws_shown "$WS_PROJECTS/$repo") is not a git checkout" >&2
+            return 1
+        fi
+        [[ " ${searched[*]} " != *" $repo "* ]] || continue
+        searched+=("$repo")
+        ticket_fetch "$repo" "ws looks for $key only in"
+        while IFS= read -r ref; do
+            name=${ref#refs/heads/}
+            name=${name#refs/remotes/origin/}
+            ticket_key_in "$key" "$name" || continue
+            [[ " ${where[$name]-} " == *" $repo "* ]] || where[$name]+=" $repo"
+        done < <(git -C "$WS_PROJECTS/$repo" for-each-ref --format='%(refname)' refs/heads refs/remotes/origin)
+    done
+    case ${#where[@]} in
+    1)
+        REPLY=${!where[*]}
+        return 0
+        ;;
+    0) echo "ws: no branch of ${searched[*]} holds $key, local or on origin; add words: $hint" >&2 ;;
+    *)
+        echo "ws: the repos have more than one branch with $key; pass the branch or words:" >&2
+        for name in "${!where[@]}"; do
+            printf '  %s in%s\n' "$name" "${where[$name]}"
+        done | sort >&2
+        ;;
+    esac
+    return 1
+}
+
 ws_new() {
-    local ticket="" topic="" only=0 id branch
-    local -a repos=()
+    local only=0 unknown=0 id key branch="" arg
+    local -a args=() plus=() repos=() old=() extra=() cmd=(ws new)
+    local -A kv=()
     while (($#)); do
         case $1 in
-        --ticket | --topic)
-            if (($# < 2)) || ! ticket_name_ok "$2"; then
-                echo "ws: $1 takes a plain ASCII name: letters, digits, dots, dashes, and underscores" >&2
-                return 1
-            fi
-            if [[ $1 == --ticket ]]; then ticket=$2; else topic=$2; fi
-            shift 2
-            ;;
-        --only)
-            only=1
-            shift
-            ;;
+        --only) only=1 ;;
         -h | --help)
             ticket_usage
             return 0
@@ -3467,29 +3586,73 @@ ws_new() {
             ticket_usage >&2
             return 1
             ;;
-        *) break ;;
+        +*) plus+=("${1#+}") ;;
+        *) args+=("$1") ;;
         esac
+        shift
     done
-    if (($# < 2)); then
+    ((only == 0)) || cmd+=(--only)
+    if ((${#args[@]} > 2)); then
+        extra=("${args[@]:2}")
+        for arg in "${extra[@]}"; do
+            ticket_repo_ok "$arg" || unknown=1
+        done
+        if ((unknown)) && [[ ${args[1]} != */* ]]; then
+            arg=${args[*]:1}
+            cmd+=("${args[0]}" "${arg// /-}" "${plus[@]/#/+}")
+            echo "ws: write the words as one argument, as in: ${cmd[*]}" >&2
+        else
+            cmd+=("${args[@]:0:2}" "${extra[@]/#/+}" "${plus[@]/#/+}")
+            echo "ws: write each extra repo with a +, as in: ${cmd[*]}" >&2
+        fi
+        return 1
+    fi
+    if ((${#args[@]} == 0)); then
         ticket_usage >&2
         return 1
     fi
-    if ((only && $# == 2)); then
+    if ((only && ${#plus[@]} == 0)); then
         echo "ws: --only takes at least one repo" >&2
         return 1
     fi
-    id=$1 branch=$2
-    shift 2
-    ticket_check_id "$id" || return 1
-    if ((only == 0)) && [[ ! -e $WS_ROOT/$id/.ws && ! -L $WS_ROOT/$id/.ws ]]; then
+    ticket_lookup "${args[0]}" || return 1
+    id=$REPLY key=$TICKET_KEY
+    if [[ -n $id && (-e $WS_ROOT/$id/.ws || -L $WS_ROOT/$id/.ws) ]]; then
+        if ! ticket_read "$WS_ROOT/$id" kv; then
+            echo "ws: $REPLY" >&2
+            return 1
+        fi
+        read -r -a old <<<"${kv[WS_REPOS]-}"
+        branch=${kv[WS_BRANCH]-}
+    elif ((only == 0)); then
         ticket_defaults repos || return 1
     fi
-    repos+=("$@")
-    if ((${#repos[@]} == 0)); then
+    repos+=("${plus[@]}")
+    if ((${#old[@]} + ${#repos[@]} == 0)); then
         ticket_usage >&2
         return 1
     fi
-    ticket_make "$id" "$branch" "$ticket" "$topic" "${repos[@]}"
+    if ((${#args[@]} == 2)) && [[ ${args[1]} == */* ]]; then
+        branch=${args[1]}
+    elif ((${#args[@]} == 2)); then
+        branch=$(ws_slug "${args[1]}")
+        if [[ -z $branch ]]; then
+            echo "ws: '${args[1]}' holds no letters or digits for a branch name" >&2
+            return 1
+        fi
+        branch=feat/${key:+$key-}$branch
+    elif [[ -z $branch && -n $key ]]; then
+        extra=("${cmd[@]}" "$key" "<words>" "${plus[@]/#/+}")
+        ticket_find_branch "$key" "${extra[*]}" "${old[@]}" "${repos[@]}" || return 1
+        branch=$REPLY
+    elif [[ -z $branch ]]; then
+        branch=feat/$id
+    fi
+    if [[ -z $id ]]; then
+        ticket_derive_id "$key" "$branch" || return 1
+        id=$REPLY
+    fi
+    ticket_make "$id" "$branch" "$key" "${repos[@]}"
 }
 
 ticket_adopt_blocker() {
@@ -3514,7 +3677,7 @@ ticket_adopt_blocker() {
 }
 
 ws_adopt() {
-    local id dir real d why main repo owner branch="" i fail=0
+    local id key dir real d why main repo owner branch="" i fail=0
     local -a reals=() commons=() repos=() branches=()
     local -A seen=()
     case ${1-} in
@@ -3527,9 +3690,9 @@ ws_adopt() {
         ticket_usage >&2
         return 1
     fi
-    id=$1
+    ticket_lookup "$1" || return 1
+    id=$REPLY key=$TICKET_KEY
     shift
-    ticket_check_id "$id" || return 1
     WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
     ws_env_ok || return 1
     ws_engine_mounts
@@ -3569,11 +3732,6 @@ ws_adopt() {
             fail=1
             continue
         fi
-        if [[ -e $WS_ROOT/$id/$repo || -L $WS_ROOT/$id/$repo ]]; then
-            echo "ws: $(ws_shown "$WS_ROOT/$id/$repo") exists" >&2
-            fail=1
-            continue
-        fi
         seen[$repo]=$real
         reals+=("$real")
         commons+=("$(ws_decode "$(ws_fact "$d/facts" common)")")
@@ -3589,6 +3747,16 @@ ws_adopt() {
             break
         fi
     done
+    if [[ -z $id && -n $branch ]] && ticket_derive_id "$key" "$branch"; then
+        id=$REPLY
+    fi
+    [[ -n $id ]] || return 1
+    for repo in "${repos[@]}"; do
+        if [[ -e $WS_ROOT/$id/$repo || -L $WS_ROOT/$id/$repo ]]; then
+            echo "ws: $(ws_shown "$WS_ROOT/$id/$repo") exists" >&2
+            fail=1
+        fi
+    done
     if ((${#reals[@]})) && ! ticket_check "$id" "$branch" "${repos[*]}" "${repos[@]}"; then
         fail=1
     fi
@@ -3597,12 +3765,12 @@ ws_adopt() {
     mkdir -p -- "$WS_ROOT/$id" || return 1
     for i in "${!reals[@]}"; do
         if ! ws_move "${commons[i]}" "${reals[i]}" "$WS_ROOT/$id/${repos[i]}"; then
-            echo "ws: stopped; run ws adopt $id again with the worktrees that did not move" >&2
+            echo "ws: stopped; run ws adopt ${key:-$id} again with the worktrees that did not move" >&2
             return 1
         fi
         echo "Moved $(ws_shown "${reals[i]}") to $(ws_shown "$WS_ROOT/$id/${repos[i]}")"
     done
-    ticket_make "$id" "$branch" "" "" "${repos[@]}"
+    ticket_make "$id" "$branch" "$key" "${repos[@]}"
 }
 
 status_read() {
@@ -3942,15 +4110,7 @@ ws_stage() {
         ticket_usage
         return 0
         ;;
-    1:*)
-        stage=$1
-        dir=$(ticket_here "ws stage <id> <stage>") || return 1
-        ;;
-    2:*)
-        ticket_check_id "$1" || return 1
-        dir=$WS_ROOT/$1
-        stage=$2
-        ;;
+    1:* | 2:*) stage=${*: -1} ;;
     *)
         ticket_usage >&2
         return 1
@@ -3960,10 +4120,8 @@ ws_stage() {
         echo "ws: the stage must be one of: $WS_STAGES" >&2
         return 1
     fi
-    if [[ -L $dir || ! -d $dir || ! -e $dir/.ws ]]; then
-        echo "ws: no ticket $(ws_shown "$dir")" >&2
-        return 1
-    fi
+    ticket_target "ws stage <id> <stage>" "${@:1:$#-1}" || return 1
+    dir=$REPLY
     if [[ $stage == qa && -n ${CLAUDECODE-} ]]; then
         echo "ws: CLAUDECODE says this runs inside a Claude session, where only ws verify ${dir##*/} sets qa" >&2
         return 1
@@ -4255,18 +4413,14 @@ ws_rm() {
         ticket_usage
         return 0
         ;;
-    1:*) id=$1 ;;
+    1:*) ;;
     *)
         ticket_usage >&2
         return 1
         ;;
     esac
-    ticket_check_id "$id" || return 1
-    dir=$WS_ROOT/$id
-    if [[ -L $dir || ! -d $dir || ! -e $dir/.ws ]]; then
-        echo "ws: no ticket $(ws_shown "$dir")" >&2
-        return 1
-    fi
+    ticket_target "ws rm <id>" "$1" || return 1
+    dir=$REPLY id=${REPLY##*/}
     real=$(realpath -e -- "$dir") || return 1
     here=$(pwd -P)
     if [[ $here == "$real" || $here == "$real"/* ]]; then

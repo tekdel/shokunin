@@ -90,10 +90,17 @@ EOF
     chmod +x "$FX/bin/fzf"
 }
 
+# An older ws took any name as an id, also one shaped like a Jira key.
+older_ticket() {
+    { mkdir -p "$WS_ROOT/$1" && printf 'WS_ID=%s\nWS_BRANCH=%s\nWS_REPOS=%s\n' "$1" "$2" "$3" >"$WS_ROOT/$1/.ws"; } ||
+        abort "cannot write the .ws of $1"
+    ws new "$1" >/dev/null 2>&1 || abort "ws new $1 cannot repair the ticket of an older ws"
+}
+
 test_new() {
     local out rc main
     new_fixture_no_ticket
-    out=$(ws new t1 feat/x alpha beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +alpha +beta 2>&1) && rc=0 || rc=$?
     assert_eq "new exits 0" 0 "$rc"
     assert "new makes the alpha worktree" is_worktree "$WS_ROOT/t1/alpha"
     assert "new makes the beta worktree" is_worktree "$WS_ROOT/t1/beta"
@@ -118,7 +125,7 @@ test_new() {
     assert_eq "the session works in the ticket" "$WS_ROOT/t1" "$(session_path t1)"
     assert "the claude window runs claude -n t1" wait_for_line "$FX/claude.log" '-n t1'
     assert "new says how to attach outside tmux" grep -qxF "Attach with: tmux attach -t '=t1:'" <<<"$out"
-    ws new v1.2 feat/v alpha >/dev/null 2>&1
+    ws new v1.2 feat/v +alpha >/dev/null 2>&1
     assert_eq "an id with a dot gets its own session" "claude shell" "$(windows_of v1.2)"
 }
 
@@ -127,7 +134,7 @@ test_new_existing_branch() {
     new_fixture_no_ticket
     git -C "$WS_PROJECTS/alpha" branch -q feat/local || abort "cannot make feat/local"
     tip=$(git -C "$WS_PROJECTS/alpha" rev-parse feat/local)
-    ws new t1 feat/local alpha >/dev/null 2>&1
+    ws new t1 feat/local +alpha >/dev/null 2>&1
     assert_eq "new checks out an existing local branch" "$tip" "$(head_of "$WS_ROOT/t1/alpha")"
 
     clone=$FX/other-clone
@@ -138,7 +145,7 @@ test_new_existing_branch() {
             git -C "$clone" commit -qm remote && git -C "$clone" push -q origin feat/remote
     } || abort "cannot push feat/remote"
     tip=$(git -C "$clone" rev-parse HEAD)
-    ws new t2 feat/remote beta >/dev/null 2>&1
+    ws new t2 feat/remote +beta >/dev/null 2>&1
     assert_eq "new fetches and checks out a branch only origin has" "$tip" "$(head_of "$WS_ROOT/t2/beta")"
     assert_eq "that branch tracks origin" origin/feat/remote \
         "$(git -C "$WS_ROOT/t2/beta" rev-parse --abbrev-ref '@{upstream}')"
@@ -147,10 +154,10 @@ test_new_existing_branch() {
 test_new_rerun() {
     local out rc before panes
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     ws stage t1 qa >/dev/null
     panes=$(shell_panes t1)
-    out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun exits 0" 0 "$rc"
     assert_eq "a rerun adds no window" "claude shell" "$(windows_of t1)"
     assert_eq "a rerun adds no pane" "$panes" "$(shell_panes t1)"
@@ -160,7 +167,7 @@ test_new_rerun() {
     tmux kill-window -t "=t1:claude"
     panes=$(shell_pane t1)
     rm "$WS_ROOT/t1/CLAUDE.md"
-    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "a repairing rerun exits 0" 0 "$rc"
     assert_eq "a rerun puts back the missing windows, claude first" "claude shell" "$(windows_of t1)"
     wait_shells t1
@@ -172,7 +179,7 @@ test_new_rerun() {
     assert_eq "a rerun keeps the stage" qa "$(ws_value t1 WS_STAGE)"
 
     before=$(cat "$WS_ROOT/t1/.ws")
-    out=$(ws new t1 feat/y alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/y +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun on another branch exits 1" 1 "$rc"
     assert "it names both branches" grep -qF "ticket t1 is on branch feat/x, not feat/y" <<<"$out"
     assert_eq "it leaves .ws alone" "$before" "$(cat "$WS_ROOT/t1/.ws")"
@@ -181,18 +188,18 @@ test_new_rerun() {
 test_new_rerun_on_a_session_of_an_older_ws() {
     local out rc panes env
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     remake_session t1 claude shell env
     panes=$(shell_panes t1)
     env=$(tmux display-message -p -t "=t1:env" '#{pane_id}')
-    out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun on a session that an older ws made exits 0" 0 "$rc"
     assert_eq "it keeps the env window and adds no window" "claude shell env" "$(windows_of t1)"
     assert_eq "it adds no env pane to the shell window" "$panes" "$(shell_panes t1)"
     assert_eq "it keeps the pane of the env window" "$env" "$(tmux display-message -p -t "=t1:env" '#{pane_id}')"
 
     tmux kill-window -t "=t1:shell"
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     assert_eq "a rerun puts back a missing shell window after the env window" "claude env shell" "$(windows_of t1)"
     assert_eq "it splits no pane off the new shell window, since the env window is there" 1 "$(shell_panes t1 | wc -l)"
 }
@@ -200,7 +207,7 @@ test_new_rerun_on_a_session_of_an_older_ws() {
 test_new_takes_a_dir_without_ws() {
     local rc
     new_fixture
-    ws new t1 feat/ticket alpha beta >/dev/null 2>&1 && rc=0 || rc=$?
+    ws new t1 feat/ticket +alpha +beta >/dev/null 2>&1 && rc=0 || rc=$?
     assert_eq "new takes a ticket dir that has the worktrees but no .ws" 0 "$rc"
     assert_eq "it writes .ws for them" feat/ticket "$(ws_value t1 WS_BRANCH)"
 }
@@ -208,18 +215,18 @@ test_new_takes_a_dir_without_ws() {
 test_new_refuses() {
     local out rc id branch
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
-    out=$(ws new t2 feat/x alpha 2>&1) && rc=0 || rc=$?
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    out=$(ws new t2 feat/x +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a branch another worktree has" 1 "$rc"
     assert "it names the directory that has the branch" grep -qF "feat/x is checked out in ~/work/t1/alpha" <<<"$out"
     refute "it makes no ticket dir" test -e "$WS_ROOT/t2"
 
     for id in 'a+b' '../x' '.x' 'a/b' 'a b' ''; do
-        out=$(ws new "$id" feat/q alpha 2>&1) && rc=0 || rc=$?
+        out=$(ws new "$id" feat/q +alpha 2>&1) && rc=0 || rc=$?
         assert_eq "new refuses the id '$id'" 1 "$rc"
     done
-    for branch in 'feat x' 'feat/$(touch pwned)' 'feat..x' '-x' 'feat/"q"'; do
-        out=$(ws new t3 "$branch" alpha 2>&1) && rc=0 || rc=$?
+    for branch in 'feat/a b' 'feat/$(touch pwned)' 'feat/x..y' '-x' 'feat/"q"'; do
+        out=$(ws new t3 "$branch" +alpha 2>&1) && rc=0 || rc=$?
         assert_eq "new refuses the branch '$branch'" 1 "$rc"
     done
     refute "no ticket dir appears for refused ids or branches" test -e "$WS_ROOT/t3"
@@ -227,36 +234,36 @@ test_new_refuses() {
     refute "a branch name runs nothing" test -e "$FX/pwned"
 
     tmux new-session -d -s t9 -c "$WS_PROJECTS"
-    out=$(ws new t9 feat/q alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t9 feat/q +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses an id whose tmux session works elsewhere" 1 "$rc"
     assert "it names the session's directory" grep -qF "tmux session t9 works in ~/projects, not ~/work/t9" <<<"$out"
     refute "it makes nothing first" test -e "$WS_ROOT/t9"
 
-    out=$(ws new t4 feat/q gamma 2>&1) && rc=0 || rc=$?
+    out=$(ws new t4 feat/q +gamma 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a repo that is not in WS_PROJECTS" 1 "$rc"
     assert "it names the missing checkout" grep -qF "~/projects/gamma is not a git checkout" <<<"$out"
 
     mkdir -p "$WS_ROOT/t5/alpha"
-    out=$(ws new t5 feat/q alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t5 feat/q +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a repo path that is not its worktree" 1 "$rc"
     assert "it names the path" grep -qF "~/work/t5/alpha exists and is not a worktree of ~/projects/alpha on feat/q" <<<"$out"
 
     mkdir -p "$WS_ROOT/t6"
     printf 'WS_ID=t6\nnot a pair\n' >"$WS_ROOT/t6/.ws"
-    out=$(ws new t6 feat/q alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t6 feat/q +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a malformed .ws" 1 "$rc"
     assert "it says which line" grep -qF "line 2 of ~/work/t6/.ws is not KEY=value" <<<"$out"
     assert_eq "it leaves the malformed .ws alone" $'WS_ID=t6\nnot a pair' "$(cat "$WS_ROOT/t6/.ws")"
 
     mkdir -p "$WS_ROOT/t7"
     printf 'WS_ID=other\n' >"$WS_ROOT/t7/.ws"
-    out=$(ws new t7 feat/q alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t7 feat/q +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a .ws whose WS_ID is not its directory" 1 "$rc"
     assert "it names the mismatch" grep -qF "WS_ID in ~/work/t7/.ws is not t7" <<<"$out"
 
     mkdir -p "$WS_ROOT/t8"
     { echo WS_ID=t8 && printf '# %0100d\n' $(seq 700); } >"$WS_ROOT/t8/.ws"
-    out=$(ws new t8 feat/q alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t8 feat/q +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a .ws over 64 KB" 1 "$rc"
     assert "it says the .ws is too big" grep -qF "~/work/t8/.ws is over 64 KB" <<<"$out"
 }
@@ -264,9 +271,7 @@ test_new_refuses() {
 test_ws_file_writes() {
     local rc
     new_fixture_no_ticket
-    ws new --ticket T-1 --topic topic-a t1 feat/x alpha >/dev/null 2>&1
-    assert_eq "--ticket sets WS_TICKET" T-1 "$(ws_value t1 WS_TICKET)"
-    assert_eq "--topic sets WS_TOPIC" topic-a "$(ws_value t1 WS_TOPIC)"
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     printf 'WS_URLS="web=http://localhost:4400 api=http://localhost:4401"\nWS_EXTRA=kept\n' >>"$WS_ROOT/t1/.ws"
     ws stage t1 building >/dev/null
     assert_eq "a write keeps values with spaces quoted" '"web=http://localhost:4400 api=http://localhost:4401"' \
@@ -295,14 +300,14 @@ test_new_default_repos() {
     assert "it makes the alpha worktree" is_worktree "$WS_ROOT/t1/alpha"
     assert "it makes the beta worktree" is_worktree "$WS_ROOT/t1/beta"
 
-    ws new t2 feat/y gamma beta >/dev/null 2>&1
+    ws new t2 feat/y +gamma +beta >/dev/null 2>&1
     assert_eq "a named repo adds to the defaults, defaults first and each repo once" '"alpha beta gamma"' \
         "$(ws_value t2 WS_REPOS)"
     assert "it makes the gamma worktree" is_worktree "$WS_ROOT/t2/gamma"
 
     WS_DEFAULT_REPOS="gamma  alpha" ws new t3 feat/z >/dev/null 2>&1
     assert_eq "WS_DEFAULT_REPOS in the environment wins over the config" '"gamma alpha"' "$(ws_value t3 WS_REPOS)"
-    WS_DEFAULT_REPOS='' ws new t4 feat/w beta >/dev/null 2>&1
+    WS_DEFAULT_REPOS='' ws new t4 feat/w +beta >/dev/null 2>&1
     assert_eq "an empty WS_DEFAULT_REPOS in the environment turns the defaults off" beta "$(ws_value t4 WS_REPOS)"
 
     rm "$XDG_CONFIG_HOME/ws/config"
@@ -316,14 +321,14 @@ test_new_parses_the_config() {
     local out rc
     new_fixture_no_ticket
     ws_config "WS_DEFAULT_REPOS=\"\$(touch $FX/pwned) alpha\""
-    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a default that is not a repo name" 1 "$rc"
     assert "it names the config" grep -qF "ws: WS_DEFAULT_REPOS in ~/.config/ws/config holds '\$(touch'" <<<"$out"
     refute "ws never runs the config" test -e "$FX/pwned"
     refute "it makes no ticket dir" test -e "$WS_ROOT/t1"
 
     ws_config 'export WS_DEFAULT_REPOS=alpha'
-    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a config line that is not KEY=value" 1 "$rc"
     assert_eq "it names the line" "ws: line 1 of ~/.config/ws/config is not KEY=value" "$out"
 }
@@ -332,7 +337,7 @@ test_new_names_a_missing_default_repo() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_DEFAULT_REPOS="alpha delta"'
-    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "new exits 1 when a default repo is not in WS_PROJECTS" 1 "$rc"
     assert_eq "it names the repo and the config that lists it" \
         "ws: WS_DEFAULT_REPOS in ~/.config/ws/config lists delta, but ~/projects/delta is not a git checkout" "$out"
@@ -344,7 +349,7 @@ test_new_names_a_missing_default_repo() {
     assert_eq "it names the environment when the list comes from there" \
         "ws: WS_DEFAULT_REPOS in the environment lists delta, but ~/projects/delta is not a git checkout" "$out"
 
-    out=$(ws new --only t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new --only t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "--only does not read the defaults" 0 "$rc"
 }
 
@@ -352,11 +357,10 @@ test_new_only() {
     local out rc
     new_fixture_no_ticket
     ws_config 'WS_DEFAULT_REPOS="alpha beta"'
-    out=$(ws new --only --ticket T-1 t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    out=$(ws new --only t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "new --only exits 0" 0 "$rc"
     assert_eq "--only gives exactly the named repos" beta "$(ws_value t1 WS_REPOS)"
     refute "it makes no worktree of a default repo" test -e "$WS_ROOT/t1/alpha"
-    assert_eq "it keeps the other flags" T-1 "$(ws_value t1 WS_TICKET)"
 
     out=$(ws new --only t2 feat/y 2>&1) && rc=0 || rc=$?
     assert_eq "--only with no repo exits 1" 1 "$rc"
@@ -369,16 +373,18 @@ test_new_rerun_adds_no_defaults() {
     new_fixture_no_ticket
     add_repo gamma
     ws_config 'WS_DEFAULT_REPOS="alpha beta"'
-    ws new --only t1 feat/x gamma >/dev/null 2>&1
-    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    ws new --only t1 feat/x +gamma >/dev/null 2>&1
+    out=$(ws new t1 feat/x +beta 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun with a repo exits 0" 0 "$rc"
     assert_eq "a rerun adds only the repo it names" '"gamma beta"' "$(ws_value t1 WS_REPOS)"
     refute "a rerun adds no default repo" test -e "$WS_ROOT/t1/alpha"
 
-    out=$(ws new t1 feat/x 2>&1) && rc=0 || rc=$?
-    assert_eq "a rerun with no repo exits 1 though defaults are set" 1 "$rc"
-    assert "it prints the usage" grep -qF "usage: ws new" <<<"$out"
-    assert_eq "it leaves the repos" '"gamma beta"' "$(ws_value t1 WS_REPOS)"
+    rm "$WS_ROOT/t1/CLAUDE.md"
+    out=$(ws new t1 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun with no repo and no branch exits 0" 0 "$rc"
+    assert "it repairs the ticket" test -f "$WS_ROOT/t1/CLAUDE.md"
+    assert_eq "it keeps the branch and adds no default repo" 'feat/x "gamma beta"' \
+        "$(ws_value t1 WS_BRANCH) $(ws_value t1 WS_REPOS)"
 }
 
 test_adopt_adds_no_defaults() {
@@ -439,7 +445,7 @@ test_adopt_refuses() {
     assert_eq "adopt refuses a main checkout" 1 "$rc"
     assert "it says it is no linked worktree" grep -qF "~/projects/alpha is not a linked worktree" <<<"$out"
 
-    ws new t4 feat/q alpha >/dev/null 2>&1
+    ws new t4 feat/q +alpha >/dev/null 2>&1
     out=$(ws adopt t4 "$WS_PROJECTS/alpha-a" 2>&1) && rc=0 || rc=$?
     assert_eq "adopt refuses a repo the ticket has" 1 "$rc"
     assert "it names the taken path" grep -qF "~/work/t4/alpha exists" <<<"$out"
@@ -449,7 +455,7 @@ test_adopt_refuses() {
 test_stage() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     out=$(ws stage t1 qa 2>&1) && rc=0 || rc=$?
     assert_eq "stage exits 0" 0 "$rc"
     assert_eq "stage writes WS_STAGE" qa "$(ws_value t1 WS_STAGE)"
@@ -469,7 +475,7 @@ test_stage() {
 test_stage_qa_inside_a_claude_session() {
     local out rc md old
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     ws stage t1 building >/dev/null
     out=$(CLAUDECODE=1 ws stage t1 qa 2>&1) && rc=0 || rc=$?
     assert_eq "inside a Claude session, stage refuses qa and names ws verify" \
@@ -488,7 +494,7 @@ test_stage_qa_inside_a_claude_session() {
     assert "it says only ws verify sets qa" grep -qF 'Only `ws verify` sets `qa`' "$md"
     old='- `.ws` holds the ticket state, and only ws writes it. Run `ws stage <stage>` here to move the ticket on.'
     awk -v old="$old" '/^- `\.ws` holds/ { print old; next } { print }' "$md" >"$FX/md" && cp "$FX/md" "$md"
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     assert "a rerun rewrites the stage line of a CLAUDE.md that an earlier ws wrote" \
         grep -qF 'Only `ws verify` sets `qa`' "$md"
 }
@@ -497,7 +503,7 @@ test_stage_limit() {
     local n out
     new_fixture_no_ticket
     for n in 1 2 3 4 5 6; do
-        ws new "t$n" "feat/t$n" alpha >/dev/null 2>&1
+        ws new "t$n" "feat/t$n" +alpha >/dev/null 2>&1
     done
     for n in 1 2 3 4 5; do
         out=$(ws stage "t$n" building 2>&1)
@@ -511,7 +517,7 @@ test_stage_limit() {
 test_rm_refuses() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     agents '[{"kind":"background","id":"bg1","state":"working","cwd":"'"$WS_ROOT"'/t1","startedAt":0}]'
     echo new >"$WS_ROOT/t1/alpha/new.txt"
     out=$(ws rm t1 2>&1) && rc=0 || rc=$?
@@ -536,7 +542,7 @@ test_rm_refuses() {
 test_rm() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     agents '[{"kind":"background","id":"bg1","state":"working","cwd":"'"$WS_ROOT"'/t1/alpha","startedAt":0},
         {"kind":"background","id":"bg2","state":"working","cwd":"'"$WS_PROJECTS"'/alpha","startedAt":0},
         {"kind":"background","id":"bg3","state":"done","cwd":"'"$WS_ROOT"'/t1","startedAt":0},
@@ -561,7 +567,7 @@ test_pick_lists_what_the_sessionizer_listed() {
     export WS_VAULT=$HOME/claude-knowledge-vault
     mkdir -p "$WS_VAULT" "$WS_PROJECTS/.hidden" "$WS_PROJECTS/dot.name"
     ln -s "$WS_PROJECTS/alpha" "$WS_PROJECTS/alpha-link"
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     head=$(ws pick --print | cut -f1)
     while IFS= read -r row; do
         grep -Fqx -- "$row" <<<"$head" || {
@@ -580,11 +586,11 @@ test_pick_lists_what_the_sessionizer_listed() {
 test_pick_order() {
     local rows
     new_fixture_no_ticket
-    ws new a1 feat/a1 alpha >/dev/null 2>&1
-    ws new b1 feat/b1 beta >/dev/null 2>&1
-    ws new c1 feat/c1 alpha >/dev/null 2>&1
-    ws new d1 feat/d1 beta >/dev/null 2>&1
-    ws new e1 feat/e1 alpha >/dev/null 2>&1
+    ws new a1 feat/a1 +alpha >/dev/null 2>&1
+    ws new b1 feat/b1 +beta >/dev/null 2>&1
+    ws new c1 feat/c1 +alpha >/dev/null 2>&1
+    ws new d1 feat/d1 +beta >/dev/null 2>&1
+    ws new e1 feat/e1 +alpha >/dev/null 2>&1
     ws stage a1 building >/dev/null
     ws stage b1 review >/dev/null
     ws stage d1 qa >/dev/null
@@ -599,7 +605,7 @@ test_pick_order() {
 test_status() {
     local out before
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
     agents '[{"kind":"interactive","cwd":"'"$WS_ROOT"'/t1/alpha","pid":7,"status":"waiting","startedAt":0},
         {"kind":"background","id":"bg1","state":"blocked","cwd":"'"$WS_PROJECTS"'/beta","startedAt":0},
@@ -620,7 +626,7 @@ test_status() {
     assert_eq "a refresh within WS_PR_TTL asks gh nothing" "$before" "$(gh_calls)"
     WS_PR_TTL=0 ws status --refresh
     assert "a refresh past WS_PR_TTL asks gh again" test "$(gh_calls)" -gt "$before"
-    ws new t2 feat/z beta >/dev/null 2>&1
+    ws new t2 feat/z +beta >/dev/null 2>&1
     add_pr beta feat/z MERGED 3 "$(head_of "$WS_ROOT/t2/beta")"
     ws status --refresh
     assert "a refresh within WS_PR_TTL asks gh for a ticket the cache lacks" \
@@ -659,7 +665,7 @@ test_pick_opens() {
     done
     assert "pick sources the .tmux-ready of a new session" grep -q '^hydrated' <<<"$pane"
 
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     tmux kill-session -t "=t1"
     WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
     wait_refresh
@@ -681,7 +687,7 @@ test_pick_projects_folder() {
     local rows out n slashed
     new_fixture_no_ticket
     fake_fzf
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     mkdir "$WS_PROJECTS/projects"
     agents '[{"kind":"interactive","cwd":"'"$WS_PROJECTS"'","pid":7,"status":"waiting","startedAt":0},
         {"kind":"interactive","cwd":"'"$WS_PROJECTS"'/beta","pid":8,"status":"waiting","startedAt":0}]'
@@ -746,15 +752,15 @@ test_pick_never_shares_a_session() {
     assert_eq "that session works in the vault" "$WS_VAULT" "$(session_path vault-2)"
     assert_eq "the project keeps the session vault" "$WS_PROJECTS/vault" "$(session_path vault)"
 
-    ws new alpha feat/a beta >/dev/null 2>&1
+    ws new alpha feat/a +beta >/dev/null 2>&1
     out=$(WS_FZF_PICK=$WS_PROJECTS/alpha ws pick 2>&1)
     wait_refresh
     assert "a project gets its own session when a ticket has its name" \
         grep -qxF "Attach with: tmux attach -t '=alpha-2:'" <<<"$out"
     assert_eq "the ticket session still works in the ticket" "$WS_ROOT/alpha" "$(session_path alpha)"
     tmux kill-session -t "=alpha-2:"
-    ws new alpha-2 feat/a2 beta >/dev/null 2>&1
-    ws new alpha-3 feat/a3 beta >/dev/null 2>&1
+    older_ticket alpha-2 feat/a2 beta
+    older_ticket alpha-3 feat/a3 beta
     tmux kill-session -t "=alpha-2:"
     tmux kill-session -t "=alpha-3:"
     out=$(WS_FZF_PICK=$WS_PROJECTS/alpha ws pick 2>&1)
@@ -838,7 +844,7 @@ test_dotted_id() {
     local out rc hint shell
     new_fixture_no_ticket
     fake_fzf
-    out=$(ws new rel.42 feat/dot alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new rel.42 feat/dot +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new takes an id with a dot" 0 "$rc"
     assert_eq "the dotted session has the windows claude and shell" "claude shell" "$(windows_of rel.42)"
     hint=$(sed -n 's/^Attach with: //p' <<<"$out")
@@ -850,7 +856,7 @@ test_dotted_id() {
         fi
     done
 
-    out=$(ws new rel.42 feat/dot alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new rel.42 feat/dot +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun on a dotted id exits 0" 0 "$rc"
     refute "a rerun makes no second session" grep -q 'duplicate session' <<<"$out"
     assert_eq "a rerun adds no window to the dotted session" "claude shell" "$(windows_of rel.42)"
@@ -887,15 +893,13 @@ test_names_are_ascii() {
     new_fixture_no_ticket
     utf8=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8' | head -n 1)
     [[ -n $utf8 ]] || utf8=C.UTF-8
-    out=$(LC_ALL=$utf8 ws new ünï feat/u alpha 2>&1) && rc=0 || rc=$?
+    out=$(LC_ALL=$utf8 ws new ünï feat/u +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a non-ASCII id under $utf8" 1 "$rc"
     assert "it says the id takes ASCII only" grep -qF "ws: ticket id 'ünï' must start with an ASCII letter or digit" <<<"$out"
-    out=$(LC_ALL=$utf8 ws new --topic ünï t1 feat/u alpha 2>&1) && rc=0 || rc=$?
-    assert_eq "new refuses a non-ASCII --topic under $utf8" 1 "$rc"
-    assert "it says --topic takes ASCII only" grep -qF "ws: --topic takes a plain ASCII name" <<<"$out"
-    out=$(LC_ALL=$utf8 ws new --ticket ünï t1 feat/u alpha 2>&1) && rc=0 || rc=$?
-    assert_eq "new refuses a non-ASCII --ticket under $utf8" 1 "$rc"
-    out=$(LC_ALL=$utf8 ws new t1 feat/ünï alpha 2>&1) && rc=0 || rc=$?
+    out=$(LC_ALL=$utf8 ws new KEY-7 ü-ï +alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses words with no ASCII letter or digit under $utf8" 1 "$rc"
+    assert "it names the words" grep -qF "ws: 'ü-ï' holds no letters or digits for a branch name" <<<"$out"
+    out=$(LC_ALL=$utf8 ws new t1 feat/ünï +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new refuses a non-ASCII branch under $utf8" 1 "$rc"
     assert "it names the branch" grep -qF "ws: 'feat/ünï' is not a branch name ws takes" <<<"$out"
     out=$(LC_ALL=$utf8 ws adopt ünï "$WS_PROJECTS/alpha-open" 2>&1) && rc=0 || rc=$?
@@ -909,7 +913,7 @@ test_rm_refuses_a_foreign_process() {
     local out rc
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     agents '[{"kind":"background","id":"bg1","state":"working","cwd":"'"$WS_ROOT"'/t1","startedAt":0}]'
     start_in "$WS_ROOT/t1/alpha" sleep 300
     out=$(ws rm t1 2>&1) && rc=0 || rc=$?
@@ -933,7 +937,7 @@ test_rm_ignores_its_own_sessions() {
     local out rc host bg2
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     tmux split-window -d -t "=t1:shell" -c "$WS_ROOT/t1/alpha" "sleep 300 & wait"
     start_in "$WS_ROOT/t1/beta" bash -c 'sleep 300 & echo $! >"$1"; wait' _ "$FX/bg.pid" --bg-pty-host
     host=$STARTED
@@ -955,7 +959,7 @@ test_rm_moves_nothing_when_a_process_survives() {
     local out rc pid
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     tmux split-window -d -t "=t1:shell" -c "$WS_ROOT/t1" \
         "nohup sleep 300 >/dev/null 2>&1 & echo \$! >$(printf %q "$FX/survivor.pid"); wait"
     wait_for_file "$FX/survivor.pid"
@@ -982,7 +986,7 @@ test_rm_skips_a_process_that_exited() {
     local out rc parent zombie i
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     (cd "$FX" && exec bash -c '(echo "$BASHPID" >"$1" && sleep 0.2) & exec sleep 300' _ "$FX/zombie.pid") &
     parent=$!
     wait_for_file "$FX/zombie.pid"
@@ -1020,7 +1024,7 @@ test_rm_reads_the_threads_of_a_zombie() {
     fi
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     start_thread_after_main_exits "$WS_ROOT/t1/alpha"
     out=$(ws rm t1 2>&1) && rc=0 || rc=$?
     stop_started "$STARTED"
@@ -1038,7 +1042,7 @@ test_rm_when_claude_stop_fails() {
     local out rc bg
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     start_in "$WS_ROOT/t1/alpha" sleep 300
     bg=$STARTED
     agents '[{"kind":"background","id":"bgx","state":"working","cwd":"'"$WS_ROOT"'/t1/alpha","pid":'"$bg"',"startedAt":0}]'
@@ -1085,7 +1089,7 @@ test_ws_starts_tmux_outside_the_ticket() {
     new_fixture_no_ticket
     export WS_PROC=/proc
     mkdir -p "$WS_ROOT/t8"
-    (cd "$WS_ROOT/t8" && ws new t8 feat/t8 alpha >/dev/null 2>&1)
+    (cd "$WS_ROOT/t8" && ws new t8 feat/t8 +alpha >/dev/null 2>&1)
     pid=$(server_pid)
     assert_eq "ws new starts the tmux server in /, not in the ticket it runs from" / "$(readlink "/proc/$pid/cwd")"
     out=$(ws rm t8 2>&1) && rc=0 || rc=$?
@@ -1107,7 +1111,7 @@ test_rm_ignores_a_tmux_server_in_the_ticket() {
     export WS_PROC=/proc
     mkdir -p "$WS_ROOT/t9"
     (cd "$WS_ROOT/t9" && tmux new-session -d -s main -c "$HOME")
-    ws new t9 feat/t9 alpha >/dev/null 2>&1
+    ws new t9 feat/t9 +alpha >/dev/null 2>&1
     pid=$(server_pid)
     assert_eq "the tmux server works in the ticket" "$WS_ROOT/t9" "$(readlink "/proc/$pid/cwd")"
     pane=$(tmux new-window -d -P -F '#{pane_pid}' -t "=main:" -c "$WS_ROOT/t9/alpha" "sleep 300") ||
@@ -1127,7 +1131,7 @@ test_rm_ignores_a_client_of_its_own_session() {
     local out rc
     new_fixture_no_ticket
     export WS_PROC=/proc
-    ws new t7 feat/t7 alpha >/dev/null 2>&1
+    ws new t7 feat/t7 +alpha >/dev/null 2>&1
     tmux new-session -d -s other -c "$HOME"
     attach_from "$WS_ROOT/t7/alpha" other
     out=$(ws rm t7 2>&1) && rc=0 || rc=$?
@@ -1175,7 +1179,7 @@ test_adopt_checks_the_session_first() {
 test_adopt_refuses_another_tickets_worktree() {
     local out rc
     new_fixture_no_ticket
-    ws new t2 feat/t2 alpha >/dev/null 2>&1
+    ws new t2 feat/t2 +alpha >/dev/null 2>&1
     out=$(ws adopt t7 "$WS_ROOT/t2/alpha" 2>&1) && rc=0 || rc=$?
     assert_eq "adopt refuses a worktree of another ticket" 1 "$rc"
     assert "it names the ticket" grep -qF "~/work/t2/alpha belongs to ticket t2" <<<"$out"
@@ -1248,10 +1252,223 @@ age_pr_cache() {
         mv "$FX/status.new" "$XDG_CACHE_HOME/ws/status.json"
 }
 
+push_branch() {
+    local clone=$FX/push-$1
+    {
+        { [[ -d $clone ]] || git clone -q "$FX/origins/$1.git" "$clone"; } &&
+            git -C "$clone" checkout -q -B "$2" origin/main &&
+            echo "$2" >"$clone/pushed.txt" && git -C "$clone" add pushed.txt &&
+            git -C "$clone" commit -qm "$2" && git -C "$clone" push -q origin "$2"
+    } || abort "cannot push $2 to the origin of $1"
+}
+
+test_new_by_key_finds_the_branch() {
+    local out rc id=abc12-sync-reports-shared tip main
+    new_fixture_no_ticket
+    ws_config 'WS_DEFAULT_REPOS="alpha beta"'
+    push_branch alpha feat/ABC-12-sync-reports-from-shared-drives
+    tip=$(git -C "$FX/push-alpha" rev-parse HEAD)
+    git -C "$WS_PROJECTS/beta" branch -q feat/ABC-123-other || abort "cannot make feat/ABC-123-other"
+    git -C "$WS_PROJECTS/beta" branch -q feat/XABC-12-other || abort "cannot make feat/XABC-12-other"
+    out=$(ws new abc-12 2>&1) && rc=0 || rc=$?
+    assert_eq "new with only a key exits 0" 0 "$rc"
+    assert_eq "the id is the key and three words of the branch, without filler" "claude shell" "$(windows_of "$id")"
+    assert_eq ".ws keeps the key upper-case" ABC-12 "$(ws_value "$id" WS_TICKET)"
+    assert_eq "the branch is the one that holds the key, found on origin after a fetch" \
+        feat/ABC-12-sync-reports-from-shared-drives "$(ws_value "$id" WS_BRANCH)"
+    assert_eq "the repo with the branch checks it out" "$tip" "$(head_of "$WS_ROOT/$id/alpha")"
+    main=$(git -C "$WS_PROJECTS/beta" rev-parse origin/main)
+    assert_eq "a repo without it starts the branch from origin's default" "$main" "$(head_of "$WS_ROOT/$id/beta")"
+    assert_eq "the topic is the id" "$id" "$(ws_value "$id" WS_TOPIC)"
+    assert_eq "WS_ROOT holds only that ticket" "$id" "$(find "$WS_ROOT" -mindepth 1 -maxdepth 1 -printf '%P\n')"
+
+    out=$(ws new --only ABC-200 +beta 2>&1) && rc=0 || rc=$?
+    assert_eq "--only searches only the +repos, and the hint keeps the flags" \
+        "1 ws: no branch of beta holds ABC-200, local or on origin; add words: ws new --only ABC-200 <words> +beta" "$rc $out"
+}
+
+test_new_by_key_refuses_several_branches() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_DEFAULT_REPOS="alpha"'
+    git -C "$WS_PROJECTS/alpha" branch -q feat/ABC-12-one || abort "cannot make feat/ABC-12-one"
+    push_branch alpha feat/ABC-12-one
+    push_branch beta fix/abc-12-two
+    out=$(ws new ABC-12 +beta 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a key that two branch names hold" 1 "$rc"
+    assert_eq "it lists every name with its repos and says what to pass" \
+        "ws: the repos have more than one branch with ABC-12; pass the branch or words:
+  feat/ABC-12-one in alpha
+  fix/abc-12-two in beta" "$out"
+    refute "it makes no ticket dir" compgen -G "$WS_ROOT/*"
+}
+
+test_new_by_key_refuses_no_branch() {
+    local out rc
+    new_fixture_no_ticket
+    git -C "$WS_PROJECTS/alpha" branch -q feat/ABC-123-x || abort "cannot make feat/ABC-123-x"
+    out=$(ws new ABC-12 +alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a key that no branch holds as a whole token" 1 "$rc"
+    assert_eq "it says to add words" "ws: no branch of alpha holds ABC-12, local or on origin; add words: ws new ABC-12 <words> +alpha" "$out"
+    refute "it makes no ticket dir" compgen -G "$WS_ROOT/*"
+    refute "it makes no branch" has_branch alpha feat/ABC-12
+    out=$(ws new --only ABC-12 +typo 2>&1) && rc=0 || rc=$?
+    assert_eq "it names a +repo that is not a checkout before it searches" "1 ws: ~/projects/typo is not a git checkout" "$rc $out"
+}
+
+test_new_words_and_names() {
+    local out rc
+    new_fixture_no_ticket
+    out=$(ws new ABC-12 'Sync  reports_v2' +alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new with a key and words exits 0" 0 "$rc"
+    assert_eq "words make feat/<KEY>-<words> in the branch rules" feat/ABC-12-sync-reports-v2 \
+        "$(ws_value abc12-sync-reports-v2 WS_BRANCH)"
+    assert "the repo is on that branch" has_branch alpha feat/ABC-12-sync-reports-v2
+
+    ws new KEY-7 bugfix/login-page +alpha >/dev/null 2>&1
+    assert_eq "an argument with a / is the branch, and the id takes words of its last part" bugfix/login-page \
+        "$(ws_value key7-login-page WS_BRANCH)"
+
+    ws new chore-cleanup +alpha >/dev/null 2>&1
+    assert_eq "a plain name is the id, on feat/<name>" "chore-cleanup feat/chore-cleanup" \
+        "$(ws_value chore-cleanup WS_ID) $(ws_value chore-cleanup WS_BRANCH)"
+    assert_eq "a plain name has no key" "" "$(ws_value chore-cleanup WS_TICKET)"
+    ws new tidy some_words +alpha >/dev/null 2>&1
+    assert_eq "a plain name with words is on feat/<words>" feat/some-words "$(ws_value tidy WS_BRANCH)"
+}
+
+test_new_derives_readable_ids() {
+    local branch key id long=abcdefghijklmnopqrstuvwxyzabcdefghijklmn out rc
+    new_fixture_no_ticket
+    while read -r branch id; do
+        key=${branch#*ABC-}
+        key=ABC-${key%%[!0-9]*}
+        ws new "$key" "$branch" +alpha >/dev/null 2>&1
+        assert_eq "$branch gives the id $id" "$branch" "$(ws_value "$id" WS_BRANCH 2>/dev/null)"
+    done <<EOF
+feat/ABC-12-sync-reports-from-shared-drives abc12-sync-reports-shared
+feat/ABC-13-edit-team-settings abc13-edit-team-settings
+feat/ABC-14-show-order-totals-per-region abc14-show-order-totals
+feat/ABC-15 abc15
+feat/ABC-16-the-a-an-and-at-by-for-from-in-of-on-to-with abc16
+feat/ABC-17_Fix/The-Login.Page abc17-fix-loginpage
+feat/ABC-18-$long-tail abc18-$long
+feat/ABC-19-${long}xyz abc19
+feat/ZZ-1-old-ABC-20-new-work abc20-new-work
+EOF
+
+    ws new abc21-x feat/other +alpha >/dev/null 2>&1
+    out=$(ws new ABC-21 x +alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses an id that another ticket has" 1 "$rc"
+    assert "it names that ticket" grep -qF "ws: the id abc21-x is taken by the ticket in ~/work/abc21-x, which is not ABC-21" <<<"$out"
+    refute "it makes no branch" has_branch alpha feat/ABC-21-x
+}
+
+test_new_takes_repos_with_a_plus() {
+    local out rc
+    new_fixture_no_ticket
+    out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a repo without a +" "1 ws: write each extra repo with a +, as in: ws new t1 feat/x +alpha" "$rc $out"
+    out=$(ws new --only t1 feat/x alpha +beta gamma 2>&1) && rc=0 || rc=$?
+    assert_eq "it suggests the whole command" \
+        "1 ws: write each extra repo with a +, as in: ws new --only t1 feat/x +alpha +gamma +beta" "$rc $out"
+    out=$(ws new t1 fix alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "a repo after words also gets the + advice" "1 ws: write each extra repo with a +, as in: ws new t1 fix +alpha" "$rc $out"
+    out=$(ws new ABC-12 sync reports +alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "words in several arguments get the advice to join them" \
+        "1 ws: write the words as one argument, as in: ws new ABC-12 sync-reports +alpha" "$rc $out"
+    refute "it makes no ticket dir" compgen -G "$WS_ROOT/*"
+    ws new +beta t1 +alpha feat/x >/dev/null 2>&1
+    assert_eq "+repos may come anywhere and keep their order" '"beta alpha"' "$(ws_value t1 WS_REPOS)"
+    for flag in --topic --ticket; do
+        out=$(ws new "$flag" a t2 feat/y +alpha 2>&1) && rc=0 || rc=$?
+        assert_eq "new refuses $flag" 1 "$rc"
+    done
+    refute "help names no --topic or --ticket" grep -qE -- '--topic|--ticket' <<<"$(ws new --help)"
+    assert "help names the new form" grep -qxF 'usage: ws new [--only] <key|name> [<words>|<branch>] [+<repo>...]' \
+        <<<"$(ws new --help)"
+    assert "ws -h says new takes a Jira key or a name" grep -qE '^  new +make or repair the ticket of a Jira key or a name' \
+        <<<"$(ws -h)"
+}
+
+test_new_rerun_by_key() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_DEFAULT_REPOS="alpha beta"'
+    add_repo gamma
+    {
+        mkdir -p "$WS_ROOT/key7" &&
+            printf 'WS_ID=key7\nWS_TICKET=key-7\nWS_BRANCH=feat/KEY-7-old-work\nWS_REPOS=alpha\nWS_TOPIC=epic\n' >"$WS_ROOT/key7/.ws"
+    } || abort "cannot write an older ticket"
+    out=$(ws new KEY-7 +gamma 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun by key of an older ticket exits 0" 0 "$rc"
+    assert_eq "it makes no second ticket" key7 "$(find "$WS_ROOT" -mindepth 1 -maxdepth 1 -printf '%P\n')"
+    assert "it repairs the worktree the ticket had" is_worktree "$WS_ROOT/key7/alpha"
+    assert "it adds the +repo" is_worktree "$WS_ROOT/key7/gamma"
+    refute "it adds no default repo" test -e "$WS_ROOT/key7/beta"
+    assert_eq "it keeps branch and topic and writes the key upper-case" "feat/KEY-7-old-work epic KEY-7" \
+        "$(ws_value key7 WS_BRANCH) $(ws_value key7 WS_TOPIC) $(ws_value key7 WS_TICKET)"
+    assert_eq "the session is named after the id" "claude shell" "$(windows_of key7)"
+
+    out=$(ws new KEY-7 other-words 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun by key refuses words for another branch" 1 "$rc"
+    assert "it names both branches" grep -qF "ticket key7 is on branch feat/KEY-7-old-work, not feat/KEY-7-other-words" <<<"$out"
+
+    { mkdir -p "$WS_ROOT/dup" && printf 'WS_ID=dup\nWS_TICKET=KEY-7\n' >"$WS_ROOT/dup/.ws"; } || abort "cannot write a second ticket"
+    out=$(ws new KEY-7 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a key two tickets have" "1 ws: the tickets dup key7 all have the key KEY-7; name one by its id" "$rc $out"
+}
+
+test_commands_take_a_key() {
+    local out rc
+    new_fixture_no_ticket
+    ws new KEY-7 work +alpha >/dev/null 2>&1
+    out=$(ws stage key-7 building 2>&1) && rc=0 || rc=$?
+    assert_eq "stage takes a key" "0 key7-work is at building" "$rc $out"
+    out=$(ws up KEY-7 2>&1) && rc=0 || rc=$?
+    assert_eq "up takes a key" "0 1" "$rc $(ws_value key7-work WS_SLOT)"
+    printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
+    out=$(ws scenarios KEY-7 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
+    assert_eq "scenarios takes a key" 0 "$rc"
+    assert "it writes the scenarios of that ticket" test -f "$WS_VAULT/projects/work/key7-work/scenarios/key7-work.md"
+    out=$(ws down KEY-7 2>&1) && rc=0 || rc=$?
+    assert_eq "down takes a key" "0 " "$rc $(ws_value key7-work WS_URLS)"
+    out=$(ws verify KEY-7 2>&1) && rc=0 || rc=$?
+    assert_eq "verify takes a key" "1 ws: the env of key7-work is down; run ws up key7-work first" "$rc $out"
+    out=$(ws "done" KEY-7 </dev/null 2>&1) && rc=0 || rc=$?
+    assert_eq "done takes a key" "0 merged" "$rc $(ws_value key7-work WS_STAGE)"
+    assert_eq "pick lists the id as it is" "$WS_ROOT/key7-work" "$(ws pick --print | cut -f1 | grep -F key7)"
+
+    out=$(ws up ZZZ-1 2>&1) && rc=0 || rc=$?
+    assert_eq "a key no ticket has is an error" "1 ws: no ticket has the key ZZZ-1" "$rc $out"
+    { mkdir -p "$WS_ROOT/dup" && printf 'WS_ID=dup\nWS_TICKET=KEY-7\n' >"$WS_ROOT/dup/.ws"; } || abort "cannot write a second ticket"
+    out=$(ws stage KEY-7 qa 2>&1) && rc=0 || rc=$?
+    assert_eq "a key two tickets have is an error" "1 ws: the tickets dup key7-work all have the key KEY-7; name one by its id" "$rc $out"
+    rm -r "$WS_ROOT/dup"
+
+    out=$(ws rm KEY-7 2>&1) && rc=0 || rc=$?
+    assert_eq "rm takes a key" 0 "$rc"
+    refute "rm moves that ticket to the trash" test -e "$WS_ROOT/key7-work"
+}
+
+test_adopt_by_key() {
+    local out rc id=key7-fix-login-page
+    new_fixture_no_ticket
+    add_worktree alpha "$WS_PROJECTS/alpha-k" feat/KEY-7-fix-the-login-page
+    out=$(ws adopt KEY-7 "$WS_PROJECTS/alpha-k" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt with a key exits 0" 0 "$rc"
+    assert "it moves the worktree into the id of the branch" is_worktree "$WS_ROOT/$id/alpha"
+    assert_eq "it keeps the key" KEY-7 "$(ws_value "$id" WS_TICKET)"
+    add_worktree beta "$WS_PROJECTS/beta-k" feat/KEY-7-fix-the-login-page
+    out=$(ws adopt key-7 "$WS_PROJECTS/beta-k" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt by key into the ticket of that key exits 0" 0 "$rc"
+    assert_eq "it adds the repo to that ticket" '"alpha beta"' "$(ws_value "$id" WS_REPOS)"
+}
+
 test_status_retries_a_gh_failure_soon() {
     local before
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
     ws status --refresh
     age_pr_cache 61
@@ -1295,19 +1512,19 @@ test_gh_calls_run_eight_at_a_time() {
 
 test_claude_md_keeps_edits() {
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     assert "a rerun rewrites an unedited CLAUDE.md with the new repo" \
         grep -qF '`beta/` belongs to `~/projects/beta`' "$WS_ROOT/t1/CLAUDE.md"
 
     echo "my notes" >>"$WS_ROOT/t1/CLAUDE.md"
     tmux kill-pane -t "$(env_pane t1)"
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     assert "new keeps an edited CLAUDE.md" grep -qx "my notes" "$WS_ROOT/t1/CLAUDE.md"
     assert "new still repairs the rest" test "$(windows_of t1) $(shell_panes t1 | wc -l)" = "claude shell 2"
 
     add_worktree alpha "$WS_PROJECTS/alpha-t2" feat/t2
-    ws new t2 feat/t2 beta >/dev/null 2>&1
+    ws new t2 feat/t2 +beta >/dev/null 2>&1
     echo "t2 notes" >>"$WS_ROOT/t2/CLAUDE.md"
     ws adopt t2 "$WS_PROJECTS/alpha-t2" >/dev/null 2>&1
     assert "adopt moves the worktree in" lists_worktree alpha "$WS_ROOT/t2/alpha"
@@ -1328,16 +1545,16 @@ claude_md_of_2_0_66() {
 
 test_claude_md_of_an_older_ws_updates() {
     new_fixture_no_ticket
-    ws new t4 feat/t4 alpha >/dev/null 2>&1
+    ws new t4 feat/t4 +alpha >/dev/null 2>&1
     claude_md_of_2_0_66 t4 feat/t4 alpha >"$WS_ROOT/t4/CLAUDE.md"
-    ws new t4 feat/t4 alpha beta >/dev/null 2>&1
+    ws new t4 feat/t4 +alpha +beta >/dev/null 2>&1
     assert "a rerun rewrites a CLAUDE.md that ws 2.0.66 wrote" \
         grep -qF '`beta/` belongs to `~/projects/beta`' "$WS_ROOT/t4/CLAUDE.md"
     assert "it writes the current header" grep -qF 'writes it again until you edit it.' "$WS_ROOT/t4/CLAUDE.md"
 
-    ws new t5 feat/t5 alpha >/dev/null 2>&1
+    ws new t5 feat/t5 +alpha >/dev/null 2>&1
     { claude_md_of_2_0_66 t5 feat/t5 alpha && echo "my notes"; } >"$WS_ROOT/t5/CLAUDE.md"
-    ws new t5 feat/t5 alpha beta >/dev/null 2>&1
+    ws new t5 feat/t5 +alpha +beta >/dev/null 2>&1
     assert "a rerun keeps an edited CLAUDE.md that ws 2.0.66 wrote" grep -qx "my notes" "$WS_ROOT/t5/CLAUDE.md"
     refute "it adds no repo to it" grep -qF '`beta/`' "$WS_ROOT/t5/CLAUDE.md"
 }
@@ -1496,6 +1713,15 @@ run_test test_adopt_checks_the_session_first
 run_test test_adopt_refuses_another_tickets_worktree
 run_test test_adopt_checks_the_ticket_before_it_moves
 run_test test_adopt_names_both_branches
+run_test test_new_by_key_finds_the_branch
+run_test test_new_by_key_refuses_several_branches
+run_test test_new_by_key_refuses_no_branch
+run_test test_new_words_and_names
+run_test test_new_derives_readable_ids
+run_test test_new_takes_repos_with_a_plus
+run_test test_new_rerun_by_key
+run_test test_commands_take_a_key
+run_test test_adopt_by_key
 run_test test_status_retries_a_gh_failure_soon
 run_test test_gh_calls_run_eight_at_a_time
 run_test test_claude_md_keeps_edits
