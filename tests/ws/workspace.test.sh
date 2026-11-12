@@ -571,7 +571,8 @@ test_pick_lists_what_the_sessionizer_listed() {
     done < <(tmux_sessionizer_rows)
     assert_eq "pick lists every row tmux-sessionizer listed" 0 "$missing"
     assert_eq "tickets come first" "$WS_ROOT/t2" "$(head -n 1 <<<"$head")"
-    assert_eq "a dir in WS_ROOT without .ws comes after the tickets" "$WS_ROOT/t1" "$(sed -n 2p <<<"$head")"
+    assert_eq "the projects folder comes right after the tickets" "$WS_PROJECTS" "$(sed -n 2p <<<"$head")"
+    assert_eq "a dir in WS_ROOT without .ws comes after the projects folder" "$WS_ROOT/t1" "$(sed -n 3p <<<"$head")"
     assert_eq "the vault comes last" "$WS_VAULT" "$(tail -n 1 <<<"$head")"
     assert_eq "every row prints once" "$(sort <<<"$head" | uniq | wc -l)" "$(wc -l <<<"$head")"
 }
@@ -670,6 +671,117 @@ test_pick_opens() {
     WS_FZF_PICK=$WS_PROJECTS/dot.name ws pick >/dev/null 2>&1
     wait_refresh
     assert "a dot in a directory name becomes an underscore" has_session dot_name
+}
+
+session_count() {
+    tmux list-sessions 2>/dev/null | wc -l
+}
+
+test_pick_projects_folder() {
+    local rows out n slashed
+    new_fixture_no_ticket
+    fake_fzf
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    mkdir "$WS_PROJECTS/projects"
+    agents '[{"kind":"interactive","cwd":"'"$WS_PROJECTS"'","pid":7,"status":"waiting","startedAt":0},
+        {"kind":"interactive","cwd":"'"$WS_PROJECTS"'/beta","pid":8,"status":"waiting","startedAt":0}]'
+    ws status --refresh
+    rows=$(ws pick --print)
+    assert_eq "the projects folder is the row right after the ticket" "$WS_PROJECTS"$'\t''~/projects  1 waiting' \
+        "$(sed -n 2p <<<"$rows")"
+    assert_eq "its children follow it" "$WS_PROJECTS/alpha" "$(sed -n 3p <<<"$rows" | cut -f1)"
+    assert "a waiting session in a child counts on the child" grep -qxF "$WS_PROJECTS/beta"$'\t''~/projects/beta  1 waiting' <<<"$rows"
+    assert_eq "the projects folder prints once" 1 "$(cut -f1 <<<"$rows" | grep -cxF "$WS_PROJECTS")"
+    assert_eq "ls lists only the ticket" 1 "$(ws ls | wc -l)"
+    rows=$(WS_PROJECTS=$HOME/none WS_VAULT=$HOME/novault ws pick --print)
+    refute "pick lists no projects folder that does not exist" grep -qF "$HOME/none" <<<"$rows"
+    refute "pick lists no vault that does not exist" grep -qF "$HOME/novault" <<<"$rows"
+
+    out=$(WS_FZF_PICK=$WS_PROJECTS ws pick 2>&1)
+    wait_refresh
+    assert "pick switches to a session named projects" grep -qxF "Attach with: tmux attach -t '=projects:'" <<<"$out"
+    assert_eq "that session works in the projects folder" "$WS_PROJECTS" "$(session_path projects)"
+    n=$(session_count)
+    slashed=$WS_PROJECTS//
+    out=$(WS_PROJECTS=$slashed WS_FZF_PICK=$slashed ws pick 2>&1)
+    wait_refresh
+    assert "trailing slashes in WS_PROJECTS find the same session" \
+        grep -qxF "Attach with: tmux attach -t '=projects:'" <<<"$out"
+    assert_eq "a second pick makes no session" "$n" "$(session_count)"
+
+    out=$(WS_FZF_PICK=$WS_PROJECTS/projects ws pick 2>&1)
+    wait_refresh
+    assert "a child of the same name gets projects-2" grep -qxF "Attach with: tmux attach -t '=projects-2:'" <<<"$out"
+    assert_eq "projects-2 works in the child" "$WS_PROJECTS/projects" "$(session_path projects-2)"
+    assert_eq "projects still works in the projects folder" "$WS_PROJECTS" "$(session_path projects)"
+    n=$(session_count)
+    out=$(WS_FZF_PICK=$WS_PROJECTS ws pick 2>&1)
+    wait_refresh
+    assert "the projects folder goes back to its own session" grep -qxF "Attach with: tmux attach -t '=projects:'" <<<"$out"
+    out=$(WS_FZF_PICK=$WS_PROJECTS/projects ws pick 2>&1)
+    wait_refresh
+    assert "the child goes back to projects-2 while projects lives" \
+        grep -qxF "Attach with: tmux attach -t '=projects-2:'" <<<"$out"
+    assert_eq "going back makes no session" "$n" "$(session_count)"
+
+    tmux kill-session -t "=projects:"
+    n=$(session_count)
+    out=$(WS_FZF_PICK=$WS_PROJECTS/projects ws pick 2>&1)
+    wait_refresh
+    assert "the child keeps projects-2 once projects is gone" grep -qxF "Attach with: tmux attach -t '=projects-2:'" <<<"$out"
+    assert_eq "and makes no session" "$n" "$(session_count)"
+}
+
+test_pick_never_shares_a_session() {
+    local out rc
+    new_fixture_no_ticket
+    fake_fzf
+    mkdir "$WS_PROJECTS/vault"
+    WS_FZF_PICK=$WS_PROJECTS/vault ws pick >/dev/null 2>&1
+    wait_refresh
+    out=$(WS_FZF_PICK=$WS_VAULT ws pick 2>&1)
+    wait_refresh
+    assert "the vault gets its own session when a project has its name" \
+        grep -qxF "Attach with: tmux attach -t '=vault-2:'" <<<"$out"
+    assert_eq "that session works in the vault" "$WS_VAULT" "$(session_path vault-2)"
+    assert_eq "the project keeps the session vault" "$WS_PROJECTS/vault" "$(session_path vault)"
+
+    ws new alpha feat/a beta >/dev/null 2>&1
+    out=$(WS_FZF_PICK=$WS_PROJECTS/alpha ws pick 2>&1)
+    wait_refresh
+    assert "a project gets its own session when a ticket has its name" \
+        grep -qxF "Attach with: tmux attach -t '=alpha-2:'" <<<"$out"
+    assert_eq "the ticket session still works in the ticket" "$WS_ROOT/alpha" "$(session_path alpha)"
+    tmux kill-session -t "=alpha-2:"
+    ws new alpha-2 feat/a2 beta >/dev/null 2>&1
+    ws new alpha-3 feat/a3 beta >/dev/null 2>&1
+    tmux kill-session -t "=alpha-2:"
+    tmux kill-session -t "=alpha-3:"
+    out=$(WS_FZF_PICK=$WS_PROJECTS/alpha ws pick 2>&1)
+    wait_refresh
+    assert "a project skips the ids of tickets whose sessions are down" \
+        grep -qxF "Attach with: tmux attach -t '=alpha-4:'" <<<"$out"
+    WS_FZF_PICK=$WS_ROOT/alpha-2 ws pick >/dev/null 2>&1 && rc=0 || rc=$?
+    wait_refresh
+    assert_eq "a ticket whose id the project skipped still opens" 0 "$rc"
+    assert_eq "its session works in the ticket" "$WS_ROOT/alpha-2" "$(session_path alpha-2)"
+
+    tmux new-session -d -s beta -c "$HOME"
+    out=$(WS_FZF_PICK=$WS_PROJECTS/beta ws pick 2>&1)
+    wait_refresh
+    assert "a project skips a session of its name that works elsewhere" \
+        grep -qxF "Attach with: tmux attach -t '=beta-2:'" <<<"$out"
+    assert_eq "the session of that name still works where it did" "$HOME" "$(session_path beta)"
+}
+
+test_pick_help() {
+    local help
+    new_fixture_no_ticket
+    help=$(ws pick --help | tr '\n' ' ' | tr -s ' ')
+    assert "help lists the projects folder right after the tickets" \
+        grep -qF 'list the tickets, then $WS_PROJECTS itself, then the other directories in $WS_ROOT' <<<"$help"
+    assert "help says two directories never share a session" \
+        grep -qF 'or the name is a ticket id, pick takes <name>-2, <name>-3, and so on, so two directories never share a session' <<<"$help"
 }
 
 commit_in() {
@@ -1365,6 +1477,9 @@ run_test test_pick_lists_what_the_sessionizer_listed
 run_test test_pick_order
 run_test test_status
 run_test test_pick_opens
+run_test test_pick_projects_folder
+run_test test_pick_never_shares_a_session
+run_test test_pick_help
 run_test test_dotted_id
 run_test test_names_are_ascii
 run_test test_rm_refuses_a_foreign_process

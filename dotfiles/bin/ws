@@ -38,7 +38,7 @@ declare -gA WS_COMMANDS=(
     [down]="stop the dockyard env of a ticket and keep its slot"
     [ls]="list the tickets"
     [new]="make or repair a ticket of the default and named repos, with its tmux session"
-    [pick]="pick a ticket, a project, or the vault and switch to its tmux session"
+    [pick]="pick a ticket, the projects folder, a project, or the vault and switch to its tmux session"
     [prune]="list worktrees whose PR merged or closed, --apply moves them to the trash"
     [rm]="stop a ticket's sessions and env and move its worktrees to the trash"
     [scenarios]="write the holdout scenarios of a ticket from its Jira issue or a file"
@@ -2538,11 +2538,17 @@ underscores.
           them, and no other ticket may hold them.
   ls      list the tickets with their stage, the Claude sessions that
           wait on you, PR state, env state, and branch.
-  pick    list the tickets, then every directory in $WS_PROJECTS, then
-          the vault, in fzf. Tickets with waiting sessions come first,
-          then tickets at planned, qa, or review. Enter switches to the
-          tmux session of the pick and makes it when it is missing.
-          --print prints the list as <path><TAB><row>.
+  pick    list the tickets, then $WS_PROJECTS itself, then the other
+          directories in $WS_ROOT, then every directory in
+          $WS_PROJECTS, then the vault, in fzf. Tickets with waiting
+          sessions come first, then tickets at planned, qa, or review.
+          Enter switches to the tmux session of the pick and makes it
+          when it is missing. The session of a row that is not a
+          ticket is named after its directory, with dots as
+          underscores. When a session of that name works in another
+          directory, or the name is a ticket id, pick takes <name>-2,
+          <name>-3, and so on, so two directories never share a
+          session. --print prints the list as <path><TAB><row>.
   stage   set the stage, one of spec planned building verifying qa
           review merged. Without <id>, the ticket of the current
           directory. Warns when more than 5 tickets are in building.
@@ -3755,9 +3761,8 @@ pick_build() {
         rows+=("$WS_ROOT/$id")
     done
     mapfile -d '' more < <(find -H "$WS_PROJECTS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | LC_ALL=C sort -z)
-    [[ ! -d $WS_VAULT ]] || more+=("$WS_VAULT")
-    for dir in "${T_PLAIN[@]}" "${more[@]}"; do
-        [[ $dir != *[$'\t\n']* && -z ${seen[$dir]+set} ]] || continue
+    for dir in "$WS_PROJECTS" "${T_PLAIN[@]}" "${more[@]}" "$WS_VAULT"; do
+        [[ -d $dir && $dir != *[$'\t\n']* && -z ${seen[$dir]+set} ]] || continue
         seen[$dir]=1
         rows+=("$dir")
     done
@@ -3835,6 +3840,31 @@ ticket_list() {
     done
 }
 
+# Rows such as $WS_PROJECTS and $WS_PROJECTS/projects share a basename, so a
+# session is a directory's own only when it works there. A session of another
+# directory, or a ticket id whose session is down, pushes the name on to
+# <name>-2, <name>-3, and so on.
+pick_session() {
+    local real base name spath n=1
+    local -A taken=()
+    real=$(realpath -m -- "$1")
+    base=$(realpath -m -s -- "$1")
+    base=${base##*/}
+    base=${base//./_}
+    while IFS=$'\t' read -r name spath; do
+        [[ $name == "$base" || $name =~ ^"$base"-[0-9]+$ ]] || continue
+        if [[ $(realpath -m -- "$spath") == "$real" ]]; then
+            REPLY=$name
+            return 0
+        fi
+        taken[$name]=1
+    done < <(tmux list-sessions -F "#{session_name}"$'\t'"#{session_path}" 2>/dev/null)
+    REPLY=$base
+    while [[ -n ${taken[$REPLY]+set} || -e $WS_ROOT/$REPLY/.ws || -L $WS_ROOT/$REPLY/.ws ]]; do
+        REPLY=$base-$((++n))
+    done
+}
+
 pick_open() {
     local path=$1 name f
     local -A kv=()
@@ -3847,8 +3877,8 @@ pick_open() {
         ws_switch "${kv[WS_ID]}"
         return
     fi
-    name=${path##*/}
-    name=${name//./_}
+    pick_session "$path"
+    name=$REPLY
     if ! tmux has-session -t "=$name:" 2>/dev/null; then
         ws_new_session -s "$name" -c "$path" || return 1
         for f in "$path/.tmux-ready" "$HOME/.tmux-ready"; do
