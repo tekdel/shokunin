@@ -33,8 +33,9 @@ ls_row() {
 
 pane_shows() {
     local i
+    [[ -n $1 ]] || return 1
     for ((i = 0; i < 300; i++)); do
-        tmux capture-pane -p -S - -t "=$1:$2" 2>/dev/null | grep -qF -- "$3" && return 0
+        tmux capture-pane -p -S - -t "$1" 2>/dev/null | grep -qF -- "$2" && return 0
         sleep 0.05
     done
     return 1
@@ -42,8 +43,9 @@ pane_shows() {
 
 pane_runs() {
     local i
+    [[ -n $1 ]] || return 1
     for ((i = 0; i < 100; i++)); do
-        [[ $(tmux display-message -p -t "=$1:$2" '#{pane_current_command}' 2>/dev/null) == "$3" ]] && return 0
+        [[ $(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null) == "$2" ]] && return 0
         sleep 0.05
     done
     return 1
@@ -58,11 +60,17 @@ alive() {
 }
 
 shell_ready() {
-    pane_runs "$1" env "${SHELL##*/}" || abort "the env window of $1 runs no shell"
+    pane_runs "$1" "${SHELL##*/}" || abort "pane '$1' runs no shell"
 }
 
 pane_of() {
-    tmux display-message -p -t "=$1:env" '#{pane_id} #{pane_pid}'
+    [[ -z $1 ]] || tmux display-message -p -t "$1" '#{pane_id} #{pane_pid}'
+}
+
+respawned() {
+    local now
+    now=$(pane_of "$1")
+    [[ -n $now && ${now% *} == "${2% *}" && $now != "$2" ]]
 }
 
 child_of() {
@@ -78,7 +86,7 @@ child_of() {
     return 1
 }
 
-in_env_window() {
+in_pane() {
     local i
     cat >"$FX/ws-here" <<EOF
 #!/usr/bin/env bash
@@ -94,7 +102,8 @@ bash $(printf %q "$WS_TESTS/../../dotfiles/bin/ws") "\$@" >$(printf %q "$FX/here
 echo \$? >$(printf %q "$FX/here.rc")
 EOF
     rm -f "$FX/here.rc"
-    tmux send-keys -t "=$1:env" "bash $(printf %q "$FX/ws-here") ${*:2}" Enter
+    [[ -n $1 ]] || return 1
+    tmux send-keys -t "$1" "bash $(printf %q "$FX/ws-here") ${*:2}" Enter
     for ((i = 0; i < 200; i++)); do
         [[ ! -s $FX/here.rc ]] || return 0
         sleep 0.05
@@ -116,10 +125,11 @@ EOF
 }
 
 test_up() {
-    local out rc real
+    local out rc real envp
     new_fixture_no_ticket
     ws new t1 feat/x alpha beta >/dev/null 2>&1
-    shell_ready t1
+    envp=$(env_pane t1)
+    shell_ready "$envp"
     real=$(realpath -e "$WS_ROOT/t1")
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 0" 0 "$rc"
@@ -137,9 +147,9 @@ test_up() {
     assert "CLAUDE.md lists the web-ui URL" grep -qxF -- "- web-ui: http://localhost:4100" "$WS_ROOT/t1/CLAUDE.md"
     assert "CLAUDE.md lists the gateway URL" grep -qxF -- "- api-gateway: http://localhost:8100" "$WS_ROOT/t1/CLAUDE.md"
     assert "ls shows env:up" grep -q " env:up " <<<"$(ls_row t1)"
-    assert "the env window tails the logs of the stack" pane_shows t1 env "dockyard-feat-x | fixture log line"
-    assert_eq "the session keeps its windows" "claude shell env" \
-        "$(tmux list-windows -t "=t1:" -F '#{window_name}' | paste -sd ' ')"
+    assert "the env pane at the bottom of the shell window tails the logs of the stack" pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert_eq "the session keeps its windows" "claude shell" "$(windows_of t1)"
+    assert_eq "the shell window keeps its shell pane on top" 2 "$(shell_panes t1 | wc -l)"
 
     sed -i 's/^WS_URLS=.*/WS_URLS=/' "$WS_ROOT/t1/.ws"
     ws up t1 >/dev/null 2>&1
@@ -355,10 +365,11 @@ test_up_help_documents_migrate() {
 }
 
 test_up_twice() {
-    local out rc pane
+    local out rc pane envp
     new_fixture_no_ticket
     ws new t1 feat/x alpha >/dev/null 2>&1
-    shell_ready t1
+    envp=$(env_pane t1)
+    shell_ready "$envp"
     ws up t1 >/dev/null 2>&1
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "a second up exits 0" 0 "$rc"
@@ -366,7 +377,7 @@ test_up_twice() {
     assert "it lists the URLs" grep -qxF "  web-ui http://localhost:4100" <<<"$out"
     refute "it reports no write error for a CLAUDE.md that needs no change" grep -qF "cannot write" <<<"$out"
     assert_eq "it runs dockyard up once in all" 1 "$(dockyard_calls "up feat/x")"
-    assert "the env window tails the logs again" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    assert "the env pane tails the logs again" pane_shows "$envp" "dockyard-feat-x | fixture log line"
 
     echo '[]' >"$FX/docker.json"
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
@@ -375,24 +386,26 @@ test_up_twice() {
     assert "dockyard restarts the registered stack" grep -qF "Stack already registered (slot 1)" <<<"$out"
     assert_eq "the stack runs again" 2 "$(containers_of feat-x)"
 
-    tmux kill-window -t "=t1:env"
+    tmux kill-pane -t "$envp"
     ws up t1 >/dev/null 2>&1
-    assert "up puts back a missing env window and tails the logs" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    envp=$(env_pane t1)
+    assert "up puts back a missing env pane and tails the logs" pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert_eq "it adds no window" "claude shell" "$(windows_of t1)"
 
-    pane=$(tmux display-message -p -t "=t1:env" '#{pane_id} #{pane_pid}')
-    out=$(TMUX_PANE=${pane% *} ws up t1 2>&1) && rc=0 || rc=$?
-    assert_eq "up run in the env window exits 0" 0 "$rc"
+    pane=$(pane_of "$envp")
+    out=$(TMUX_PANE=$envp ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up run in the env pane exits 0" 0 "$rc"
     assert "it says how to tail the logs" \
-        grep -qF "Tail the logs with: docker compose -p dockyard-feat-x logs --follow --tail 50" <<<"$out"
-    assert_eq "it leaves the pane it runs in" "$pane" "$(tmux display-message -p -t "=t1:env" '#{pane_id} #{pane_pid}')"
+        grep -qxF "ws runs in the env pane, so it leaves the pane. Tail the logs with: docker compose -p dockyard-feat-x logs --follow --tail 50" <<<"$out"
+    assert_eq "it leaves the pane it runs in" "$pane" "$(pane_of "$envp")"
 
-    tmux respawn-window -k -t "=t1:env" "sleep 300"
-    pane_runs t1 env sleep || abort "the env window does not run sleep"
-    pane=$(tmux display-message -p -t "=t1:env" '#{pane_id} #{pane_pid}')
+    tmux respawn-pane -k -t "$envp" "sleep 300"
+    pane_runs "$envp" sleep || abort "the env pane does not run sleep"
+    pane=$(pane_of "$envp")
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
-    assert_eq "up while the env window runs another program exits 0" 0 "$rc"
-    assert "it says it leaves that program" grep -qF "The env window of t1 is in use, so ws leaves it." <<<"$out"
-    assert_eq "it does not kill that program" "$pane" "$(tmux display-message -p -t "=t1:env" '#{pane_id} #{pane_pid}')"
+    assert_eq "up while the env pane runs another program exits 0" 0 "$rc"
+    assert "it says it leaves that program" grep -qF "The env pane of t1 is in use, so ws leaves it." <<<"$out"
+    assert_eq "it does not kill that program" "$pane" "$(pane_of "$envp")"
 
     tmux kill-session -t "=t1:"
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
@@ -727,83 +740,87 @@ test_claude_md_env_block() {
         "$(cat "$WS_ROOT/t5/CLAUDE.md")"
 }
 
-test_env_window_keeps_user_programs() {
-    local out rc pane kid cmd
+test_env_pane_keeps_user_programs() {
+    local out rc pane kid cmd envp user
     new_fixture_no_ticket
     ws new t1 feat/x alpha >/dev/null 2>&1
-    shell_ready t1
+    envp=$(env_pane t1)
+    shell_ready "$envp"
     mkdir "$FX/userbin"
     printf '#!/usr/bin/env bash\nsleep 1002\n' >"$FX/userbin/migrate.sh"
     chmod +x "$FX/userbin/migrate.sh"
     ln -s "$(PATH=$_base_path command -v sleep)" "$FX/userbin/docker"
-    pane=$(pane_of t1)
+    pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
-    assert "up turns an idle shell in the env window into the log tail" pane_shows t1 env "dockyard-feat-x | fixture log line"
-    refute "it starts a new process there" test "$(pane_of t1)" = "$pane"
+    assert "up turns an idle shell in the env pane into the log tail" pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert "it starts a new process there" respawned "$envp" "$pane"
 
     for cmd in "sleep 1001 &" "$FX/userbin/migrate.sh" "$FX/userbin/docker 1003"; do
-        tmux respawn-window -k -t "=t1:env" bash
-        pane=$(pane_of t1)
-        tmux send-keys -t "=t1:env" "$cmd" Enter
-        kid=$(child_of "${pane#* }") || abort "the env window does not run '$cmd'"
+        tmux respawn-pane -k -t "$envp" bash
+        pane=$(pane_of "$envp")
+        tmux send-keys -t "$envp" "$cmd" Enter
+        kid=$(child_of "${pane#* }") || abort "the env pane does not run '$cmd'"
         out=$(ws up t1 2>&1) && rc=0 || rc=$?
-        assert_eq "up while the env window shell runs '$cmd' exits 0" 0 "$rc"
-        assert "it says it leaves the window" grep -qxF \
-            "The env window of t1 is in use, so ws leaves it. Tail the logs with: docker compose -p dockyard-feat-x logs --follow --tail 50" \
+        assert_eq "up while the env pane shell runs '$cmd' exits 0" 0 "$rc"
+        assert "it says it leaves the pane" grep -qxF \
+            "The env pane of t1 is in use, so ws leaves it. Tail the logs with: docker compose -p dockyard-feat-x logs --follow --tail 50" \
             <<<"$out"
-        assert_eq "it keeps the pane" "$pane" "$(pane_of t1)"
+        assert_eq "it keeps the pane" "$pane" "$(pane_of "$envp")"
         assert "'$cmd' still runs" alive "$kid"
     done
 
-    tmux respawn-window -k -t "=t1:env" bash
-    pane=$(pane_of t1)
-    in_env_window t1 up t1 || abort "ws up in the env window did not finish"
-    assert_eq "up run in the env window without TMUX_PANE exits 0" 0 "$(<"$FX/here.rc")"
-    assert "it says it leaves the window it runs in" grep -qF "ws runs in the env window, so it leaves the window." "$FX/here.out"
-    assert_eq "it keeps that pane" "$pane" "$(pane_of t1)"
+    tmux respawn-pane -k -t "$envp" bash
+    pane=$(pane_of "$envp")
+    in_pane "$envp" up t1 || abort "ws up in the env pane did not finish"
+    assert_eq "up run in the env pane without TMUX_PANE exits 0" 0 "$(<"$FX/here.rc")"
+    assert "it says it leaves the pane it runs in" grep -qF "ws runs in the env pane, so it leaves the pane." "$FX/here.out"
+    assert_eq "it keeps that pane" "$pane" "$(pane_of "$envp")"
 
     ws up t1 >/dev/null 2>&1
-    pane=$(pane_of t1)
+    pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
-    refute "up starts the log tail of an earlier up again" test "$(pane_of t1)" = "$pane"
-    assert "it tails the logs" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    assert "up starts the log tail of an earlier up again" respawned "$envp" "$pane"
+    assert "it tails the logs" pane_shows "$envp" "dockyard-feat-x | fixture log line"
 
-    tmux split-window -d -t "=t1:env"
-    pane=$(pane_of t1)
-    out=$(ws up t1 2>&1) && rc=0 || rc=$?
-    assert "up leaves an env window with two panes" grep -qF "The env window of t1 is in use, so ws leaves it." <<<"$out"
-    assert_eq "it keeps its panes" "2 $pane" "$(tmux display-message -p -t "=t1:env" '#{window_panes}') $(pane_of t1)"
+    user=$(tmux split-window -d -t "$envp" -P -F '#{pane_id}')
+    shell_ready "$user"
+    kid=$(pane_of "$user")
+    pane=$(pane_of "$envp")
+    ws up t1 >/dev/null 2>&1
+    assert "up starts the tail in the env pane after the user split it" respawned "$envp" "$pane"
+    assert_eq "it leaves the pane the user split off" "$kid" "$(pane_of "$user")"
 }
 
-test_env_window_after_the_tail() {
-    local out pane orphan i
+test_env_pane_after_the_tail() {
+    local out pane orphan i envp
     new_fixture_no_ticket
     ws new t1 feat/x alpha >/dev/null 2>&1
-    shell_ready t1
+    envp=$(env_pane t1)
+    shell_ready "$envp"
     touch "$FX/docker.logs-exit"
     ws up t1 >/dev/null 2>&1
     for ((i = 0; i < 100; i++)); do
-        [[ $(tmux display-message -p -t "=t1:env" '#{pane_dead}') != 1 ]] || break
+        [[ $(tmux display-message -p -t "$envp" '#{pane_dead}') != 1 ]] || break
         sleep 0.05
     done
-    assert "the env window keeps the logs after the tail ends" pane_shows t1 env "dockyard-feat-x | fixture log line"
-    assert_eq "the session keeps its env window" "claude shell env" \
-        "$(tmux list-windows -t "=t1:" -F '#{window_name}' | paste -sd ' ')"
-    pane=$(pane_of t1)
+    assert "the env pane keeps the logs after the tail ends" pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert_eq "the session keeps its windows" "claude shell" "$(windows_of t1)"
+    assert_eq "the shell window keeps both panes" 2 "$(shell_panes t1 | wc -l)"
+    pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
-    refute "up starts an ended tail again" test "$(pane_of t1)" = "$pane"
+    assert "up starts an ended tail again" respawned "$envp" "$pane"
     rm "$FX/docker.logs-exit"
 
     ws up t1 >/dev/null 2>&1
-    pane=$(pane_of t1)
-    tmux copy-mode -t "=t1:env"
+    pane=$(pane_of "$envp")
+    tmux copy-mode -t "$envp"
     out=$(ws up t1 2>&1)
-    assert "up leaves a tail that the user scrolls in copy mode" grep -qF "The env window of t1 is in use" <<<"$out"
-    assert_eq "it keeps that pane" "$pane" "$(pane_of t1)"
+    assert "up leaves a tail that the user scrolls in copy mode" grep -qF "The env pane of t1 is in use" <<<"$out"
+    assert_eq "it keeps that pane" "$pane" "$(pane_of "$envp")"
 
-    tmux respawn-window -k -t "=t1:env" bash
-    pane=$(pane_of t1)
-    tmux send-keys -t "=t1:env" "( sleep 1004 & echo \$! >$(printf %q "$FX/orphan.pid") )" Enter
+    tmux respawn-pane -k -t "$envp" bash
+    pane=$(pane_of "$envp")
+    tmux send-keys -t "$envp" "( sleep 1004 & echo \$! >$(printf %q "$FX/orphan.pid") )" Enter
     for ((i = 0; i < 100; i++)); do
         [[ ! -s $FX/orphan.pid ]] || break
         sleep 0.05
@@ -811,20 +828,172 @@ test_env_window_after_the_tail() {
     orphan=$(<"$FX/orphan.pid")
     out=$(ws up t1 2>&1)
     assert "up leaves a shell whose terminal still runs a process it left behind" \
-        grep -qF "The env window of t1 is in use" <<<"$out"
+        grep -qF "The env pane of t1 is in use" <<<"$out"
     assert "that process still runs" alive "$orphan"
     [[ -z $orphan ]] || kill "$orphan" 2>/dev/null
     wait_exit "$orphan"
     refute "the test leaves no process behind" alive "$orphan"
 
-    tmux kill-window -t "=t1:env"
+    tmux kill-pane -t "$envp"
     tmux new-window -d -t "=t1:" -n "my env" bash
     tmux new-window -d -t "=t1:" -n envoy bash
     pane=$(tmux display-message -p -t "=t1:envoy" '#{pane_id} #{pane_pid}')
     ws up t1 >/dev/null 2>&1
-    assert "up opens a window named env when none has that exact name" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    assert "up splits the shell window when no window has the exact name env" \
+        pane_shows "$(env_pane t1)" "dockyard-feat-x | fixture log line"
     assert_eq "it leaves a window whose name starts with env" "$pane" \
         "$(tmux display-message -p -t "=t1:envoy" '#{pane_id} #{pane_pid}')"
+}
+
+test_up_from_the_shell_pane() {
+    local out rc envp shellp pane kid i
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    envp=$(env_pane t1) shellp=$(shell_pane t1)
+    shell_ready "$envp"
+    shell_ready "$shellp"
+    pane=$(pane_of "$shellp")
+    in_pane "$shellp" up t1 || abort "ws up in the shell pane did not finish"
+    assert_eq "up run in the shell pane exits 0" 0 "$(<"$FX/here.rc")"
+    assert "it tails the logs in the env pane below" pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    refute "it prints no tail command" grep -qF "Tail the logs with" "$FX/here.out"
+    assert_eq "it keeps the shell pane" "$pane" "$(pane_of "$shellp")"
+
+    tmux send-keys -t "$shellp" "sleep 1005 &" Enter
+    kid=$(child_of "${pane#* }") || abort "the shell pane does not run its job"
+    pane=$(pane_of "$envp")
+    out=$(TMUX_PANE=$shellp ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up with TMUX_PANE of the shell pane exits 0" 0 "$rc"
+    assert "it starts the tail again in the env pane" respawned "$envp" "$pane"
+    refute "it prints no tail command" grep -qF "Tail the logs with" <<<"$out"
+    assert "the job in the shell pane still runs" alive "$kid"
+    kill "$kid" 2>/dev/null
+    wait_exit "$kid"
+    refute "the test leaves no process behind" alive "$kid"
+
+    tmux send-keys -t "$shellp" "exit" Enter
+    for ((i = 0; i < 100; i++)); do
+        [[ $(shell_panes t1) != *"$shellp"* ]] && break
+        sleep 0.05
+    done
+    assert_eq "the shell pane closes when its shell exits" "$envp" "$(shell_panes t1)"
+}
+
+test_up_prefers_the_env_pane() {
+    local envp pane
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    envp=$(env_pane t1)
+    tmux new-window -d -a -t "=t1:{end}" -n env -c "$WS_ROOT/t1"
+    shell_ready "$envp"
+    shell_ready "=t1:env"
+    pane=$(pane_of "=t1:env")
+    ws up t1 >/dev/null 2>&1
+    assert "up tails the logs in the env pane when the session also has an env window" \
+        pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert_eq "it leaves the env window" "$pane" "$(pane_of "=t1:env")"
+}
+
+test_up_in_a_session_of_an_older_ws() {
+    local out rc pane shellp kid
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    remake_session t1 claude shell env
+    shellp=$(shell_pane t1)
+    shell_ready "=t1:env"
+    pane=$(pane_of "$shellp")
+    ws up t1 >/dev/null 2>&1
+    assert "up tails the logs in the env window of a session that an older ws made" \
+        pane_shows "=t1:env" "dockyard-feat-x | fixture log line"
+    assert_eq "it keeps the windows" "claude shell env" "$(windows_of t1)"
+    assert_eq "it does not split the shell window" "$pane" "$(pane_of "$(shell_panes t1)")"
+
+    tmux respawn-pane -k -t "=t1:env" bash
+    pane=$(pane_of "=t1:env")
+    tmux send-keys -t "=t1:env" "sleep 1001 &" Enter
+    kid=$(child_of "${pane#* }") || abort "the env window does not run its job"
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up while the env window shell runs a job exits 0" 0 "$rc"
+    assert "it says it leaves the window" grep -qxF \
+        "The env window of t1 is in use, so ws leaves it. Tail the logs with: docker compose -p dockyard-feat-x logs --follow --tail 50" \
+        <<<"$out"
+    assert_eq "it keeps the pane" "$pane" "$(pane_of "=t1:env")"
+    assert "the job still runs" alive "$kid"
+    kill "$kid" 2>/dev/null
+    wait_exit "$kid"
+    refute "the test leaves no process behind" alive "$kid"
+
+    tmux respawn-pane -k -t "=t1:env" bash
+    pane_runs "=t1:env" bash || abort "the env window runs no bash"
+    pane=$(pane_of "=t1:env")
+    out=$(TMUX_PANE=${pane% *} ws up t1 2>&1)
+    assert "up run in the env window leaves it" grep -qF "ws runs in the env window, so it leaves the window." <<<"$out"
+    assert_eq "it keeps that pane" "$pane" "$(pane_of "=t1:env")"
+
+    in_pane "=t1:env" up t1 || abort "ws up in the env window did not finish"
+    assert "up run in the env window without TMUX_PANE leaves it" \
+        grep -qF "ws runs in the env window, so it leaves the window." "$FX/here.out"
+    assert_eq "it keeps that pane too" "$pane" "$(pane_of "=t1:env")"
+
+    tmux split-window -d -t "=t1:env"
+    pane=$(pane_of "=t1:env")
+    out=$(ws up t1 2>&1)
+    assert "up leaves an env window with two panes" grep -qF "The env window of t1 is in use, so ws leaves it." <<<"$out"
+    assert_eq "it keeps its panes" "2 $pane" "$(tmux display-message -p -t "=t1:env" '#{window_panes}') $(pane_of "=t1:env")"
+}
+
+test_up_makes_the_env_pane() {
+    local pane
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    remake_session t1 claude shell
+    pane=$(pane_of "$(shell_pane t1)")
+    ws up t1 >/dev/null 2>&1
+    assert "up splits the shell window of a session with neither env pane nor env window" \
+        pane_shows "$(env_pane t1)" "dockyard-feat-x | fixture log line"
+    assert_eq "it keeps the shell pane on top" "$pane" "$(pane_of "$(shell_pane t1)")"
+    assert_eq "it adds no window" "claude shell" "$(windows_of t1)"
+    assert "the env pane takes about 40% of the window height" env_pane_sized t1
+
+    tmux kill-window -t "=t1:shell"
+    ws up t1 >/dev/null 2>&1
+    assert_eq "up makes a missing shell window" "claude shell" "$(windows_of t1)"
+    assert "it tails the logs in the env pane of the new shell window" \
+        pane_shows "$(env_pane t1)" "dockyard-feat-x | fixture log line"
+    assert_eq "the new shell window has the shell pane above the env pane" 2 "$(shell_panes t1 | wc -l)"
+}
+
+test_up_splits_below_every_tiled_pane() {
+    local left right float envp
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    remake_session t1 claude shell
+    left=$(tmux display-message -p -t "=t1:shell" '#{pane_id}')
+    right=$(tmux split-window -h -d -t "$left" -P -F '#{pane_id}')
+    float=$(tmux new-pane -d -t "$left" -P -F '#{pane_id}')
+    tmux select-pane -t "$float"
+    left=$(pane_of "$left") right=$(pane_of "$right") float=$(pane_of "$float")
+    ws up t1 >/dev/null 2>&1
+    envp=$(tmux list-panes -t "=t1:shell" -F '#{pane_id}' | grep -vxF -e "${left% *}" -e "${right% *}" -e "${float% *}")
+    envp=${envp:-none}
+    assert "up tails the logs in a new pane of a shell window split side by side, with a floating pane active" \
+        pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert_eq "the env pane is tiled, spans the window width, and sits at the bottom" "0 1 1" \
+        "$(tmux display-message -p -t "$envp" '#{pane_floating_flag} #{==:#{pane_width},#{window_width}} #{pane_at_bottom}')"
+    assert_eq "it keeps the panes the user made" "$left|$right|$float" \
+        "$(pane_of "${left% *}")|$(pane_of "${right% *}")|$(pane_of "${float% *}")"
+}
+
+test_help_names_the_split_shell_window() {
+    local help
+    new_fixture_no_ticket
+    help=$(ws new --help | tr '\n' ' ' | tr -s ' ')
+    assert "help names the two windows" grep -qF "has the windows claude and shell." <<<"$help"
+    assert "help places the env pane below the shell" \
+        grep -qF "The shell window has an interactive shell on top and the env pane below, about 40% of its height" <<<"$help"
+    assert "help says up tails the logs in the env pane" grep -qF "tail the container logs in the env pane." <<<"$help"
+    assert "help says up still uses the env window of an older session" \
+        grep -qF "A session made by an older ws has an env window instead, and up uses it the same way." <<<"$help"
 }
 
 test_up_urls_that_do_not_fit() {
@@ -925,9 +1094,9 @@ test_drop_fixtures_waits_for_the_panes() {
     local pid sandbox
     new_fixture_no_ticket
     ws new t1 feat/x alpha >/dev/null 2>&1
-    tmux respawn-window -k -t "=t1:env" bash -c "trap 'sleep 1; : >\"\$HOME/late\"' HUP; sleep infinity & wait"
-    pid=$(tmux display-message -p -t "=t1:env" '#{pane_pid}')
-    child_of "$pid" >/dev/null || abort "the env window does not run its sleep"
+    tmux respawn-pane -k -t "$(env_pane t1)" bash -c "trap 'sleep 1; : >\"\$HOME/late\"' HUP; sleep infinity & wait"
+    pid=$(tmux display-message -p -t "$(env_pane t1)" '#{pane_pid}')
+    child_of "$pid" >/dev/null || abort "the env pane does not run its sleep"
     sandbox=$_sandbox
     drop_fixtures
     refute "drop_fixtures returns once the processes of the panes end" alive "$pid"
@@ -945,6 +1114,7 @@ run_test test_up_migrate_needs_the_containers
 run_test test_up_migrate_refuses_a_bad_setting
 run_test test_up_migrate_after_wait
 run_test test_up_help_documents_migrate
+run_test test_help_names_the_split_shell_window
 run_test test_up_twice
 run_test test_down
 run_test test_up_fails
@@ -956,8 +1126,13 @@ run_test test_purge_checks_the_record_again
 run_test test_another_tickets_stack
 run_test test_stack_name_follows_dockyard
 run_test test_claude_md_env_block
-run_test test_env_window_keeps_user_programs
-run_test test_env_window_after_the_tail
+run_test test_env_pane_keeps_user_programs
+run_test test_env_pane_after_the_tail
+run_test test_up_from_the_shell_pane
+run_test test_up_prefers_the_env_pane
+run_test test_up_in_a_session_of_an_older_ws
+run_test test_up_makes_the_env_pane
+run_test test_up_splits_below_every_tiled_pane
 run_test test_up_urls_that_do_not_fit
 run_test test_up_names_the_ticket_that_holds_the_stack
 run_test test_claude_md_markers

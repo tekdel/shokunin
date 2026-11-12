@@ -318,6 +318,41 @@ head_of() {
     git -C "$1" rev-parse HEAD
 }
 
+windows_of() {
+    tmux list-windows -t "=$1:" -F '#{window_name}' 2>/dev/null | paste -sd ' '
+}
+
+shell_panes() {
+    tmux list-panes -t "=$1:shell" -F '#{pane_top} #{pane_id}' 2>/dev/null | sort -n | cut -d ' ' -f 2
+}
+
+shell_pane() {
+    shell_panes "$1" | head -n 1
+}
+
+env_pane() {
+    shell_panes "$1" | sed -n '2,$p' | tail -n 1
+}
+
+env_pane_sized() {
+    local pane h wh
+    pane=$(env_pane "$1")
+    [[ -n $pane ]] && read -r h wh < <(tmux display-message -p -t "$pane" '#{pane_height} #{window_height}') &&
+        ((h * 100 >= wh * 35 && h * 100 <= wh * 45))
+}
+
+# The old session goes only after the new one exists, since a tmux server with no session exits.
+remake_session() {
+    local id=$1 name
+    shift
+    tmux rename-session -t "=$id:" "$id-gone" || abort "cannot rename the session $id"
+    tmux new-session -d -s "$id" -c "$WS_ROOT/$id" -n "$1" || abort "cannot make the session $id"
+    tmux kill-session -t "=$id-gone:" || abort "cannot kill the old session of $id"
+    for name in "${@:2}"; do
+        tmux new-window -d -a -t "=$id:{end}" -n "$name" -c "$WS_ROOT/$id" || abort "cannot add the window $name to $id"
+    done
+}
+
 finish() {
     if ((_failures)); then
         echo "$_failures failed"

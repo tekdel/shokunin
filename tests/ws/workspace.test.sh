@@ -8,8 +8,30 @@ ws_value() {
     sed -n "s/^$2=//p" "$WS_ROOT/$1/.ws"
 }
 
-windows_of() {
-    tmux list-windows -t "=$1:" -F '#{window_name}' 2>/dev/null | paste -sd ' '
+shell_window_of() {
+    local pane
+    for pane in $(shell_panes "$1"); do
+        tmux display-message -p -t "$pane" '#{pane_active} #{pane_current_command} #{pane_current_path}'
+    done
+}
+
+wait_shells() {
+    local i pane
+    for ((i = 0; i < 100; i++)); do
+        for pane in $(shell_panes "$1"); do
+            if [[ $(tmux display-message -p -t "$pane" '#{pane_current_command}') != "${SHELL##*/}" ]]; then
+                sleep 0.05
+                continue 2
+            fi
+        done
+        return 0
+    done
+}
+
+new_layout_of() {
+    local real sh=${SHELL##*/}
+    real=$(realpath -e "$WS_ROOT/$1")
+    printf '1 %s %s\n0 %s %s' "$sh" "$real" "$sh" "$real"
 }
 
 session_path() {
@@ -88,12 +110,16 @@ test_new() {
     assert "CLAUDE.md names the branch" grep -qF '`feat/x`' "$WS_ROOT/t1/CLAUDE.md"
     assert "CLAUDE.md names both repos" grep -qF '`beta/` belongs to `~/projects/beta`' "$WS_ROOT/t1/CLAUDE.md"
     refute "CLAUDE.md imports no file" grep -qE '(^|[[:space:]])@[~/.A-Za-z]' "$WS_ROOT/t1/CLAUDE.md"
-    assert_eq "the session has the windows claude, shell, and env" "claude shell env" "$(windows_of t1)"
+    assert_eq "the session has the windows claude and shell" "claude shell" "$(windows_of t1)"
+    wait_shells t1
+    assert_eq "the shell window has the selected shell pane on top and the env pane below, both shells in the ticket" \
+        "$(new_layout_of t1)" "$(shell_window_of t1)"
+    assert "the env pane takes about 40% of the window height" env_pane_sized t1
     assert_eq "the session works in the ticket" "$WS_ROOT/t1" "$(session_path t1)"
     assert "the claude window runs claude -n t1" wait_for_line "$FX/claude.log" '-n t1'
     assert "new says how to attach outside tmux" grep -qxF "Attach with: tmux attach -t '=t1:'" <<<"$out"
     ws new v1.2 feat/v alpha >/dev/null 2>&1
-    assert_eq "an id with a dot gets its own session" "claude shell env" "$(windows_of v1.2)"
+    assert_eq "an id with a dot gets its own session" "claude shell" "$(windows_of v1.2)"
 }
 
 test_new_existing_branch() {
@@ -119,21 +145,27 @@ test_new_existing_branch() {
 }
 
 test_new_rerun() {
-    local out rc before
+    local out rc before panes
     new_fixture_no_ticket
     ws new t1 feat/x alpha >/dev/null 2>&1
     ws stage t1 qa >/dev/null
+    panes=$(shell_panes t1)
     out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun exits 0" 0 "$rc"
-    assert_eq "a rerun adds no window" "claude shell env" "$(windows_of t1)"
+    assert_eq "a rerun adds no window" "claude shell" "$(windows_of t1)"
+    assert_eq "a rerun adds no pane" "$panes" "$(shell_panes t1)"
     assert "a rerun switches, or says how to attach" grep -qxF "Attach with: tmux attach -t '=t1:'" <<<"$out"
 
-    tmux kill-window -t "=t1:env"
+    tmux kill-pane -t "$(env_pane t1)"
     tmux kill-window -t "=t1:claude"
+    panes=$(shell_pane t1)
     rm "$WS_ROOT/t1/CLAUDE.md"
     out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
     assert_eq "a repairing rerun exits 0" 0 "$rc"
-    assert_eq "a rerun puts back the missing windows, claude first" "claude shell env" "$(windows_of t1)"
+    assert_eq "a rerun puts back the missing windows, claude first" "claude shell" "$(windows_of t1)"
+    wait_shells t1
+    assert_eq "a rerun puts back the env pane below the shell pane it keeps" "$(new_layout_of t1)" "$(shell_window_of t1)"
+    assert_eq "the shell pane on top is the one the session had" "$panes" "$(shell_pane t1)"
     assert "a rerun writes a missing CLAUDE.md" test -f "$WS_ROOT/t1/CLAUDE.md"
     assert "a rerun adds a new repo" is_worktree "$WS_ROOT/t1/beta"
     assert_eq "a rerun keeps the repos it had" "alpha beta" "$(ws_value t1 WS_REPOS | tr -d '"')"
@@ -144,6 +176,25 @@ test_new_rerun() {
     assert_eq "a rerun on another branch exits 1" 1 "$rc"
     assert "it names both branches" grep -qF "ticket t1 is on branch feat/x, not feat/y" <<<"$out"
     assert_eq "it leaves .ws alone" "$before" "$(cat "$WS_ROOT/t1/.ws")"
+}
+
+test_new_rerun_on_a_session_of_an_older_ws() {
+    local out rc panes env
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    remake_session t1 claude shell env
+    panes=$(shell_panes t1)
+    env=$(tmux display-message -p -t "=t1:env" '#{pane_id}')
+    out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun on a session that an older ws made exits 0" 0 "$rc"
+    assert_eq "it keeps the env window and adds no window" "claude shell env" "$(windows_of t1)"
+    assert_eq "it adds no env pane to the shell window" "$panes" "$(shell_panes t1)"
+    assert_eq "it keeps the pane of the env window" "$env" "$(tmux display-message -p -t "=t1:env" '#{pane_id}')"
+
+    tmux kill-window -t "=t1:shell"
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    assert_eq "a rerun puts back a missing shell window after the env window" "claude env shell" "$(windows_of t1)"
+    assert_eq "it splits no pane off the new shell window, since the env window is there" 1 "$(shell_panes t1 | wc -l)"
 }
 
 test_new_takes_a_dir_without_ws() {
@@ -356,7 +407,9 @@ test_adopt() {
     assert "adopt keeps uncommitted files" test -f "$WS_ROOT/t3/alpha/wip.txt"
     assert_eq "adopt writes the branch to .ws" feat/t3 "$(ws_value t3 WS_BRANCH)"
     assert_eq "adopt writes the repos to .ws" '"alpha beta"' "$(ws_value t3 WS_REPOS)"
-    assert_eq "adopt makes the session" "claude shell env" "$(windows_of t3)"
+    assert_eq "adopt makes the session" "claude shell" "$(windows_of t3)"
+    wait_shells t3
+    assert_eq "adopt splits the shell window" "$(new_layout_of t3)" "$(shell_window_of t3)"
     assert "adopt names each move" grep -qF "Moved ~/projects/beta-t3 to ~/work/t3/beta" <<<"$out"
 }
 
@@ -609,7 +662,9 @@ test_pick_opens() {
     tmux kill-session -t "=t1"
     WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
     wait_refresh
-    assert_eq "pick remakes a ticket session with its windows" "claude shell env" "$(windows_of t1)"
+    assert_eq "pick remakes a ticket session with its windows" "claude shell" "$(windows_of t1)"
+    wait_shells t1
+    assert_eq "pick remakes the split shell window" "$(new_layout_of t1)" "$(shell_window_of t1)"
 
     mkdir "$WS_PROJECTS/dot.name"
     WS_FZF_PICK=$WS_PROJECTS/dot.name ws pick >/dev/null 2>&1
@@ -673,7 +728,7 @@ test_dotted_id() {
     fake_fzf
     out=$(ws new rel.42 feat/dot alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new takes an id with a dot" 0 "$rc"
-    assert_eq "the dotted session has the windows claude, shell, and env" "claude shell env" "$(windows_of rel.42)"
+    assert_eq "the dotted session has the windows claude and shell" "claude shell" "$(windows_of rel.42)"
     hint=$(sed -n 's/^Attach with: //p' <<<"$out")
     for shell in bash zsh; do
         if command -v "$shell" >/dev/null; then
@@ -686,13 +741,15 @@ test_dotted_id() {
     out=$(ws new rel.42 feat/dot alpha 2>&1) && rc=0 || rc=$?
     assert_eq "a rerun on a dotted id exits 0" 0 "$rc"
     refute "a rerun makes no second session" grep -q 'duplicate session' <<<"$out"
-    assert_eq "a rerun adds no window to the dotted session" "claude shell env" "$(windows_of rel.42)"
+    assert_eq "a rerun adds no window to the dotted session" "claude shell" "$(windows_of rel.42)"
+    assert_eq "a rerun adds no pane to the dotted session" 2 "$(shell_panes rel.42 | wc -l)"
 
-    tmux kill-window -t "=rel.42:env"
+    tmux kill-pane -t "$(env_pane rel.42)"
     WS_FZF_PICK=$WS_ROOT/rel.42 ws pick >/dev/null 2>&1 && rc=0 || rc=$?
     wait_refresh
     assert_eq "pick opens a dotted ticket" 0 "$rc"
-    assert_eq "pick repairs the dotted session" "claude shell env" "$(windows_of rel.42)"
+    assert_eq "pick repairs the dotted session" "claude shell" "$(windows_of rel.42)"
+    assert_eq "pick puts back the env pane of the dotted session" 2 "$(shell_panes rel.42 | wc -l)"
 
     tmux new-session -d -s other -c "$HOME"
     outer_tmux new-session -d -x 120 -y 40 "env -u TMUX $(printf %q "$FX/bin/tmux") attach-session -t '=other:'"
@@ -1132,10 +1189,10 @@ test_claude_md_keeps_edits() {
         grep -qF '`beta/` belongs to `~/projects/beta`' "$WS_ROOT/t1/CLAUDE.md"
 
     echo "my notes" >>"$WS_ROOT/t1/CLAUDE.md"
-    tmux kill-window -t "=t1:env"
+    tmux kill-pane -t "$(env_pane t1)"
     ws new t1 feat/x alpha beta >/dev/null 2>&1
     assert "new keeps an edited CLAUDE.md" grep -qx "my notes" "$WS_ROOT/t1/CLAUDE.md"
-    assert "new still repairs the rest" test "$(windows_of t1)" = "claude shell env"
+    assert "new still repairs the rest" test "$(windows_of t1) $(shell_panes t1 | wc -l)" = "claude shell 2"
 
     add_worktree alpha "$WS_PROJECTS/alpha-t2" feat/t2
     ws new t2 feat/t2 beta >/dev/null 2>&1
@@ -1287,6 +1344,7 @@ test_alacritty_opens_a_shell_when_tmux_fails() {
 run_test test_new
 run_test test_new_existing_branch
 run_test test_new_rerun
+run_test test_new_rerun_on_a_session_of_an_older_ws
 run_test test_new_takes_a_dir_without_ws
 run_test test_new_refuses
 run_test test_ws_file_writes

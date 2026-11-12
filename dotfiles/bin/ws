@@ -2515,9 +2515,11 @@ A ticket is the directory $WS_ROOT/<id>. It holds .ws, the ticket state
 that only ws writes, a CLAUDE.md that ws writes, a .claude/settings.json
 that denies Claude edits of the ticket's scenarios, .ws, and evidence,
 and one git worktree of $WS_PROJECTS/<repo> per repo, all on one branch.
-Its tmux session is named <id> and has the windows claude, shell, and
-env. Ids, --ticket, and --topic take ASCII letters, digits, dots,
-dashes, and underscores.
+Its tmux session is named <id> and has the windows claude and shell. The
+shell window has an interactive shell on top and the env pane below,
+about 40% of its height, where ws up tails the container logs. Ids,
+--ticket, and --topic take ASCII letters, digits, dots, dashes, and
+underscores.
 
   new     make what is missing of the ticket: the worktrees, .ws,
           CLAUDE.md, .claude/settings.json, and the tmux session, whose
@@ -2555,25 +2557,28 @@ dashes, and underscores.
   up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>,
           write the slot and the URLs that dockyard prints to .ws and to
           the env lines of CLAUDE.md, and tail the container logs in the
-          env window. When WS_UP_PROFILES maps repos of the ticket to
+          env pane. When WS_UP_PROFILES maps repos of the ticket to
           compose profiles, up adds --profile with each of those
           profiles once. When WS_DEFAULT_REPOS or WS_UP_PROFILES is set,
           up names each repo of the ticket that is in neither, since
-          dockyard starts no service for it. up replaces the env window
+          dockyard starts no service for it. up replaces the env pane
           only when it shows the logs of an earlier up or an idle shell;
-          else it prints the command that tails them. When .ws has URLs
-          and a container of the stack runs, up says the env is already
-          up and skips dockyard, so a repo added since starts after ws
-          down and ws up. A failed dockyard up makes ws up exit with its
-          status. --wait then asks each URL until it answers with an
-          HTTP status below 500, for at most WS_UP_TIMEOUT seconds, 300
-          by default. --migrate then runs the command that WS_UP_MIGRATE
-          gives each repo of the ticket, in repo order, also when the
-          env was already up, with docker compose -p dockyard-<stack>
-          exec -T <repo> <command>. It prints their output and stops at
-          the first command that fails, with its status. When a
-          container that should run a command is not running, it runs
-          none and exits 1.
+          else it prints the command that tails them. A session made by
+          an older ws has an env window instead, and up uses it the same
+          way. When the session has neither, up splits the shell window
+          to make the env pane, and makes the shell window when it is
+          missing. When .ws has URLs and a container of the stack runs,
+          up says the env is already up and skips dockyard, so a repo
+          added since starts after ws down and ws up. A failed dockyard
+          up makes ws up exit with its status. --wait then asks each URL
+          until it answers with an HTTP status below 500, for at most
+          WS_UP_TIMEOUT seconds, 300 by default. --migrate then runs the
+          command that WS_UP_MIGRATE gives each repo of the ticket, in
+          repo order, also when the env was already up, with docker
+          compose -p dockyard-<stack> exec -T <repo> <command>. It
+          prints their output and stops at the first command that fails,
+          with its status. When a container that should run a command is
+          not running, it runs none and exits 1.
   down    run dockyard down <branch>, which stops the containers and
           keeps the slot and the volumes, and clear WS_URLS.
   rm      run ws down, then refuse when a worktree has a KEEP reason of
@@ -3126,26 +3131,49 @@ ticket_pane_idle() {
     [[ ${procs//[[:space:]]/} == "$1" ]]
 }
 
+# ws marks the env pane with the pane option @ws-env, which tmux keeps across
+# respawn-pane and never copies to a split. An older ws made a window named
+# env instead, and its sessions still have it.
+ticket_env_panes() {
+    REPLY=$(tmux list-panes -s -t "=$1:" -f '#{==:#{@ws-env},1}' -F '#{pane_id}') || return 1
+    [[ -n $REPLY ]] || REPLY=$(tmux list-panes -s -t "=$1:" -f '#{==:#{window_name},env}' -F '#{pane_id}')
+}
+
+ticket_shell_window() {
+    REPLY=$(tmux list-windows -t "=$1:" -f '#{==:#{window_name},shell}' -F '#{window_id}') || return 1
+    REPLY=${REPLY%%$'\n'*}
+    [[ -n $REPLY ]] || REPLY=$(tmux new-window -d -a -t "=$1:{end}" -n shell -c "$2" -P -F '#{window_id}')
+}
+
+# tmux splits a floating pane into another floating pane, so ws splits a tiled one.
+ticket_env_split() {
+    local pane
+    ticket_shell_window "$1" "$2" || return 1
+    pane=$(tmux list-panes -t "$REPLY" -f '#{?pane_floating_flag,0,1}' -F '#{pane_id}') || return 1
+    pane=${pane%%$'\n'*}
+    pane=$(tmux split-window -d -f -v -l 40% -t "${pane:-$REPLY}" -c "$2" -P -F '#{pane_id}') &&
+        tmux set-option -p -t "$pane" @ws-env 1 && REPLY=$pane
+}
+
 ticket_env_logs() {
-    local path win mine pane="" panes="" pid="" tty="" mode="" cmd="" start="" var
+    local path pane what="" mine pid="" tty="" mode="" cmd="" start="" var
     local -a opts=() tail=(docker compose -p "$3" logs --follow --tail 50)
     path=$(ticket_session_path "$1") && [[ $(realpath -m -- "$path") == "$(realpath -m -- "$2")" ]] || return 0
-    win=$(tmux list-windows -t "=$1:" -F '#{window_id} #{window_name}' | sed -n 's/^\(@[0-9]*\) env$/\1/p')
-    if [[ -z $win ]]; then
-        pane=$(tmux new-window -d -a -t "=$1:{end}" -n env -c "$2" -P -F '#{pane_id}') || return 1
+    ticket_env_panes "$1" || return 1
+    pane=$REPLY
+    if [[ -z $pane ]]; then
+        ticket_env_split "$1" "$2" || return 1
+        pane=$REPLY
     else
-        if [[ $win != *$'\n'* ]]; then
-            IFS='|' read -r pane panes pid tty mode cmd start < <(tmux display-message -p -t "$win" \
-                '#{pane_id}|#{window_panes}|#{pane_pid}|#{pane_tty}|#{pane_in_mode}|#{pane_current_command}|#{pane_start_command}')
-        fi
+        IFS='|' read -r what pid tty mode cmd start < <(tmux display-message -p -t "${pane%%$'\n'*}" \
+            '#{?#{==:#{@ws-env},1},env pane,env window}|#{pane_pid}|#{pane_tty}|#{pane_in_mode}|#{pane_current_command}|#{pane_start_command}')
         mine=$(ps -o tty= -p "$$" 2>/dev/null) || mine=
-        if [[ -n $tty && /dev/${mine// /} == "$tty" ]] ||
-            [[ -n ${TMUX_PANE-} && $(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null) == "$win" ]]; then
-            echo "ws runs in the env window, so it leaves the window. Tail the logs with: ${tail[*]}"
+        if [[ ${TMUX_PANE-} == "${pane%%$'\n'*}" || (-n $tty && /dev/${mine// /} == "$tty") ]]; then
+            echo "ws runs in the $what, so it leaves the ${what#env }. Tail the logs with: ${tail[*]}"
             return 0
         fi
-        if [[ $panes != 1 || $mode != 0 ]] || ! { [[ $start == "${tail[*]}" ]] || ticket_pane_idle "$pid" "$tty" "$cmd"; }; then
-            echo "The env window of $1 is in use, so ws leaves it. Tail the logs with: ${tail[*]}"
+        if [[ $pane == *$'\n'* || $mode != 0 ]] || ! { [[ $start == "${tail[*]}" ]] || ticket_pane_idle "$pid" "$tty" "$cmd"; }; then
+            echo "The $what of $1 is in use, so ws leaves it. Tail the logs with: ${tail[*]}"
             return 0
         fi
     fi
@@ -3221,12 +3249,9 @@ ticket_session() {
         tmux new-window -d -b -t "=$id:{start}" -n claude -c "$dir" claude -n "$id" || return 1
         tmux select-window -t "=$id:claude" || true
     fi
-    if [[ " ${have[*]} " != *" shell "* ]]; then
-        tmux new-window -d -a -t "=$id:{end}" -n shell -c "$dir" || return 1
-    fi
-    if [[ " ${have[*]} " != *" env "* ]]; then
-        tmux new-window -d -a -t "=$id:{end}" -n env -c "$dir" || return 1
-    fi
+    ticket_shell_window "$id" "$dir" || return 1
+    ticket_env_panes "$id" || return 1
+    [[ -n $REPLY ]] || ticket_env_split "$id" "$dir"
 }
 
 ws_switch() {
@@ -4116,7 +4141,7 @@ ws_up() {
     fi
     ticket_update "$dir" set WS_SLOT "${env[slot]}" WS_URLS "$urls" || return 1
     ticket_claude_refresh "$dir" || echo "ws: cannot write $(ws_shown "$dir/CLAUDE.md")" >&2
-    ticket_env_logs "$id" "$dir" "${env[project]}" || echo "ws: cannot tail the logs in the env window of $id" >&2
+    ticket_env_logs "$id" "$dir" "${env[project]}" || echo "ws: cannot tail the logs in the env pane of $id" >&2
     ((wait == 0)) || ticket_env_wait "$urls" || return 1
     ((migrate == 0)) || ticket_migrate "$id" "${env[project]}" "${migrations[@]}"
 }
