@@ -369,16 +369,14 @@ ws_thread_cwd() {
 }
 
 # The kernel drops the working directory of a process that exits, long before
-# its parent reaps it. Flag 4 of stat is PF_EXITING. Another thread keeps its
-# own directory, so the process counts as exited only when task/ lists no
-# other thread. The Threads line of status can still count a thread that
-# task/ no longer lists.
+# its parent reaps it.
 ws_exited() {
-    local stat
+    local stat flags pf_exiting=4
     local -a f=() tasks=()
     { IFS= read -r stat <"$WS_PROC/$1/stat"; } 2>/dev/null || return 1
     read -r -a f <<<"${stat##*) }"
-    [[ ${f[6]-} =~ ^[0-9]+$ ]] && ((f[6] & 4)) || return 1
+    flags=${f[6]-}
+    [[ $flags =~ ^[0-9]+$ ]] && ((flags & pf_exiting)) || return 1
     tasks=("$WS_PROC/$1"/task/*)
     [[ ${#tasks[@]} == 1 && ${tasks[0]} == "$WS_PROC/$1/task/$1" ]]
 }
@@ -2950,7 +2948,7 @@ ticket_claude_md() {
 }
 
 ticket_claude_rewrite() {
-    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header text env note tmp edited=0
+    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header text env note note_2_0_66 n tmp edited=0
     local -a old=()
     read -r -a old <<<"$4"
     shift 4
@@ -2958,10 +2956,10 @@ ticket_claude_rewrite() {
     env=$(ticket_claude_env "$dir" "$id")
     if [[ -e $file || -L $file ]]; then
         [[ -f $file && -r $file && ! -L $file ]] || return 0
+        note_2_0_66="ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
         edited=1
-        # A file that an earlier ws wrote, with its note or its stage line, is not edited.
-        for header in "$note" "ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."; do
-            header=$(ticket_claude_text "$id" "$branch" "$header" "${old[@]}")
+        for n in "$note" "$note_2_0_66"; do
+            header=$(ticket_claude_text "$id" "$branch" "$n" "${old[@]}")
             for text in "$header" "${header/"$WS_CLAUDE_STAGE"/"$WS_CLAUDE_STAGE_2_0_80"}"; do
                 if printf '%s\n' "$text" | cmp -s -- "$file" - ||
                     ticket_claude_block "$text" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
@@ -3252,8 +3250,7 @@ ticket_evidence_root() {
 }
 
 # Claude Code reads //path as an absolute path. An Edit rule also denies its Write tool and the shell writes
-# that it parses, such as redirects, cp, tee, and sed -i, but not a write by any other program. A rule for a
-# path with braces or a dollar sign denies Edit and Write but not a shell redirect to that path.
+# that it parses, such as redirects, cp, tee, and sed -i, but not a write by any other program.
 edit_deny_rules() {
     local -n edr=$1
     local p path
