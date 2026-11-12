@@ -206,6 +206,154 @@ test_up_refuses_a_bad_profile_pair() {
     refute "it runs no dockyard call" test -e "$FX/dockyard.log"
 }
 
+exec_calls() {
+    grep -F " exec " "$FX/docker.log" 2>/dev/null
+}
+
+test_up_migrate() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_UP_MIGRATE="beta=npx prisma migrate deploy; alpha = bin/migrate --to=head;"'
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --migrate exits 0" 0 "$rc"
+    assert_eq "it runs dockyard up first" 1 "$(dockyard_calls "up feat/x")"
+    assert_eq "it runs each command in the container of its repo, in WS_REPOS order, with only the command's words" \
+        $'compose -p dockyard-feat-x exec -T alpha bin/migrate --to=head\ncompose -p dockyard-feat-x exec -T beta npx prisma migrate deploy' \
+        "$(exec_calls)"
+    assert "it prints what the alpha command prints, with each word passed as one argument" \
+        grep -qxF "alpha | [bin/migrate] [--to=head]" <<<"$out"
+    assert "it prints what the beta command prints" grep -qxF "beta | [npx] [prisma] [migrate] [deploy]" <<<"$out"
+    assert "it names each command before it runs it" grep -qxF "Migrating beta: npx prisma migrate deploy" <<<"$out"
+
+    : >"$FX/docker.log"
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up without --migrate exits 0" 0 "$rc"
+    refute "up without --migrate runs no command" exec_calls
+
+    out=$(ws up t1 --migrate 2>&1) && rc=0 || rc=$?
+    assert_eq "up --migrate of an env that is already up exits 0" 0 "$rc"
+    assert "it says the env was up" grep -qxF "The env of t1 is already up on slot 1." <<<"$out"
+    assert_eq "it runs dockyard up no second time" 1 "$(dockyard_calls "up feat/x")"
+    assert_eq "it still runs both commands" 2 "$(exec_calls | wc -l)"
+
+    : >"$FX/docker.log"
+    WS_UP_MIGRATE='beta=bin/rails db:migrate' ws up --migrate t1 >/dev/null 2>&1
+    assert_eq "WS_UP_MIGRATE in the environment wins over the config" \
+        "compose -p dockyard-feat-x exec -T beta bin/rails db:migrate" "$(exec_calls)"
+}
+
+test_up_migrate_stops_at_the_first_failure() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_UP_MIGRATE="alpha=bin/migrate; beta=bin/migrate"'
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    echo "alpha 3" >"$FX/docker.exec-exit"
+    out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --migrate exits with the status of the command that failed" 3 "$rc"
+    assert "it names the repo and the command" \
+        grep -qxF "ws: the migration of alpha, bin/migrate, failed with status 3" <<<"$out"
+    assert "it prints what the failed command printed" grep -qxF "alpha | [bin/migrate]" <<<"$out"
+    assert_eq "it runs no command after the one that failed" \
+        "compose -p dockyard-feat-x exec -T alpha bin/migrate" "$(exec_calls)"
+    assert_eq "the env stays up and recorded" 1 "$(ws_value t1 WS_SLOT)"
+}
+
+test_up_migrate_without_commands() {
+    local out rc
+    new_fixture_no_ticket
+    add_repo gamma
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --migrate with no WS_UP_MIGRATE exits 0" 0 "$rc"
+    assert_eq "it says in one line that there is nothing to migrate" 1 \
+        "$(grep -cxF "No repo of t1 has a command in WS_UP_MIGRATE, so ws up migrates nothing." <<<"$out")"
+    assert_eq "it still starts the env" 1 "$(dockyard_calls "up feat/x")"
+    refute "it runs no command" exec_calls
+
+    ws_config 'WS_UP_MIGRATE=gamma=bin/migrate'
+    out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --migrate when WS_UP_MIGRATE names no repo of the ticket exits 0" 0 "$rc"
+    assert "it says there is nothing to migrate" \
+        grep -qxF "No repo of t1 has a command in WS_UP_MIGRATE, so ws up migrates nothing." <<<"$out"
+    refute "it runs no command" exec_calls
+}
+
+test_up_migrate_needs_the_containers() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_UP_MIGRATE="alpha=bin/migrate; beta=bin/migrate"'
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws up t1 >/dev/null 2>&1
+    { jq 'map(select(.Labels["com.docker.compose.service"] != "beta"))' "$FX/docker.json" >"$FX/docker.json.new" &&
+        mv "$FX/docker.json.new" "$FX/docker.json"; } || abort "cannot stop the beta container"
+    out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --migrate exits 1 when a container that should migrate is not running" 1 "$rc"
+    assert "it names the repo and the stack" \
+        grep -qxF "ws: the beta container of dockyard-feat-x is not running, so ws up runs no migration" <<<"$out"
+    refute "it runs no command, not even for the repo whose container runs" exec_calls
+}
+
+test_up_migrate_refuses_a_bad_setting() {
+    local out rc value
+    local -a bad=(
+        "alpha=sh -c 'bin/migrate && bin/seed'|ws: WS_UP_MIGRATE in the environment gives alpha 'sh -c 'bin/migrate && bin/seed'', but a command may hold only letters, digits, spaces, and . _ / : @ % + = , -"
+        "alpha=bin/migrate \$HOME|ws: WS_UP_MIGRATE in the environment gives alpha 'bin/migrate \$HOME', but a command may hold only letters, digits, spaces, and . _ / : @ % + = , -"
+        "alpha|ws: WS_UP_MIGRATE in the environment holds 'alpha', which is not <repo>=<command>"
+        "alpha=|ws: WS_UP_MIGRATE in the environment holds 'alpha=', which is not <repo>=<command>"
+        "../alpha=bin/migrate|ws: WS_UP_MIGRATE in the environment holds '../alpha=bin/migrate', which is not <repo>=<command>"
+        "alpha=bin/a; alpha=bin/b|ws: WS_UP_MIGRATE in the environment gives alpha more than one command"
+    )
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    for value in "${bad[@]}"; do
+        out=$(WS_UP_MIGRATE=${value%%|*} ws up --migrate t1 2>&1) && rc=0 || rc=$?
+        assert_eq "up --migrate exits 1 on WS_UP_MIGRATE=${value%%|*}" 1 "$rc"
+        assert_eq "it says why" "${value#*|}" "$out"
+    done
+    refute "it starts nothing on a bad setting" test -e "$FX/dockyard.log"
+
+    ws_config 'WS_UP_MIGRATE="alpha=bin/migrate > log"'
+    out=$(ws up --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "a bad entry in the config exits 1" 1 "$rc"
+    assert "it names the config" grep -qF "ws: WS_UP_MIGRATE in ~/.config/ws/config gives alpha" <<<"$out"
+
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up without --migrate ignores WS_UP_MIGRATE" 0 "$rc"
+    refute "and runs no command" exec_calls
+}
+
+test_up_migrate_after_wait() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_UP_MIGRATE=alpha=bin/migrate'
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    answer 4100 200
+    answer 8100 200
+    out=$(WS_UP_TIMEOUT=10 ws up --wait --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --wait --migrate exits 0" 0 "$rc"
+    assert_eq "it migrates once every URL answers" \
+        $'api-gateway http://localhost:8100 ready\nMigrating alpha: bin/migrate' \
+        "$(grep -A1 -xF "api-gateway http://localhost:8100 ready" <<<"$out")"
+
+    : >"$FX/docker.log"
+    answer 8100 503
+    out=$(WS_UP_TIMEOUT=0 ws up --wait --migrate t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --wait --migrate exits 1 when a URL never answers" 1 "$rc"
+    refute "it runs no command" exec_calls
+}
+
+test_up_help_documents_migrate() {
+    local help
+    new_fixture_no_ticket
+    help=$(ws up --help | tr '\n' ' ' | tr -s ' ')
+    assert "help gives the --migrate flag" grep -qF "ws up [--wait] [--migrate] [<id>]" <<<"$help"
+    assert "help gives the WS_UP_MIGRATE format" grep -qF 'WS_UP_MIGRATE="alpha=npx prisma migrate deploy; gamma=bin/migrate"' <<<"$help"
+    assert "help gives the quoting rule" grep -qF "runs the words with no shell" <<<"$help"
+    assert "help says every stack shares the database" grep -qF "Every stack shares one database" <<<"$help"
+    assert "help recommends a command that never resets" grep -qF "never resets the database, such as prisma migrate deploy" <<<"$help"
+}
+
 test_up_twice() {
     local out rc pane
     new_fixture_no_ticket
@@ -790,6 +938,13 @@ run_test test_up
 run_test test_up_passes_the_profiles_of_the_ticket_repos
 run_test test_up_names_the_repos_without_a_service
 run_test test_up_refuses_a_bad_profile_pair
+run_test test_up_migrate
+run_test test_up_migrate_stops_at_the_first_failure
+run_test test_up_migrate_without_commands
+run_test test_up_migrate_needs_the_containers
+run_test test_up_migrate_refuses_a_bad_setting
+run_test test_up_migrate_after_wait
+run_test test_up_help_documents_migrate
 run_test test_up_twice
 run_test test_down
 run_test test_up_fails

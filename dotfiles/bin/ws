@@ -2504,7 +2504,7 @@ usage: ws new [--ticket <key>] [--topic <name>] [--only] <id> <branch> [<repo>..
        ws pick [--print]
        ws stage [<id>] <stage>
        ws status [--refresh | --waiting]
-       ws up [--wait] [<id>]
+       ws up [--wait] [--migrate] [<id>]
        ws down [<id>]
        ws rm [--purge] <id>
        ws scenarios [<id>] [--from <file>] [--replace]
@@ -2567,7 +2567,13 @@ dashes, and underscores.
           down and ws up. A failed dockyard up makes ws up exit with its
           status. --wait then asks each URL until it answers with an
           HTTP status below 500, for at most WS_UP_TIMEOUT seconds, 300
-          by default.
+          by default. --migrate then runs the command that WS_UP_MIGRATE
+          gives each repo of the ticket, in repo order, also when the
+          env was already up, with docker compose -p dockyard-<stack>
+          exec -T <repo> <command>. It prints their output and stops at
+          the first command that fails, with its status. When a
+          container that should run a command is not running, it runs
+          none and exits 1.
   down    run dockyard down <branch>, which stops the containers and
           keeps the slot and the volumes, and clear WS_URLS.
   rm      run ws down, then refuse when a worktree has a KEEP reason of
@@ -2619,18 +2625,30 @@ while its record in ~/.dockyard/slots.json names the ticket directory as
 its workspace. A stack that another ticket or a plain dockyard up made
 stays as it is.
 
-ws reads two settings from the environment, or else from
+ws reads three settings from the environment, or else from
 ${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines and
 # comments that ws parses and never runs:
 
   WS_DEFAULT_REPOS="alpha beta"
   WS_UP_PROFILES="gamma:portal"
+  WS_UP_MIGRATE="alpha=npx prisma migrate deploy; gamma=bin/migrate"
 
 WS_DEFAULT_REPOS lists the default repos of ws new, the repos whose
 services dockyard starts without a profile. An empty WS_DEFAULT_REPOS
 in the environment turns the defaults off. Without defaults, ws new
 needs at least one repo. WS_UP_PROFILES holds <repo>:<profile> pairs
 for ws up.
+
+WS_UP_MIGRATE holds <repo>=<command> entries for ws up --migrate,
+separated by semicolons. ws splits each command at spaces and runs the
+words with no shell, so a command takes no quotes, $, or redirects, and
+may hold only letters, digits, spaces, and . _ / : @ % + = , -. Put a
+command that needs a shell in a script in the repo. The command runs in
+the container of the compose service named after the repo, with the
+environment that dockyard gives that container, and ws passes nothing
+from the host. Every stack shares one database, so a migration changes
+the env of every ticket. Use a command that applies pending migrations
+and never resets the database, such as prisma migrate deploy.
 EOF
 }
 
@@ -3061,8 +3079,9 @@ ticket_env() {
 
 ticket_env_running() {
     local ids
-    ids=$(docker ps -q --filter "label=com.docker.compose.project=$1" --filter status=running 2>/dev/null) &&
-        [[ -n $ids ]]
+    local -a filters=(--filter "label=com.docker.compose.project=$1" --filter status=running)
+    [[ -z ${2-} ]] || filters+=(--filter "label=com.docker.compose.service=$2")
+    ids=$(docker ps -q "${filters[@]}" 2>/dev/null) && [[ -n $ids ]]
 }
 
 ticket_dockyard_out() {
@@ -3938,13 +3957,73 @@ ticket_up_args() {
     [[ -z $list ]] || tua+=(--profile "${list// /,}")
 }
 
+ticket_migrations() {
+    local entry repo cmd from re='^([A-Za-z0-9][A-Za-z0-9._-]*) ?= ?(.+)$' LC_ALL=C
+    local -a setting=() entries=() repos=()
+    local -A cmds=()
+    local -n tmg=$2
+    tmg=()
+    ws_setting WS_UP_MIGRATE setting || return 1
+    from=$REPLY
+    IFS=';' read -r -a entries <<<"${setting[*]}"
+    for entry in "${entries[@]}"; do
+        read -r entry <<<"$entry"
+        [[ -n $entry ]] || continue
+        if [[ ! $entry =~ $re ]]; then
+            echo "ws: $from holds '$entry', which is not <repo>=<command>" >&2
+            return 1
+        fi
+        repo=${BASH_REMATCH[1]} cmd=${BASH_REMATCH[2]}
+        if [[ $cmd == *[!A-Za-z0-9._/:@%+=,\ -]* ]]; then
+            echo "ws: $from gives $repo '$cmd', but a command may hold only letters, digits, spaces, and . _ / : @ % + = , -" >&2
+            return 1
+        elif [[ -n ${cmds[$repo]+set} ]]; then
+            echo "ws: $from gives $repo more than one command" >&2
+            return 1
+        fi
+        cmds[$repo]=$cmd
+    done
+    read -r -a repos <<<"$1"
+    for repo in "${repos[@]}"; do
+        [[ -z ${cmds[$repo]+set} ]] || tmg+=("$repo=${cmds[$repo]}")
+    done
+}
+
+ticket_migrate() {
+    local id=$1 project=$2 pair repo rc=0
+    local -a argv=() down=()
+    shift 2
+    if (($# == 0)); then
+        echo "No repo of $id has a command in WS_UP_MIGRATE, so ws up migrates nothing."
+        return 0
+    fi
+    for pair; do
+        ticket_env_running "$project" "${pair%%=*}" || down+=("${pair%%=*}")
+    done
+    for repo in "${down[@]}"; do
+        echo "ws: the $repo container of $project is not running, so ws up runs no migration" >&2
+    done
+    ((${#down[@]} == 0)) || return 1
+    for pair; do
+        repo=${pair%%=*}
+        read -r -a argv <<<"${pair#*=}"
+        echo "Migrating $repo: ${argv[*]}"
+        docker compose -p "$project" exec -T "$repo" "${argv[@]}" </dev/null || rc=$?
+        if ((rc)); then
+            echo "ws: the migration of $repo, ${argv[*]}, failed with status $rc" >&2
+            return "$rc"
+        fi
+    done
+}
+
 ws_up() {
-    local wait=0 dir real id branch out rc=0 urls pair why=""
-    local -a pairs=() ids=() up_args=()
+    local wait=0 migrate=0 dir real id branch out rc=0 urls pair why=""
+    local -a pairs=() ids=() up_args=() migrations=()
     local -A kv=() env=() said=()
     while (($#)); do
         case $1 in
         --wait) wait=1 ;;
+        --migrate) migrate=1 ;;
         -h | --help)
             ticket_usage
             return 0
@@ -3979,6 +4058,7 @@ ws_up() {
         echo "ws: $REPLY" >&2
         return 1
     fi
+    ((migrate == 0)) || ticket_migrations "${kv[WS_REPOS]-}" migrations || return 1
     id=${kv[WS_ID]} branch=${kv[WS_BRANCH]-}
     if [[ -z $branch ]]; then
         echo "ws: $(ws_shown "$dir/.ws") has no WS_BRANCH" >&2
@@ -4037,7 +4117,8 @@ ws_up() {
     ticket_update "$dir" set WS_SLOT "${env[slot]}" WS_URLS "$urls" || return 1
     ticket_claude_refresh "$dir" || echo "ws: cannot write $(ws_shown "$dir/CLAUDE.md")" >&2
     ticket_env_logs "$id" "$dir" "${env[project]}" || echo "ws: cannot tail the logs in the env window of $id" >&2
-    ((wait == 0)) || ticket_env_wait "$urls"
+    ((wait == 0)) || ticket_env_wait "$urls" || return 1
+    ((migrate == 0)) || ticket_migrate "$id" "${env[project]}" "${migrations[@]}"
 }
 
 ws_down() {

@@ -56,12 +56,20 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   bin/docker           container engine shims, answer ps -q --no-trunc
   bin/podman           and inspect from <engine>.json; docker also
                        answers ps -q with a compose project label and
-                       status=running filter, and compose -p <project>
-                       logs, which prints one line and sleeps
+                       status=running filter, and a compose service
+                       label filter after them, compose -p <project>
+                       logs, which prints one line and sleeps, and
+                       compose -p <project> exec -T <service>, which
+                       prints its arguments in brackets, or fails as
+                       compose does when no container of the service
+                       runs
   docker.logs-exit     create it to make compose logs exit half a second
                        after its line
+  docker.exec-exit     lines of <service> <status>: compose exec of that
+                       service exits with that status after its line
   <engine>.json        the running containers, [] at first: objects with
                        Id, Name, Mounts of Type and Source, and Labels
+                       of the compose project and service
   bin/dockyard         dockyard shim: up, down, and nuke keep
                        ~/.dockyard/slots.json as dockyard does, start
                        and stop containers in docker.json that mount
@@ -102,7 +110,8 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
                        WS_VAULT, PATH, and a short TMUX_TMPDIR under
                        /tmp, and unsets TMUX, TMUX_PANE, CLAUDECODE,
-                       WS_DEFAULT_REPOS, and WS_UP_PROFILES; remove
+                       WS_DEFAULT_REPOS, WS_UP_PROFILES, and
+                       WS_UP_MIGRATE; remove
                        TMUX_TMPDIR with <root>
 EOF
 }
@@ -155,7 +164,7 @@ export XDG_DATA_HOME=$(printf %q "$root/.local/share")
 export XDG_STATE_HOME=$(printf %q "$root/.local/state")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
 export TMPDIR=$(printf %q "$root/.tmp")
-unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS WS_UP_PROFILES
+unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS WS_UP_PROFILES WS_UP_MIGRATE
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
 export WS_ROOT=$(printf %q "$root/work")
@@ -298,6 +307,27 @@ case "$*" in
 "ps -q --filter label=com.docker.compose.project="*" --filter status=running")
     jq -r --arg p "${4#label=com.docker.compose.project=}" \
         '.[] | select(.Labels["com.docker.compose.project"] == $p) | .Id' "$root/$engine.json"
+    ;;
+"ps -q --filter label=com.docker.compose.project="*" --filter status=running --filter label=com.docker.compose.service="*)
+    jq -r --arg p "${4#label=com.docker.compose.project=}" --arg s "${8#label=com.docker.compose.service=}" \
+        '.[] | select(.Labels["com.docker.compose.project"] == $p and .Labels["com.docker.compose.service"] == $s) | .Id' \
+        "$root/$engine.json"
+    ;;
+"compose -p "*" exec -T "*)
+    if ! jq -e --arg p "$3" --arg s "$6" \
+        'any(.[]; .Labels["com.docker.compose.project"] == $p and .Labels["com.docker.compose.service"] == $s)' \
+        "$root/$engine.json" >/dev/null; then
+        echo "service \"$6\" is not running" >&2
+        exit 1
+    fi
+    service=$6
+    shift 6
+    printf '%s |' "$service"
+    printf ' [%s]' "$@"
+    echo
+    status=0
+    [[ ! -f $root/$engine.exec-exit ]] || status=$(awk -v s="$service" '$1 == s { print $2 }' "$root/$engine.exec-exit")
+    exit "${status:-0}"
     ;;
 "compose -p "*" logs --follow --tail 50")
     echo "$3 | fixture log line"
@@ -488,13 +518,14 @@ up)
         exit 1
     fi
     containers --arg p "$project" 'map(select(.Labels["com.docker.compose.project"] != $p))
-        + [{Id: "id-\($p)-redis-1", Name: "/\($p)-redis-1", Mounts: [], Labels: {"com.docker.compose.project": $p}}]'
+        + [{Id: "id-\($p)-redis-1", Name: "/\($p)-redis-1", Mounts: [],
+            Labels: {"com.docker.compose.project": $p, "com.docker.compose.service": "redis"}}]'
     for dir in "$workspace"/*/; do
         [[ -n $workspace && -d $dir ]] || continue
         dir=${dir%/}
-        containers --arg p "$project" --arg n "$project-${dir##*/}-1" --arg src "$dir" \
-            '. + [{Id: "id-\($n)", Name: "/\($n)", Mounts: [{Type: "bind", Source: $src, Destination: "/app"}],
-                Labels: {"com.docker.compose.project": $p}}]'
+        containers --arg p "$project" --arg s "${dir##*/}" --arg src "$dir" \
+            '. + [{Id: "id-\($p)-\($s)-1", Name: "/\($p)-\($s)-1", Mounts: [{Type: "bind", Source: $src, Destination: "/app"}],
+                Labels: {"com.docker.compose.project": $p, "com.docker.compose.service": $s}}]'
     done
     for volume in web-node-modules api-node-modules; do
         grep -qxF "${project}_$volume" "$root/volumes.txt" 2>/dev/null || echo "${project}_$volume" >>"$root/volumes.txt"
