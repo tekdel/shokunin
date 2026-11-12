@@ -48,8 +48,8 @@ white   = "#ebdbb2"
 style = { shape = "Block", blinking = "On" }
 
 [terminal.shell]
-program = "/usr/bin/tmux"
-args = ["new-session"]
+program = "/usr/bin/zsh"
+args = ["-l"]
 
 # Keybindings
 [[keyboard.bindings]]
