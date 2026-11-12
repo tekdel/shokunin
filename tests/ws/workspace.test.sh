@@ -19,7 +19,10 @@ wait_shells() {
     local i pane
     for ((i = 0; i < 100; i++)); do
         for pane in $(shell_panes "$1"); do
-            [[ $(tmux display-message -p -t "$pane" '#{pane_current_command}') == "${SHELL##*/}" ]] || continue 2
+            if [[ $(tmux display-message -p -t "$pane" '#{pane_current_command}') != "${SHELL##*/}" ]]; then
+                sleep 0.05
+                continue 2
+            fi
         done
         return 0
     done

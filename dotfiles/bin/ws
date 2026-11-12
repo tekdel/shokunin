@@ -3145,10 +3145,13 @@ ticket_shell_window() {
     [[ -n $REPLY ]] || REPLY=$(tmux new-window -d -a -t "=$1:{end}" -n shell -c "$2" -P -F '#{window_id}')
 }
 
+# tmux splits a floating pane into another floating pane, so ws splits a tiled one.
 ticket_env_split() {
     local pane
     ticket_shell_window "$1" "$2" || return 1
-    pane=$(tmux split-window -d -f -v -l 40% -t "$REPLY" -c "$2" -P -F '#{pane_id}') &&
+    pane=$(tmux list-panes -t "$REPLY" -f '#{?pane_floating_flag,0,1}' -F '#{pane_id}') || return 1
+    pane=${pane%%$'\n'*}
+    pane=$(tmux split-window -d -f -v -l 40% -t "${pane:-$REPLY}" -c "$2" -P -F '#{pane_id}') &&
         tmux set-option -p -t "$pane" @ws-env 1 && REPLY=$pane
 }
 

@@ -67,6 +67,12 @@ pane_of() {
     [[ -z $1 ]] || tmux display-message -p -t "$1" '#{pane_id} #{pane_pid}'
 }
 
+respawned() {
+    local now
+    now=$(pane_of "$1")
+    [[ -n $now && ${now% *} == "${2% *}" && $now != "$2" ]]
+}
+
 child_of() {
     local i kid
     for ((i = 0; i < 100; i++)); do
@@ -747,7 +753,7 @@ test_env_pane_keeps_user_programs() {
     pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
     assert "up turns an idle shell in the env pane into the log tail" pane_shows "$envp" "dockyard-feat-x | fixture log line"
-    refute "it starts a new process there" test "$(pane_of "$envp")" = "$pane"
+    assert "it starts a new process there" respawned "$envp" "$pane"
 
     for cmd in "sleep 1001 &" "$FX/userbin/migrate.sh" "$FX/userbin/docker 1003"; do
         tmux respawn-pane -k -t "$envp" bash
@@ -773,7 +779,7 @@ test_env_pane_keeps_user_programs() {
     ws up t1 >/dev/null 2>&1
     pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
-    refute "up starts the log tail of an earlier up again" test "$(pane_of "$envp")" = "$pane"
+    assert "up starts the log tail of an earlier up again" respawned "$envp" "$pane"
     assert "it tails the logs" pane_shows "$envp" "dockyard-feat-x | fixture log line"
 
     user=$(tmux split-window -d -t "$envp" -P -F '#{pane_id}')
@@ -781,7 +787,7 @@ test_env_pane_keeps_user_programs() {
     kid=$(pane_of "$user")
     pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
-    refute "up starts the tail in the env pane after the user split it" test "$(pane_of "$envp")" = "$pane"
+    assert "up starts the tail in the env pane after the user split it" respawned "$envp" "$pane"
     assert_eq "it leaves the pane the user split off" "$kid" "$(pane_of "$user")"
 }
 
@@ -802,7 +808,7 @@ test_env_pane_after_the_tail() {
     assert_eq "the shell window keeps both panes" 2 "$(shell_panes t1 | wc -l)"
     pane=$(pane_of "$envp")
     ws up t1 >/dev/null 2>&1
-    refute "up starts an ended tail again" test "$(pane_of "$envp")" = "$pane"
+    assert "up starts an ended tail again" respawned "$envp" "$pane"
     rm "$FX/docker.logs-exit"
 
     ws up t1 >/dev/null 2>&1
@@ -858,7 +864,7 @@ test_up_from_the_shell_pane() {
     pane=$(pane_of "$envp")
     out=$(TMUX_PANE=$shellp ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up with TMUX_PANE of the shell pane exits 0" 0 "$rc"
-    refute "it starts the tail again in the env pane" test "$(pane_of "$envp")" = "$pane"
+    assert "it starts the tail again in the env pane" respawned "$envp" "$pane"
     refute "it prints no tail command" grep -qF "Tail the logs with" <<<"$out"
     assert "the job in the shell pane still runs" alive "$kid"
     kill "$kid" 2>/dev/null
@@ -955,6 +961,27 @@ test_up_makes_the_env_pane() {
     assert "it tails the logs in the env pane of the new shell window" \
         pane_shows "$(env_pane t1)" "dockyard-feat-x | fixture log line"
     assert_eq "the new shell window has the shell pane above the env pane" 2 "$(shell_panes t1 | wc -l)"
+}
+
+test_up_splits_below_every_tiled_pane() {
+    local left right float envp
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    remake_session t1 claude shell
+    left=$(tmux display-message -p -t "=t1:shell" '#{pane_id}')
+    right=$(tmux split-window -h -d -t "$left" -P -F '#{pane_id}')
+    float=$(tmux new-pane -d -t "$left" -P -F '#{pane_id}')
+    tmux select-pane -t "$float"
+    left=$(pane_of "$left") right=$(pane_of "$right") float=$(pane_of "$float")
+    ws up t1 >/dev/null 2>&1
+    envp=$(tmux list-panes -t "=t1:shell" -F '#{pane_id}' | grep -vxF -e "${left% *}" -e "${right% *}" -e "${float% *}")
+    envp=${envp:-none}
+    assert "up tails the logs in a new pane of a shell window split side by side, with a floating pane active" \
+        pane_shows "$envp" "dockyard-feat-x | fixture log line"
+    assert_eq "the env pane is tiled, spans the window width, and sits at the bottom" "0 1 1" \
+        "$(tmux display-message -p -t "$envp" '#{pane_floating_flag} #{==:#{pane_width},#{window_width}} #{pane_at_bottom}')"
+    assert_eq "it keeps the panes the user made" "$left|$right|$float" \
+        "$(pane_of "${left% *}")|$(pane_of "${right% *}")|$(pane_of "${float% *}")"
 }
 
 test_help_names_the_split_shell_window() {
@@ -1105,6 +1132,7 @@ run_test test_up_from_the_shell_pane
 run_test test_up_prefers_the_env_pane
 run_test test_up_in_a_session_of_an_older_ws
 run_test test_up_makes_the_env_pane
+run_test test_up_splits_below_every_tiled_pane
 run_test test_up_urls_that_do_not_fit
 run_test test_up_names_the_ticket_that_holds_the_stack
 run_test test_claude_md_markers
