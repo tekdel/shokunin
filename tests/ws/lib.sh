@@ -48,11 +48,28 @@ assert_eq() {
     fi
 }
 
+wait_exit() {
+    local pid i
+    for ((i = 0; i < 200; i++)); do
+        for pid; do
+            if kill -0 "$pid" 2>/dev/null; then
+                sleep 0.05
+                continue 2
+            fi
+        done
+        return 0
+    done
+    return 1
+}
+
 drop_fixtures() {
     local dir
+    local -a pids=()
     for dir in "${_sandboxes[@]}"; do
         if [[ -x $dir/root/bin/tmux ]]; then
+            read -r -a pids < <("$dir/root/bin/tmux" list-panes -a -F '#{pid} #{pane_pid}' 2>/dev/null | tr '\n' ' ')
             "$dir/root/bin/tmux" kill-server 2>/dev/null
+            wait_exit "${pids[@]}"
             flock -w 10 "$dir/root/.cache/ws/refresh.lock" true 2>/dev/null
         fi
         chmod -R u+rwx "$dir" 2>/dev/null
@@ -106,7 +123,7 @@ ws_guard() {
         path=$(command -v "$cmd") || continue
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
-    for cmd in claude tmux; do
+    for cmd in claude tmux dockyard doppler curl; do
         path=$(type -P "$cmd") || abort "ws refused: no $cmd on PATH"
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
