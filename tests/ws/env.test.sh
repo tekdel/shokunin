@@ -34,7 +34,7 @@ ls_row() {
 pane_shows() {
     local i
     for ((i = 0; i < 300; i++)); do
-        tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -qF -- "$3" && return 0
+        tmux capture-pane -p -S - -t "=$1:$2" 2>/dev/null | grep -qF -- "$3" && return 0
         sleep 0.05
     done
     return 1
@@ -51,6 +51,55 @@ pane_runs() {
 
 answer() {
     printf '%s\n' "${@:2}" >"$FX/http/$1"
+}
+
+alive() {
+    kill -0 "$1" 2>/dev/null
+}
+
+shell_ready() {
+    pane_runs "$1" env "${SHELL##*/}" || abort "the env window of $1 runs no shell"
+}
+
+pane_of() {
+    tmux display-message -p -t "=$1:env" '#{pane_id} #{pane_pid}'
+}
+
+child_of() {
+    local i kid
+    for ((i = 0; i < 100; i++)); do
+        kid=$(ps -o pid= --ppid "$1" | head -n 1)
+        if [[ -n $kid ]]; then
+            echo "${kid// /}"
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+in_env_window() {
+    local i
+    cat >"$FX/ws-here" <<EOF
+#!/usr/bin/env bash
+for p in "\$HOME" "\$WS_ROOT" "\$WS_PROJECTS" "\$XDG_DATA_HOME"; do
+    [[ \$(realpath -m -- "\$p") == $(printf %q "$_sandbox")/* ]] || { echo "ws refused: \$p" >&2; exit 99; }
+done
+for c in claude tmux dockyard doppler curl docker; do
+    p=\$(type -P "\$c") && [[ \$(realpath -m -- "\$p") == $(printf %q "$_sandbox")/* ]] ||
+        { echo "ws refused: \$c" >&2; exit 99; }
+done
+unset TMUX_PANE
+bash $(printf %q "$WS_TESTS/../../dotfiles/bin/ws") "\$@" >$(printf %q "$FX/here.out") 2>&1
+echo \$? >$(printf %q "$FX/here.rc")
+EOF
+    rm -f "$FX/here.rc"
+    tmux send-keys -t "=$1:env" "bash $(printf %q "$FX/ws-here") ${*:2}" Enter
+    for ((i = 0; i < 200; i++)); do
+        [[ ! -s $FX/here.rc ]] || return 0
+        sleep 0.05
+    done
+    return 1
 }
 
 claude_md_of_2_0_72() {
@@ -70,6 +119,7 @@ test_up() {
     local out rc real
     new_fixture_no_ticket
     ws new t1 feat/x alpha beta >/dev/null 2>&1
+    shell_ready t1
     real=$(realpath -e "$WS_ROOT/t1")
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 0" 0 "$rc"
@@ -108,11 +158,13 @@ test_up_twice() {
     local out rc pane
     new_fixture_no_ticket
     ws new t1 feat/x alpha >/dev/null 2>&1
+    shell_ready t1
     ws up t1 >/dev/null 2>&1
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "a second up exits 0" 0 "$rc"
     assert "it says the env is already up" grep -qxF "The env of t1 is already up on slot 1." <<<"$out"
     assert "it lists the URLs" grep -qxF "  web-ui http://localhost:4100" <<<"$out"
+    refute "it reports no write error for a CLAUDE.md that needs no change" grep -qF "cannot write" <<<"$out"
     assert_eq "it runs dockyard up once in all" 1 "$(dockyard_calls "up feat/x")"
     assert "the env window tails the logs again" pane_shows t1 env "dockyard-feat-x | fixture log line"
 
@@ -139,7 +191,7 @@ test_up_twice() {
     pane=$(tmux display-message -p -t "=t1:env" '#{pane_id} #{pane_pid}')
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up while the env window runs another program exits 0" 0 "$rc"
-    assert "it says it leaves that program" grep -qF "The env window of t1 runs sleep, so ws leaves it." <<<"$out"
+    assert "it says it leaves that program" grep -qF "The env window of t1 is in use, so ws leaves it." <<<"$out"
     assert_eq "it does not kill that program" "$pane" "$(tmux display-message -p -t "=t1:env" '#{pane_id} #{pane_pid}')"
 
     tmux kill-session -t "=t1:"
@@ -245,8 +297,8 @@ test_up_wait() {
     ws new t1 feat/x alpha >/dev/null 2>&1
     answer 4100 000 200
     answer 8100 404
-    out=$(WS_UP_TIMEOUT=10 ws up --wait t1 2>&1) && rc=0 || rc=$?
-    assert_eq "up --wait exits 0 once every URL answers" 0 "$rc"
+    out=$(WS_UP_TIMEOUT=10 ws up t1 --wait 2>&1) && rc=0 || rc=$?
+    assert_eq "up <id> --wait exits 0 once every URL answers" 0 "$rc"
     assert "a 404 counts as an answer" grep -qxF "api-gateway http://localhost:8100 ready" <<<"$out"
     assert "it ends with web-ui ready after web-ui answers 200" \
         test "$(tail -n 1 <<<"$out")" = "web-ui http://localhost:4100 ready"
@@ -334,6 +386,7 @@ test_rm_purge() {
     assert_eq "the other ticket's volumes stay" 2 "$(volumes_of feat-y)"
     assert_eq "the other ticket's containers run" 2 "$(containers_of feat-y)"
     assert_eq "the other ticket keeps its slot" 2 "$(slot_of feat-y)"
+    assert "the trashed .ws of the purged ticket holds no slot" grep -qx "WS_SLOT=" "$(trash_dir)"/*-t1/.ws
     ws prune --restore t1 >/dev/null 2>&1
     assert "the worktrees of a purged ticket come back from the trash" is_worktree "$WS_ROOT/t1/alpha"
     assert_eq "its .ws holds no slot" "" "$(ws_value t1 WS_SLOT)"
@@ -343,9 +396,19 @@ test_rm_purge() {
     touch "$FX/dockyard.nuke-fail"
     out=$(ws rm --purge t2 2>&1) && rc=0 || rc=$?
     assert_eq "rm --purge exits with dockyard's status when nuke fails" 1 "$rc"
-    assert "it says the volumes stay" \
-        grep -qxF "ws: dockyard nuke feat/y failed with status 1, so the env's volumes stay" <<<"$out"
+    assert "it says the volumes and slot stay" \
+        grep -qxF "ws: dockyard nuke feat/y failed with status 1, so the env's volumes and slot stay" <<<"$out"
     assert_eq "they stay" 2 "$(volumes_of feat-y)"
+    assert "the trashed .ws keeps the slot" grep -qx "WS_SLOT=2" "$(trash_dir)"/*-t2/.ws
+    ws prune --restore t2 >/dev/null 2>&1
+    assert_eq "the restored ticket keeps its slot" 2 "$(ws_value t2 WS_SLOT)"
+    assert "ls shows env:down for it" grep -q " env:down " <<<"$(ls_row t2)"
+    rm "$FX/dockyard.nuke-fail"
+    out=$(ws rm --purge t2 2>&1) && rc=0 || rc=$?
+    assert_eq "a second rm --purge exits 0" 0 "$rc"
+    assert_eq "it frees the slot" "" "$(slot_of feat-y)"
+    assert_eq "it removes the volumes" 0 "$(volumes_of feat-y)"
+    assert "the trashed .ws holds no slot" grep -qx "WS_SLOT=" "$(trash_dir)"/*-t2/.ws
 }
 
 test_purge_checks_the_record_again() {
@@ -373,14 +436,14 @@ test_another_tickets_stack() {
     out=$(ws up t2 2>&1) && rc=0 || rc=$?
     assert_eq "up of a branch whose stack another ticket holds exits 1" 1 "$rc"
     assert "it names the holder" grep -qxF \
-        "ws: dockyard stack feat-a-b is registered with the workspace ~/work/t1, so ws up starts nothing" <<<"$out"
+        "ws: dockyard stack feat-a-b is registered with ticket t1 in ~/work/t1, so ws up starts nothing" <<<"$out"
     assert_eq "it runs no dockyard up, whose hint would say to nuke the holder" 0 "$(dockyard_calls "up feature/feat-a-b")"
     assert_eq ".ws of the second ticket has no slot" "" "$(ws_value t2 WS_SLOT)"
 
     out=$(ws down t2 2>&1) && rc=0 || rc=$?
     assert_eq "down of that ticket exits 0" 0 "$rc"
     assert "it says whose stack it leaves" \
-        grep -qxF "ws: dockyard stack feat-a-b is registered with the workspace ~/work/t1, so ws leaves it" <<<"$out"
+        grep -qxF "ws: dockyard stack feat-a-b is registered with ticket t1 in ~/work/t1, so ws leaves it" <<<"$out"
     assert_eq "it runs no dockyard down" 0 "$(dockyard_calls "down feature/feat-a-b")"
     assert_eq "the holder's stack runs" 2 "$(containers_of feat-a-b)"
 
@@ -464,6 +527,210 @@ test_claude_md_env_block() {
         "$(cat "$WS_ROOT/t5/CLAUDE.md")"
 }
 
+test_env_window_keeps_user_programs() {
+    local out rc pane kid cmd
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    shell_ready t1
+    mkdir "$FX/userbin"
+    printf '#!/usr/bin/env bash\nsleep 1002\n' >"$FX/userbin/migrate.sh"
+    chmod +x "$FX/userbin/migrate.sh"
+    ln -s "$(PATH=$_base_path command -v sleep)" "$FX/userbin/docker"
+    pane=$(pane_of t1)
+    ws up t1 >/dev/null 2>&1
+    assert "up turns an idle shell in the env window into the log tail" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    refute "it starts a new process there" test "$(pane_of t1)" = "$pane"
+
+    for cmd in "sleep 1001 &" "$FX/userbin/migrate.sh" "$FX/userbin/docker 1003"; do
+        tmux respawn-window -k -t "=t1:env" bash
+        pane=$(pane_of t1)
+        tmux send-keys -t "=t1:env" "$cmd" Enter
+        kid=$(child_of "${pane#* }") || abort "the env window does not run '$cmd'"
+        out=$(ws up t1 2>&1) && rc=0 || rc=$?
+        assert_eq "up while the env window shell runs '$cmd' exits 0" 0 "$rc"
+        assert "it says it leaves the window" grep -qxF \
+            "The env window of t1 is in use, so ws leaves it. Tail the logs with: docker compose -p dockyard-feat-x logs --follow --tail 50" \
+            <<<"$out"
+        assert_eq "it keeps the pane" "$pane" "$(pane_of t1)"
+        assert "'$cmd' still runs" alive "$kid"
+    done
+
+    tmux respawn-window -k -t "=t1:env" bash
+    pane=$(pane_of t1)
+    in_env_window t1 up t1 || abort "ws up in the env window did not finish"
+    assert_eq "up run in the env window without TMUX_PANE exits 0" 0 "$(<"$FX/here.rc")"
+    assert "it says it leaves the window it runs in" grep -qF "ws runs in the env window, so it leaves the window." "$FX/here.out"
+    assert_eq "it keeps that pane" "$pane" "$(pane_of t1)"
+
+    ws up t1 >/dev/null 2>&1
+    pane=$(pane_of t1)
+    ws up t1 >/dev/null 2>&1
+    refute "up starts the log tail of an earlier up again" test "$(pane_of t1)" = "$pane"
+    assert "it tails the logs" pane_shows t1 env "dockyard-feat-x | fixture log line"
+
+    tmux split-window -d -t "=t1:env"
+    pane=$(pane_of t1)
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert "up leaves an env window with two panes" grep -qF "The env window of t1 is in use, so ws leaves it." <<<"$out"
+    assert_eq "it keeps its panes" "2 $pane" "$(tmux display-message -p -t "=t1:env" '#{window_panes}') $(pane_of t1)"
+}
+
+test_env_window_after_the_tail() {
+    local out pane orphan i
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    shell_ready t1
+    touch "$FX/docker.logs-exit"
+    ws up t1 >/dev/null 2>&1
+    for ((i = 0; i < 100; i++)); do
+        [[ $(tmux display-message -p -t "=t1:env" '#{pane_dead}') != 1 ]] || break
+        sleep 0.05
+    done
+    assert "the env window keeps the logs after the tail ends" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    assert_eq "the session keeps its env window" "claude shell env" \
+        "$(tmux list-windows -t "=t1:" -F '#{window_name}' | paste -sd ' ')"
+    pane=$(pane_of t1)
+    ws up t1 >/dev/null 2>&1
+    refute "up starts an ended tail again" test "$(pane_of t1)" = "$pane"
+    rm "$FX/docker.logs-exit"
+
+    ws up t1 >/dev/null 2>&1
+    pane=$(pane_of t1)
+    tmux copy-mode -t "=t1:env"
+    out=$(ws up t1 2>&1)
+    assert "up leaves a tail that the user scrolls in copy mode" grep -qF "The env window of t1 is in use" <<<"$out"
+    assert_eq "it keeps that pane" "$pane" "$(pane_of t1)"
+
+    tmux respawn-window -k -t "=t1:env" bash
+    pane=$(pane_of t1)
+    tmux send-keys -t "=t1:env" "( sleep 1004 & echo \$! >$(printf %q "$FX/orphan.pid") )" Enter
+    for ((i = 0; i < 100; i++)); do
+        [[ ! -s $FX/orphan.pid ]] || break
+        sleep 0.05
+    done
+    orphan=$(<"$FX/orphan.pid")
+    out=$(ws up t1 2>&1)
+    assert "up leaves a shell whose terminal still runs a process it left behind" \
+        grep -qF "The env window of t1 is in use" <<<"$out"
+    assert "that process still runs" alive "$orphan"
+
+    tmux kill-window -t "=t1:env"
+    tmux new-window -d -t "=t1:" -n "my env" bash
+    tmux new-window -d -t "=t1:" -n envoy bash
+    pane=$(tmux display-message -p -t "=t1:envoy" '#{pane_id} #{pane_pid}')
+    ws up t1 >/dev/null 2>&1
+    assert "up opens a window named env when none has that exact name" pane_shows t1 env "dockyard-feat-x | fixture log line"
+    assert_eq "it leaves a window whose name starts with env" "$pane" \
+        "$(tmux display-message -p -t "=t1:envoy" '#{pane_id} #{pane_pid}')"
+}
+
+test_up_urls_that_do_not_fit() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws up t1 >/dev/null 2>&1
+    echo '[]' >"$FX/docker.json"
+    echo "http://localhost:4100/\$(id)" >"$FX/dockyard.web-url"
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 1 when .ws cannot hold a URL that dockyard printed" 1 "$rc"
+    assert "it says .ws records the slot alone" grep -qxF "ws: .ws records slot 1 without the URLs" <<<"$out"
+    assert_eq ".ws keeps the slot" 1 "$(ws_value t1 WS_SLOT)"
+    assert_eq ".ws holds no URLs of the earlier up" "" "$(ws_value t1 WS_URLS)"
+    assert "ls shows env:down" grep -q " env:down " <<<"$(ls_row t1)"
+
+    ws new t2 feat/y beta >/dev/null 2>&1
+    ws up t2 >/dev/null 2>&1
+    assert_eq "a first up records the slot alone" 2 "$(ws_value t2 WS_SLOT)"
+}
+
+test_up_names_the_ticket_that_holds_the_stack() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feature/c-d alpha >/dev/null 2>&1
+    ws new t2 c/d beta >/dev/null 2>&1
+    realpath -e "$WS_ROOT/t1" >"$FX/dockyard.claim"
+    out=$(ws up t2 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 1 when another up claims the stack first" 1 "$rc"
+    assert "dockyard says to run nuke first" grep -qF "run nuke first" <<<"$out"
+    assert "ws names the ticket that holds the stack" grep -qxF \
+        "ws: dockyard stack c-d is registered with ticket t1 in ~/work/t1, so its nuke would remove that env" <<<"$out"
+    assert_eq ".ws of the ticket that lost has no slot" "" "$(ws_value t2 WS_SLOT)"
+}
+
+test_claude_md_markers() {
+    local out
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    {
+        echo "# My notes"
+        echo '```'
+        echo "<!-- ws env: ws up and ws down rewrite the lines up to the end marker -->"
+        echo '```'
+        echo "KEEP-ME-1"
+        cat "$WS_ROOT/t1/CLAUDE.md"
+        echo "KEEP-ME-2"
+    } >"$FX/t1.md"
+    cp "$FX/t1.md" "$WS_ROOT/t1/CLAUDE.md"
+    out=$(ws up t1 2>&1)
+    assert_eq "up leaves a file that quotes the start marker as it was" "$(cat "$FX/t1.md")" "$(cat "$WS_ROOT/t1/CLAUDE.md")"
+    assert "it says why" grep -qxF \
+        "ws: ~/work/t1/CLAUDE.md does not hold exactly one env block, so ws leaves it as it is" <<<"$out"
+    ws down t1 >/dev/null 2>&1
+    assert_eq "down leaves it too" "$(cat "$FX/t1.md")" "$(cat "$WS_ROOT/t1/CLAUDE.md")"
+
+    ws new t2 feat/y alpha >/dev/null 2>&1
+    { echo "<!-- /ws env -->" && cat "$WS_ROOT/t2/CLAUDE.md"; } >"$FX/t2.md"
+    cp "$FX/t2.md" "$WS_ROOT/t2/CLAUDE.md"
+    ws up t2 >/dev/null 2>&1
+    assert_eq "up leaves a file with a second end marker as it was" "$(cat "$FX/t2.md")" "$(cat "$WS_ROOT/t2/CLAUDE.md")"
+
+    ws new t3 feat/z alpha >/dev/null 2>&1
+    grep -vxF "<!-- /ws env -->" "$WS_ROOT/t3/CLAUDE.md" >"$FX/t3.md"
+    sed -i '1i <!-- /ws env -->' "$FX/t3.md"
+    cp "$FX/t3.md" "$WS_ROOT/t3/CLAUDE.md"
+    ws up t3 >/dev/null 2>&1
+    assert_eq "up leaves a file whose end marker comes before the start marker as it was" "$(cat "$FX/t3.md")" \
+        "$(cat "$WS_ROOT/t3/CLAUDE.md")"
+}
+
+test_claude_md_keeps_the_file() {
+    local f
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    f=$WS_ROOT/t1/CLAUDE.md
+    printf 'my notes\n\n\n' >>"$f"
+    chmod 640 "$f"
+    ln "$f" "$FX/t1-link"
+    ws up t1 >/dev/null 2>&1
+    assert "up writes the URLs" grep -qxF -- "- web-ui: http://localhost:4100" "$f"
+    assert_eq "up keeps the file mode" 640 "$(stat -c %a "$f")"
+    assert "up keeps a hard link to the file" test "$f" -ef "$FX/t1-link"
+    assert_eq "up keeps the blank lines at the end" "73 0a 0a 0a" "$(tail -c 4 "$f" | od -An -tx1 | xargs)"
+    refute "up leaves no temp file" compgen -G "$WS_ROOT/t1/.CLAUDE.md.*"
+    ws down t1 >/dev/null 2>&1
+    assert "down writes through the same link" grep -qF "is down and keeps slot 1." "$FX/t1-link"
+
+    ws new t2 feat/y alpha >/dev/null 2>&1
+    chmod 444 "$WS_ROOT/t2/CLAUDE.md"
+    cp "$WS_ROOT/t2/CLAUDE.md" "$FX/t2.md"
+    ws up t2 >/dev/null 2>&1
+    assert_eq "up leaves a read-only file as it was" "$(cat "$FX/t2.md")" "$(cat "$WS_ROOT/t2/CLAUDE.md")"
+    refute "and leaves no temp file" compgen -G "$WS_ROOT/t2/.CLAUDE.md.*"
+}
+
+test_drop_fixtures_waits_for_the_panes() {
+    local pid sandbox
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    tmux respawn-window -k -t "=t1:env" bash -c "trap 'sleep 1; : >\"\$HOME/late\"' HUP; sleep infinity & wait"
+    pid=$(tmux display-message -p -t "=t1:env" '#{pane_pid}')
+    child_of "$pid" >/dev/null || abort "the env window does not run its sleep"
+    sandbox=$_sandbox
+    drop_fixtures
+    refute "drop_fixtures returns once the processes of the panes end" alive "$pid"
+    refute "it leaves nothing of the sandbox" test -e "$sandbox"
+}
+
 run_test test_up
 run_test test_up_twice
 run_test test_down
@@ -476,4 +743,11 @@ run_test test_purge_checks_the_record_again
 run_test test_another_tickets_stack
 run_test test_stack_name_follows_dockyard
 run_test test_claude_md_env_block
+run_test test_env_window_keeps_user_programs
+run_test test_env_window_after_the_tail
+run_test test_up_urls_that_do_not_fit
+run_test test_up_names_the_ticket_that_holds_the_stack
+run_test test_claude_md_markers
+run_test test_claude_md_keeps_the_file
+run_test test_drop_fixtures_waits_for_the_panes
 finish

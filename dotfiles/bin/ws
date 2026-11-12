@@ -2507,7 +2507,9 @@ and --topic take ASCII letters, digits, dots, dashes, and underscores.
   up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>, write
           the slot and the URLs that dockyard prints to .ws and to the
           env lines of CLAUDE.md, and tail the container logs in the env
-          window. When .ws has URLs and a container of the stack runs,
+          window. up replaces that window only when it shows the logs of
+          an earlier up or an idle shell; else it prints the command that
+          tails them. When .ws has URLs and a container of the stack runs,
           up says the env is already up and skips dockyard. A failed
           dockyard up makes ws up exit with its status. --wait then asks
           each URL until it answers with an HTTP status below 500, for
@@ -2549,7 +2551,7 @@ ticket_check_id() {
 }
 
 ticket_read() {
-    local file=$1/.ws content="" line key value n=0 shown LC_ALL=C
+    local file=$1/.ws want=${3:-${1##*/}} content="" line key value n=0 shown LC_ALL=C
     local -n tr_kv=$2
     tr_kv=()
     REPLY=
@@ -2581,8 +2583,8 @@ ticket_read() {
         fi
         tr_kv["$key"]=$value
     done <<<"$content"
-    if ! ticket_name_ok "${tr_kv[WS_ID]-}" || [[ ${tr_kv[WS_ID]} != "${1##*/}" ]]; then
-        REPLY="WS_ID in $shown is not ${1##*/}"
+    if ! ticket_name_ok "${tr_kv[WS_ID]-}" || [[ ${tr_kv[WS_ID]} != "$want" ]]; then
+        REPLY="WS_ID in $shown is not $want"
         return 1
     fi
     if [[ -n ${tr_kv[WS_TOPIC]-} ]] && ! ticket_name_ok "${tr_kv[WS_TOPIC]}"; then
@@ -2627,6 +2629,35 @@ ticket_write() {
     fi
     rm -f -- "$tmp"
     return 1
+}
+
+ws_write_in_place() {
+    if cmp -s -- "$2" "$1"; then
+        rm -f -- "$2"
+        return 0
+    fi
+    if ! : >>"$1"; then
+        rm -f -- "$2"
+        return 1
+    fi
+    if ! cat -- "$2" >"$1"; then
+        echo "ws: writing $(ws_shown "$1") stopped partway; its new text is in $(ws_shown "$2")" >&2
+        return 1
+    fi
+    rm -f -- "$2"
+}
+
+ticket_locked() {
+    local fd rc=0
+    exec {fd}<"$1" || return 1
+    if flock -w 10 "$fd"; then
+        "${@:2}" || rc=$?
+    else
+        echo "ws: $(ws_shown "$1") stayed locked for 10 seconds" >&2
+        rc=1
+    fi
+    exec {fd}<&-
+    return "$rc"
 }
 
 ticket_update() {
@@ -2798,7 +2829,7 @@ ticket_claude_env() {
     local pair
     local -a pairs=()
     local -A kv=()
-    ticket_read "$1" kv || true
+    ticket_read "$1" kv "$2" || true
     read -r -a pairs <<<"${kv[WS_URLS]-}"
     if ((${#pairs[@]})); then
         echo "The dockyard env runs on slot ${kv[WS_SLOT]:-?}. \`ws down\` stops it and keeps the slot."
@@ -2820,52 +2851,52 @@ ticket_claude_block() {
 }
 
 ticket_claude_swap() {
-    local line state=0 out=""
-    while IFS= read -r line || [[ -n $line ]]; do
-        if ((state == 1)); then
-            [[ $line == "$WS_ENV_END" ]] || continue
-            state=2
-        fi
-        out+=$line$'\n'
-        if ((state == 0)) && [[ $line == "$WS_ENV_START" ]]; then
-            state=1
-            [[ -z $2 ]] || out+=$2$'\n'
-        fi
-    done <<<"$1"
-    ((state == 2)) || return 1
-    printf '%s' "$out"
-}
-
-ticket_claude_write() {
-    local tmp
-    tmp=$(mktemp -- "$1/.CLAUDE.md.XXXXXX") || return 1
-    if printf '%s\n' "$2" >"$tmp" && mv -T -- "$tmp" "$1/CLAUDE.md"; then
-        return 0
-    fi
-    rm -f -- "$tmp"
-    return 1
+    LC_ALL=C WS_FROM=$WS_ENV_START WS_TO=$WS_ENV_END WS_LINES=$2 awk '
+        $0 == ENVIRON["WS_FROM"] { from = from ? -1 : NR }
+        $0 == ENVIRON["WS_TO"] { to = to ? -1 : NR }
+        { line[NR] = $0 }
+        END {
+            if (from < 1 || to <= from) exit 1
+            for (i = 1; i <= NR; i++) {
+                if (i <= from || i >= to) print line[i]
+                if (i == from && ENVIRON["WS_LINES"] != "") print ENVIRON["WS_LINES"]
+            }
+        }' "$1"
 }
 
 ticket_claude_md() {
-    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md have header env note note_2_0_66
+    ticket_locked "$1" ticket_claude_rewrite "$@"
+}
+
+ticket_claude_rewrite() {
+    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header env note note_2_0_66 tmp edited=0
     local -a old=()
     read -r -a old <<<"$4"
     shift 4
     note="ws wrote this file. It imports no other file. \`ws new $id\` writes it again until you edit it."
-    env=$(ticket_claude_env "$dir")
+    env=$(ticket_claude_env "$dir" "$id")
     if [[ -e $file || -L $file ]]; then
-        [[ -f $file && ! -L $file ]] || return 0
-        have=$(cat -- "$file" 2>/dev/null)
+        [[ -f $file && -r $file && ! -L $file ]] || return 0
         header=$(ticket_claude_text "$id" "$branch" "$note" "${old[@]}")
         note_2_0_66="ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
-        if [[ $have != "$header" && $have != "$(ticket_claude_text "$id" "$branch" "$note_2_0_66" "${old[@]}")" ]] &&
-            [[ $(ticket_claude_swap "$have" "") != "$(ticket_claude_block "$header" "")" ]]; then
-            have=$(ticket_claude_swap "$have" "$env") || return 0
-            ticket_claude_write "$dir" "$have"
-            return
+        if ! printf '%s\n' "$header" | cmp -s -- "$file" - &&
+            ! ticket_claude_text "$id" "$branch" "$note_2_0_66" "${old[@]}" | cmp -s -- "$file" - &&
+            ! ticket_claude_block "$header" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
+            edited=1
         fi
     fi
-    ticket_claude_write "$dir" "$(ticket_claude_block "$(ticket_claude_text "$id" "$branch" "$note" "$@")" "$env")"
+    tmp=$(mktemp -- "$dir/.CLAUDE.md.XXXXXX") || return 1
+    if ((edited)); then
+        if ! ticket_claude_swap "$file" "$env" >"$tmp"; then
+            rm -f -- "$tmp"
+            echo "ws: $(ws_shown "$file") does not hold exactly one env block, so ws leaves it as it is" >&2
+            return 0
+        fi
+    elif ! ticket_claude_block "$(ticket_claude_text "$id" "$branch" "$note" "$@")" "$env" >"$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    ws_write_in_place "$file" "$tmp"
 }
 
 ticket_claude_refresh() {
@@ -2889,7 +2920,7 @@ ticket_stack_name() {
 }
 
 ticket_env() {
-    local file=$HOME/.dockyard/slots.json row workspace
+    local file=$HOME/.dockyard/slots.json row workspace holder
     local -n te=$1
     te=(["stack"]="$(ticket_stack_name "$3")" ["slot"]="" ["other"]="")
     te["project"]="dockyard-${te["stack"]}"
@@ -2903,6 +2934,8 @@ ticket_env() {
     workspace=${row#*$'\t'}
     if [[ -n $workspace && ($workspace == "$2" || $workspace -ef $2) ]]; then
         te["slot"]=${row%%$'\t'*}
+    elif [[ -n $workspace ]] && holder=$(ticket_of_path "$(realpath -m -- "$workspace")"); then
+        te["other"]="ticket $holder in $(ws_shown "$workspace")"
     elif [[ -n $workspace ]]; then
         te["other"]="the workspace $(ws_shown "$workspace")"
     else
@@ -2951,26 +2984,41 @@ ticket_env_down() {
     ticket_claude_refresh "$1" || echo "ws: cannot write $(ws_shown "$1/CLAUDE.md")" >&2
 }
 
+ticket_pane_idle() {
+    local procs shell=${SHELL-}
+    [[ $1 =~ ^[0-9]+$ && $2 == /dev/?* && " bash zsh sh dash fish ksh tcsh ${shell##*/} " == *" $3 "* ]] || return 1
+    procs=$(ps -o pid= -t "${2#/dev/}" 2>/dev/null)
+    [[ ${procs//[[:space:]]/} == "$1" ]]
+}
+
 ticket_env_logs() {
-    local path panes cmd tail="docker compose -p $3 logs --follow --tail 50"
-    local -a have=()
+    local path win mine pane="" panes="" pid="" tty="" mode="" cmd="" start="" var
+    local -a opts=() tail=(docker compose -p "$3" logs --follow --tail 50)
     path=$(ticket_session_path "$1") && [[ $(realpath -m -- "$path") == "$(realpath -m -- "$2")" ]] || return 0
-    if [[ -n ${TMUX_PANE-} &&
-        $(tmux display-message -p -t "$TMUX_PANE" '#{session_name}:#{window_name}' 2>/dev/null) == "$1:env" ]]; then
-        echo "ws runs in the env window, so it leaves the window. Tail the logs with: $tail"
-        return 0
-    fi
-    mapfile -t have < <(tmux list-windows -t "=$1:" -F '#{window_name}')
-    if [[ " ${have[*]} " != *" env "* ]]; then
-        tmux new-window -d -a -t "=$1:{end}" -n env -c "$2" || return 1
+    win=$(tmux list-windows -t "=$1:" -F '#{window_id} #{window_name}' | sed -n 's/^\(@[0-9]*\) env$/\1/p')
+    if [[ -z $win ]]; then
+        pane=$(tmux new-window -d -a -t "=$1:{end}" -n env -c "$2" -P -F '#{pane_id}') || return 1
     else
-        read -r panes cmd < <(tmux display-message -p -t "=$1:env" '#{window_panes} #{pane_current_command}')
-        if [[ $panes != 1 || ! " docker bash zsh sh dash fish ksh tcsh ${SHELL##*/} " == *" ${cmd:-sh} "* ]]; then
-            echo "The env window of $1 runs ${cmd:-a program}, so ws leaves it. Tail the logs with: $tail"
+        if [[ $win != *$'\n'* ]]; then
+            IFS='|' read -r pane panes pid tty mode cmd start < <(tmux display-message -p -t "$win" \
+                '#{pane_id}|#{window_panes}|#{pane_pid}|#{pane_tty}|#{pane_in_mode}|#{pane_current_command}|#{pane_start_command}')
+        fi
+        mine=$(ps -o tty= -p "$$" 2>/dev/null) || mine=
+        if [[ -n $tty && /dev/${mine// /} == "$tty" ]] ||
+            [[ -n ${TMUX_PANE-} && $(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null) == "$win" ]]; then
+            echo "ws runs in the env window, so it leaves the window. Tail the logs with: ${tail[*]}"
+            return 0
+        fi
+        if [[ $panes != 1 || $mode != 0 ]] || ! { [[ $start == "${tail[*]}" ]] || ticket_pane_idle "$pid" "$tty" "$cmd"; }; then
+            echo "The env window of $1 is in use, so ws leaves it. Tail the logs with: ${tail[*]}"
             return 0
         fi
     fi
-    tmux respawn-window -k -t "=$1:env" -c "$2" && tmux send-keys -t "=$1:env" "$tail" Enter
+    for var in DOCKER_HOST DOCKER_CONTEXT; do
+        [[ -z ${!var-} ]] || opts+=(-e "$var=${!var}")
+    done
+    tmux set-option -p -t "$pane" remain-on-exit on &&
+        tmux respawn-pane -k -t "$pane" -c "$2" "${opts[@]}" "${tail[@]}"
 }
 
 ticket_env_wait() {
@@ -3620,14 +3668,11 @@ ws_stage() {
 
 ws_up() {
     local wait=0 dir real id branch out rc=0 urls pair why=""
-    local -a pairs=()
+    local -a pairs=() ids=()
     local -A kv=() env=() said=()
     while (($#)); do
         case $1 in
-        --wait)
-            wait=1
-            shift
-            ;;
+        --wait) wait=1 ;;
         -h | --help)
             ticket_usage
             return 0
@@ -3636,10 +3681,11 @@ ws_up() {
             ticket_usage >&2
             return 1
             ;;
-        *) break ;;
+        *) ids+=("$1") ;;
         esac
+        shift
     done
-    if (($# > 1)); then
+    if ((${#ids[@]} > 1)); then
         ticket_usage >&2
         return 1
     fi
@@ -3655,7 +3701,7 @@ ws_up() {
         echo "ws: --wait needs curl" >&2
         return 1
     fi
-    ticket_target "ws up <id>" "$@" || return 1
+    ticket_target "ws up <id>" "${ids[@]}" || return 1
     dir=$REPLY
     if ! ticket_read "$dir" kv; then
         echo "ws: $REPLY" >&2
@@ -3701,11 +3747,17 @@ ws_up() {
         elif [[ -z $urls ]]; then
             why="dockyard up $branch printed no URLs"
             rc=1
+        elif ! ticket_line WS_URLS "$urls"; then
+            why=".ws records slot ${env[slot]} without the URLs"
+            rc=1
         fi
         if ((rc)); then
             ticket_update "$dir" set WS_SLOT "${env[slot]}" WS_URLS "" || true
             ticket_claude_refresh "$dir" || true
             echo "ws: $why" >&2
+            if [[ -n ${env[other]} ]]; then
+                echo "ws: dockyard stack ${env[stack]} is registered with ${env[other]}, so its nuke would remove that env" >&2
+            fi
             return "$rc"
         fi
     fi
@@ -3782,8 +3834,8 @@ ticket_wait_idle() {
 }
 
 ws_rm() {
-    local id dir real here d i why agents rows sid pid parent path spath="" ours=0 fail=0 purge=0 rc=0
-    local -a wts=() stop=() mine=()
+    local id dir real here d i why agents rows sid pid parent path spath="" ours=0 fail=0 purge=0 rc=0 trash
+    local -a wts=() stop=() mine=() repos=()
     local -A kv=() env=()
     if [[ ${1-} == --purge ]]; then
         purge=1
@@ -3924,9 +3976,6 @@ ws_rm() {
         echo "ws: kept $id, so ws moved nothing" >&2
         return 1
     fi
-    if ((purge)) && [[ -n ${env[slot]-} ]]; then
-        ticket_update "$dir" set WS_SLOT "" WS_URLS "" && ticket_claude_refresh "$dir" || true
-    fi
     : "${WS_STAMP:=$(date -u +%Y%m%dT%H%M%SZ)}"
     for i in "${!wts[@]}"; do
         ws_trash_move "${wts[i]}" "$d/$i" pr "" state "" oid "" || fail=1
@@ -3952,9 +4001,22 @@ ws_rm() {
     fi
     dockyard nuke "${kv[WS_BRANCH]}" </dev/null || rc=$?
     if ((rc)); then
-        echo "ws: dockyard nuke ${kv[WS_BRANCH]} failed with status $rc, so the env's volumes stay" >&2
+        echo "ws: dockyard nuke ${kv[WS_BRANCH]} failed with status $rc, so the env's volumes and slot stay" >&2
+        return "$rc"
     fi
-    return "$rc"
+    trash=${WS_TICKET_TRASH[$dir]}
+    if ! ticket_read "$trash" kv "$id"; then
+        echo "ws: $REPLY, so ws cannot clear its slot" >&2
+        return 1
+    fi
+    kv[WS_SLOT]="" kv[WS_URLS]=""
+    if ! ticket_write "$trash" kv; then
+        echo "ws: cannot clear the slot in $(ws_shown "$trash/.ws")" >&2
+        return 1
+    fi
+    read -r -a repos <<<"${kv[WS_REPOS]-}"
+    ticket_claude_md "$trash" "$id" "${kv[WS_BRANCH]-}" "${kv[WS_REPOS]-}" "${repos[@]}" ||
+        echo "ws: cannot write $(ws_shown "$trash/CLAUDE.md")" >&2
 }
 
 main() {

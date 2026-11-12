@@ -37,7 +37,9 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   bin/podman           and inspect from <engine>.json; docker also
                        answers ps -q with a compose project label and
                        status=running filter, and compose -p <project>
-                       logs, which prints one line and waits
+                       logs, which prints one line and sleeps
+  docker.logs-exit     create it to make compose logs exit half a second
+                       after its line
   <engine>.json        the running containers, [] at first: objects with
                        Id, Name, Mounts of Type and Source, and Labels
   bin/dockyard         dockyard shim: up, down, and nuke keep
@@ -58,6 +60,10 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   dockyard.nuke-fail   create it to make nuke exit 1 and remove nothing
   dockyard.prefix      holds text that the stack name starts with, as
                        if dockyard named stacks another way
+  dockyard.claim       holds a directory; up of a new stack first
+                       records it with that workspace, as if another up
+                       got there first
+  dockyard.web-url     holds the URL that up prints for the web UI
   bin/curl             curl shim: answers with the first line of
                        http/<port> and drops that line while more
                        follow, or fails as a closed port; logs each URL
@@ -274,9 +280,8 @@ case "$*" in
     ;;
 "compose -p "*" logs --follow --tail 50")
     echo "$3 | fixture log line"
-    while :; do
-        sleep 60
-    done
+    [[ -f $root/$engine.logs-exit ]] || exec sleep infinity
+    sleep 0.5
     ;;
 "inspect "*)
     shift
@@ -377,6 +382,13 @@ up)
         workspace=$(cd -P -- "$DOCKYARD_WORKSPACE" && pwd -P)
     fi
     log "Feature: $branch (slug: $slug)"
+    if [[ -z $record && -f $root/dockyard.claim ]]; then
+        mkdir -p "$state"
+        [[ -f $slots ]] || echo '{}' >"$slots"
+        save --arg s "$slug" --arg w "$(<"$root/dockyard.claim")" \
+            '.[$s] = {slot: 9, repos: [], profiles: [], created: "2026-01-01T00:00:00Z", workspace: $w}'
+        record=$(jq -c --arg s "$slug" '.[$s]' "$slots")
+    fi
     created=""
     if [[ -n $record ]]; then
         recorded=$(jq -r '.workspace // ""' <<<"$record")
@@ -417,7 +429,9 @@ up)
     log "Services started."
     echo
     echo -e "\033[1mStack: $slug\033[0m"
-    echo -e "  \033[0;34mWeb UI:\033[0m           http://localhost:$((4000 + slot * 100))"
+    web=http://localhost:$((4000 + slot * 100))
+    [[ ! -f $root/dockyard.web-url ]] || web=$(<"$root/dockyard.web-url")
+    echo -e "  \033[0;34mWeb UI:\033[0m           $web"
     echo -e "  \033[0;34mAPI Gateway:\033[0m      http://localhost:$((8000 + slot * 100))"
     echo -e "  \033[0;34mPortal:\033[0m           (internal, routed via gateway)"
     ;;
