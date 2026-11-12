@@ -178,9 +178,18 @@ fake_cmdline() {
 }
 
 fake_zombie() {
+    local tid
+    local -a tasks=()
     fake_proc "$1" "$2" "" "" "$3"
-    printf 'Name:\t%s\nState:\tZ (zombie)\nPPid:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$3" "$2" "$EUID" "$EUID" "$EUID" "$EUID" \
-        >"$WS_PROC/$1/status" || abort "cannot make fake zombie $1"
+    for tid in "$1" "${@:4}"; do
+        tasks+=("$WS_PROC/$1/task/$tid")
+    done
+    {
+        printf 'Name:\t%s\nState:\tZ (zombie)\nPPid:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$3" "$2" "$EUID" "$EUID" "$EUID" "$EUID" \
+            >"$WS_PROC/$1/status" &&
+            printf '%s (%s) Z %s 0 0 0 0 4227148\n' "$1" "$3" "$2" >"$WS_PROC/$1/stat" &&
+            mkdir -p "${tasks[@]}"
+    } || abort "cannot make fake zombie $1"
 }
 
 add_container() {

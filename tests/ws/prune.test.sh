@@ -3058,16 +3058,31 @@ test_zombie_rows_name_the_parent() {
     local m=$WS_PROJECTS/alpha-merged out
     fake_proc 240 1 "$FX"
     fake_proc 650 240 "$FX" "" bash
-    fake_zombie 700 650 sh
+    fake_zombie 700 650 sh 701
     out=$(ws prune 2>/dev/null)
-    assert_eq "a zombie of ours makes the worktree KEEP unreadable" "KEEP unreadable" "$(action_of "$out" "$m")"
+    assert_eq "a zombie of ours whose other thread hides its directory makes the worktree KEEP unreadable" \
+        "KEEP unreadable" "$(action_of "$out" "$m")"
     assert_eq "the row says whose zombie it is" "process 700 (sh) is a zombie child of process 650 (bash)" \
         "$(detail_of "$out" "$m")"
     rm -r "$WS_PROC/700"
-    fake_zombie 710 999 sh
+    fake_zombie 710 999 sh 711
     out=$(ws prune 2>/dev/null)
     assert_eq "a zombie whose parent is gone says so" "process 710 (sh) is a zombie child of process 999 (parent gone)" \
         "$(detail_of "$out" "$m")"
+    rm -r "$WS_PROC/710"
+    fake_zombie 720 650 sh
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a zombie with no thread left holds no directory" REMOVE "$(action_of "$out" "$m")"
+    rm -r "$WS_PROC/720"
+    fake_zombie 730 650 sh 731
+    ln -s "$FX" "$WS_PROC/730/task/731/cwd"
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a zombie whose other thread works elsewhere leaves the worktree alone" REMOVE "$(action_of "$out" "$m")"
+    rm "$WS_PROC/730/task/731/cwd"
+    ln -s "$m" "$WS_PROC/730/task/731/cwd"
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a zombie whose other thread works in the worktree makes it KEEP in-use" "KEEP in-use" \
+        "$(action_of "$out" "$m")"
 }
 
 test_notes_ask_the_recorded_repo_first() {
