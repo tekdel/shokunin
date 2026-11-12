@@ -660,11 +660,121 @@ test_rm_moves_nothing_when_a_process_survives() {
     stop_started "$pid"
     assert_eq "rm exits 1 when a process outlives the session" 1 "$rc"
     refute "it got as far as the kill" has_session t1
-    assert "it says the process outlived the session" \
-        grep -qF "ws: a process still works in ~/work/t1 after its sessions ended, so ws moved nothing" <<<"$out"
+    assert "it names the process that outlived the session" \
+        grep -qxF "ws: process $pid (sleep) still works in ~/work/t1, so ws moved nothing" <<<"$out"
     assert "it keeps alpha" is_worktree "$WS_ROOT/t1/alpha"
     assert "it keeps beta" is_worktree "$WS_ROOT/t1/beta"
     assert "it keeps .ws" test -f "$WS_ROOT/t1/.ws"
+}
+
+test_rm_when_claude_stop_fails() {
+    local out rc bg
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    start_in "$WS_ROOT/t1/alpha" sleep 300
+    bg=$STARTED
+    agents '[{"kind":"background","id":"bgx","state":"working","cwd":"'"$WS_ROOT"'/t1/alpha","pid":'"$bg"',"startedAt":0}]'
+    sed -i '/claude\.log"$/a [[ ${1-} != stop ]] || exit 1' "$FX/bin/claude"
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$bg"
+    assert_eq "rm exits 1 when claude stop fails and the session lives on" 1 "$rc"
+    assert "it says claude stop failed" grep -qxF "ws: claude stop bgx failed" <<<"$out"
+    assert "it names the session process that still works" \
+        grep -qxF "ws: process $bg (sleep) still works in ~/work/t1, so ws moved nothing" <<<"$out"
+    refute "it does not say the sessions ended" grep -q 'ended' <<<"$out"
+    assert "it keeps alpha" is_worktree "$WS_ROOT/t1/alpha"
+}
+
+server_pid() {
+    tmux display-message -p '#{pid}' 2>/dev/null
+}
+
+wait_gone() {
+    local i
+    [[ -n $1 ]] || abort "wait_gone needs a pid"
+    for ((i = 0; i < 100; i++)); do
+        [[ -e /proc/$1 ]] || return 0
+        sleep 0.05
+    done
+    abort "process $1 did not exit"
+}
+
+attach_from() {
+    local i
+    outer_tmux has-session -t '=keep:' 2>/dev/null || outer_tmux new-session -d -s keep -c "$HOME"
+    outer_tmux new-session -d -x 120 -y 40 -c "$1" \
+        "exec env -u TMUX $(printf %q "$FX/bin/tmux") attach-session -t '=$2:'"
+    for ((i = 0; i < 100; i++)); do
+        CLIENT=$(tmux list-clients -t "=$2:" -F '#{client_pid}' 2>/dev/null)
+        [[ -n $CLIENT ]] && return 0
+        sleep 0.05
+    done
+    abort "no client attached to $2"
+}
+
+test_ws_starts_tmux_outside_the_ticket() {
+    local out rc pid
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    mkdir -p "$WS_ROOT/t8"
+    (cd "$WS_ROOT/t8" && ws new t8 feat/t8 alpha >/dev/null 2>&1)
+    pid=$(server_pid)
+    assert_eq "ws new starts the tmux server in /, not in the ticket it runs from" / "$(readlink "/proc/$pid/cwd")"
+    out=$(ws rm t8 2>&1) && rc=0 || rc=$?
+    assert_eq "rm takes a ticket after ws started tmux from inside it" 0 "$rc"
+    refute "it removes that ticket" test -e "$WS_ROOT/t8"
+
+    new_fixture_no_ticket
+    fake_fzf
+    mkdir -p "$WS_ROOT/t8"
+    (cd "$WS_ROOT/t8" && WS_FZF_PICK=$WS_PROJECTS/beta ws pick >/dev/null 2>&1)
+    wait_refresh
+    pid=$(server_pid)
+    assert_eq "ws pick starts the tmux server in /, not in the ticket it runs from" / "$(readlink "/proc/$pid/cwd")"
+}
+
+test_rm_ignores_a_tmux_server_in_the_ticket() {
+    local out rc pid pane
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    mkdir -p "$WS_ROOT/t9"
+    (cd "$WS_ROOT/t9" && tmux new-session -d -s main -c "$HOME")
+    ws new t9 feat/t9 alpha >/dev/null 2>&1
+    pid=$(server_pid)
+    assert_eq "the tmux server works in the ticket" "$WS_ROOT/t9" "$(readlink "/proc/$pid/cwd")"
+    pane=$(tmux new-window -d -P -F '#{pane_pid}' -t "=main:" -c "$WS_ROOT/t9/alpha" "sleep 300") ||
+        abort "cannot open a window in main"
+    out=$(ws rm t9 2>&1) && rc=0 || rc=$?
+    assert_eq "rm refuses a pane of another session on that server" 1 "$rc"
+    assert "it names the pane's process, not the server" grep -qF "process $pane (sleep) works in ~/work/t9" <<<"$out"
+    stop_started "$pane"
+    wait_gone "$pane"
+    out=$(ws rm t9 2>&1) && rc=0 || rc=$?
+    assert_eq "rm takes a ticket whose tmux server works in it" 0 "$rc"
+    refute "it removes the ticket" test -e "$WS_ROOT/t9"
+    assert "the server and its other session live on" has_session main
+}
+
+test_rm_ignores_a_client_of_its_own_session() {
+    local out rc
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t7 feat/t7 alpha >/dev/null 2>&1
+    tmux new-session -d -s other -c "$HOME"
+    attach_from "$WS_ROOT/t7/alpha" other
+    out=$(ws rm t7 2>&1) && rc=0 || rc=$?
+    stop_started "$CLIENT"
+    wait_gone "$CLIENT"
+    assert_eq "rm refuses a client of another session that works in the ticket" 1 "$rc"
+    assert "it names the client" grep -qF "process $CLIENT (tmux: client) works in ~/work/t7" <<<"$out"
+
+    attach_from "$WS_ROOT/t7/alpha" t7
+    out=$(ws rm t7 2>&1) && rc=0 || rc=$?
+    outer_tmux kill-server 2>/dev/null
+    assert_eq "rm takes a ticket whose own session has a client that works in it" 0 "$rc"
+    refute "it kills the session" has_session t7
+    refute "it removes the ticket" test -e "$WS_ROOT/t7"
 }
 
 test_rm_ticket_without_worktree() {
@@ -704,6 +814,66 @@ test_adopt_refuses_another_tickets_worktree() {
     assert "it names the ticket" grep -qF "~/work/t2/alpha belongs to ticket t2" <<<"$out"
     assert "the worktree stays in its ticket" lists_worktree alpha "$WS_ROOT/t2/alpha"
     refute "it makes no ticket dir" test -e "$WS_ROOT/t7"
+}
+
+test_adopt_checks_the_ticket_before_it_moves() {
+    local out rc
+    new_fixture_no_ticket
+    add_worktree alpha "$WS_PROJECTS/alpha-d1" feat/d1
+    mkdir -p "$WS_ROOT/d1"
+    printf 'WS_ID=d1\nnot a pair\n' >"$WS_ROOT/d1/.ws"
+    out=$(ws adopt d1 "$WS_PROJECTS/alpha-d1" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a ticket with a malformed .ws" 1 "$rc"
+    assert "it says which line" grep -qF "line 2 of ~/work/d1/.ws is not KEY=value" <<<"$out"
+    assert "it moves nothing first" lists_worktree alpha "$WS_PROJECTS/alpha-d1"
+
+    add_worktree alpha "$WS_PROJECTS/alpha-d2" 'feat/a=b'
+    out=$(ws adopt d2 "$WS_PROJECTS/alpha-d2" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a branch ws does not take" 1 "$rc"
+    assert "it names the branch" grep -qF "'feat/a=b' is not a branch name ws takes" <<<"$out"
+    assert "it moves nothing first" lists_worktree alpha "$WS_PROJECTS/alpha-d2"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/d2"
+
+    add_worktree alpha "$WS_PROJECTS/alpha-d3" feat/d3
+    mkdir -p "$FX/elsewhere"
+    ln -s "$FX/elsewhere" "$WS_ROOT/d3"
+    out=$(ws adopt d3 "$WS_PROJECTS/alpha-d3" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a ticket dir that is a symlink" 1 "$rc"
+    assert "it says the ticket is no directory" grep -qF "~/work/d3 is not a directory" <<<"$out"
+    assert "it moves nothing first" lists_worktree alpha "$WS_PROJECTS/alpha-d3"
+    assert_eq "nothing lands where the symlink points" "" "$(ls -A "$FX/elsewhere")"
+
+    add_worktree alpha "$WS_PROJECTS/alpha-d4" feat/d4
+    mkdir -p "$WS_ROOT/d4"
+    printf 'WS_ID=d4\nWS_BRANCH=feat/d4\nWS_REPOS="beta gamma"\n' >"$WS_ROOT/d4/.ws"
+    out=$(ws adopt d4 "$WS_PROJECTS/alpha-d4" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a ticket whose .ws lists a repo ws cannot make" 1 "$rc"
+    assert "it names the repo" grep -qF "~/projects/gamma is not a git checkout" <<<"$out"
+    assert "it moves nothing first" lists_worktree alpha "$WS_PROJECTS/alpha-d4"
+    refute "it makes no worktree first" test -e "$WS_ROOT/d4/beta"
+
+    printf 'WS_ID=d4\nWS_BRANCH=feat/d4\nWS_REPOS=beta\n' >"$WS_ROOT/d4/.ws"
+    out=$(ws adopt d4 "$WS_PROJECTS/alpha-d4" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt takes the ticket once its .ws lists repos ws can make" 0 "$rc"
+    assert "it moves the worktree in" lists_worktree alpha "$WS_ROOT/d4/alpha"
+    assert "it makes the repo .ws lists" is_worktree "$WS_ROOT/d4/beta"
+}
+
+test_adopt_names_both_branches() {
+    local out rc
+    new_fixture_no_ticket
+    add_worktree alpha "$WS_PROJECTS/alpha-t3" feat/t3
+    ws adopt t3 "$WS_PROJECTS/alpha-t3" >/dev/null 2>&1
+    out=$(ws adopt t3 "$WS_ROOT/t3/alpha" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a worktree that is in the ticket already" 1 "$rc"
+    assert "it names the taken path" grep -qF "~/work/t3/alpha exists" <<<"$out"
+    refute "it prints no message with an empty branch name" grep -qE "''|, not $" <<<"$out"
+
+    add_worktree beta "$WS_PROJECTS/beta-other" feat/other
+    out=$(ws adopt t3 "$WS_PROJECTS/beta-other" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt refuses a worktree on another branch than the ticket" 1 "$rc"
+    assert "it names both branches" grep -qxF "ws: ticket t3 is on branch feat/t3, not feat/other" <<<"$out"
+    assert "it moves nothing" lists_worktree beta "$WS_PROJECTS/beta-other"
 }
 
 age_pr_cache() {
@@ -777,6 +947,34 @@ test_claude_md_keeps_edits() {
     assert "adopt keeps an edited CLAUDE.md" grep -qx "t2 notes" "$WS_ROOT/t2/CLAUDE.md"
 }
 
+claude_md_of_2_0_66() {
+    local id=$1 branch=$2 repo
+    shift 2
+    printf '# Ticket %s\n\nws wrote this file and writes it again on each `ws new %s`. It imports no other file.\n\n' "$id" "$id"
+    printf -- '- Each repo directory here is a git worktree on branch `%s`.\n' "$branch"
+    for repo; do
+        printf -- '  - `%s/` belongs to `~/projects/%s`.\n' "$repo" "$repo"
+    done
+    printf -- '- `.ws` holds the ticket state, and only ws writes it. Run `ws stage <stage>` here to move the ticket on.\n'
+    printf -- '- Log progress with `~/vault/bin/vault-log %s "<what changed>"`.\n' "$id"
+}
+
+test_claude_md_of_an_older_ws_updates() {
+    new_fixture_no_ticket
+    ws new t4 feat/t4 alpha >/dev/null 2>&1
+    claude_md_of_2_0_66 t4 feat/t4 alpha >"$WS_ROOT/t4/CLAUDE.md"
+    ws new t4 feat/t4 alpha beta >/dev/null 2>&1
+    assert "a rerun rewrites a CLAUDE.md that ws 2.0.66 wrote" \
+        grep -qF '`beta/` belongs to `~/projects/beta`' "$WS_ROOT/t4/CLAUDE.md"
+    assert "it writes the current header" grep -qF 'writes it again until you edit it.' "$WS_ROOT/t4/CLAUDE.md"
+
+    ws new t5 feat/t5 alpha >/dev/null 2>&1
+    { claude_md_of_2_0_66 t5 feat/t5 alpha && echo "my notes"; } >"$WS_ROOT/t5/CLAUDE.md"
+    ws new t5 feat/t5 alpha beta >/dev/null 2>&1
+    assert "a rerun keeps an edited CLAUDE.md that ws 2.0.66 wrote" grep -qx "my notes" "$WS_ROOT/t5/CLAUDE.md"
+    refute "it adds no repo to it" grep -qF '`beta/`' "$WS_ROOT/t5/CLAUDE.md"
+}
+
 zsh_launch() {
     local zd=$FX/zdot
     mkdir -p "$zd"
@@ -824,6 +1022,70 @@ test_zsh_launch_line() {
     assert "a shell inside tmux starts no tmux" grep -q ALIVE-42 <<<"$out"
 }
 
+alacritty_shell() {
+    awk '
+        /^\[/ { shell = ($0 == "[terminal.shell]"); next }
+        shell && sub(/^program *= *"/, "") { sub(/".*/, ""); print }
+        shell && sub(/^args *= *\[/, "") {
+            sub(/\].*/, "")
+            n = split($0, arg, ",")
+            for (i = 1; i <= n; i++) {
+                gsub(/^ *"|" *$/, "", arg[i])
+                print arg[i]
+            }
+        }' "$WS_TESTS/../../dotfiles/alacritty/alacritty.toml"
+}
+
+alacritty_launch() {
+    local hide=$1 cmd tmux
+    local -a shell=()
+    shift
+    mapfile -t shell < <(alacritty_shell)
+    ((${#shell[@]})) || abort "alacritty.toml names no shell program"
+    [[ $TMUX_TMPDIR == /tmp/wsx.* ]] || abort "TMUX_TMPDIR is not the fixture's"
+    mkdir -p "$FX/zhome"
+    cp "$WS_TESTS/../../dotfiles/zsh/.zshrc" "$WS_TESTS/../../dotfiles/zsh/.zprofile" "$FX/zhome/"
+    printf -v cmd '%q ' env -i HOME="$FX/zhome" TERM=xterm-256color WAYLAND_DISPLAY=wayland-9 TMUX_TMPDIR="$TMUX_TMPDIR" "$@" "${shell[@]}"
+    if [[ $hide == no-tmux ]]; then
+        tmux=$(PATH=$_base_path type -P tmux)
+        : >"$FX/no-tmux"
+        printf -v cmd 'unshare -rm sh -c %q' "mount --bind $(printf %q "$FX/no-tmux") $(printf %q "$tmux") && exec $cmd"
+    fi
+    { sleep 1 && printf 'echo ALIVE-$((6 * 7))\n' && sleep 1 && printf 'exit\n' && sleep 0.5; } |
+        SHELL=$(PATH=$_base_path type -P bash) timeout -k 2 20 script -qfec "$cmd" /dev/null 2>&1 | tr -d '\r'
+    env -u TMUX TMUX_TMPDIR="$TMUX_TMPDIR" "$(PATH=$_base_path type -P tmux)" kill-server 2>/dev/null
+}
+
+test_alacritty_opens_a_shell_when_tmux_fails() {
+    local out ro
+    if ! command -v zsh >/dev/null || ! command -v script >/dev/null || ! unshare -rm true 2>/dev/null; then
+        ok "alacritty launch skipped: no zsh, script, or unshare"
+        return
+    fi
+    new_fixture_no_ticket
+    mkdir -p "$FX/nobin" "$FX/okbin" "$FX/realbin"
+    for cmd in zsh env cat; do
+        ln -s "$(type -P "$cmd")" "$FX/nobin/$cmd"
+    done
+    printf '#!/bin/sh\necho "$@" >>%q\nexit 0\n' "$FX/tmux-ok.log" >"$FX/okbin/tmux"
+    printf '#!/bin/sh\nexec %q -L wsfxa "$@"\n' "$(PATH=$_base_path type -P tmux)" >"$FX/realbin/tmux"
+    chmod +x "$FX/okbin/tmux" "$FX/realbin/tmux"
+
+    out=$(alacritty_launch no-tmux PATH="$FX/nobin")
+    assert "a new alacritty without tmux gets a shell" grep -q ALIVE-42 <<<"$out"
+
+    ro=$FX/ro-sockets
+    mkdir -p "$ro"
+    chmod 555 "$ro"
+    out=$(alacritty_launch tmux PATH="$FX/realbin:$FX/nobin" TMUX_TMPDIR="$ro")
+    chmod 755 "$ro"
+    assert "a new alacritty whose tmux fails gets a shell" grep -q ALIVE-42 <<<"$out"
+
+    out=$(alacritty_launch tmux PATH="$FX/okbin:$FX/nobin")
+    assert_eq "a new alacritty runs tmux new-session -A -s main" "new-session -A -s main" "$(cat "$FX/tmux-ok.log" 2>/dev/null)"
+    refute "it closes when tmux exits 0" grep -q ALIVE-42 <<<"$out"
+}
+
 run_test test_new
 run_test test_new_existing_branch
 run_test test_new_rerun
@@ -845,11 +1107,19 @@ run_test test_names_are_ascii
 run_test test_rm_refuses_a_foreign_process
 run_test test_rm_ignores_its_own_sessions
 run_test test_rm_moves_nothing_when_a_process_survives
+run_test test_rm_when_claude_stop_fails
+run_test test_ws_starts_tmux_outside_the_ticket
+run_test test_rm_ignores_a_tmux_server_in_the_ticket
+run_test test_rm_ignores_a_client_of_its_own_session
 run_test test_rm_ticket_without_worktree
 run_test test_adopt_checks_the_session_first
 run_test test_adopt_refuses_another_tickets_worktree
+run_test test_adopt_checks_the_ticket_before_it_moves
+run_test test_adopt_names_both_branches
 run_test test_status_retries_a_gh_failure_soon
 run_test test_gh_calls_run_eight_at_a_time
 run_test test_claude_md_keeps_edits
+run_test test_claude_md_of_an_older_ws_updates
 run_test test_zsh_launch_line
+run_test test_alacritty_opens_a_shell_when_tmux_fails
 finish
