@@ -14,6 +14,7 @@ WS_UP_TIMEOUT=${WS_UP_TIMEOUT:-300}
 WS_VERIFY_TIMEOUT=${WS_VERIFY_TIMEOUT:-1800}
 WS_VERIFY_POLL=${WS_VERIFY_POLL:-5}
 WS_JIRA_MCP=${WS_JIRA_MCP:-atlassian}
+WS_JIRA_TOOL=${WS_JIRA_TOOL:-getJiraIssue}
 WS_GH_JOBS=8
 
 WS_OID_RE='^[0-9a-f]{40}([0-9a-f]{24})?$'
@@ -2475,16 +2476,17 @@ usage: ws new [--ticket <key>] [--topic <name>] <id> <branch> <repo>...
        ws up [--wait] [<id>]
        ws down [<id>]
        ws rm [--purge] <id>
-       ws scenarios [<id>] [--from <file>]
+       ws scenarios [<id>] [--from <file>] [--replace]
        ws verify [<id>]
        ws done [<id>]
 
 A ticket is the directory $WS_ROOT/<id>. It holds .ws, the ticket state
 that only ws writes, a CLAUDE.md that ws writes, a .claude/settings.json
-that denies Claude edits of the ticket's scenarios, and one git worktree
-of $WS_PROJECTS/<repo> per repo, all on one branch. Its tmux session is
-named <id> and has the windows claude, shell, and env. Ids, --ticket,
-and --topic take ASCII letters, digits, dots, dashes, and underscores.
+that denies Claude edits of the ticket's scenarios, .ws, and evidence,
+and one git worktree of $WS_PROJECTS/<repo> per repo, all on one branch.
+Its tmux session is named <id> and has the windows claude, shell, and
+env. Ids, --ticket, and --topic take ASCII letters, digits, dots,
+dashes, and underscores.
 
   new     make what is missing of the ticket: the worktrees, .ws,
           CLAUDE.md, .claude/settings.json, and the tmux session, whose
@@ -2492,7 +2494,7 @@ and --topic take ASCII letters, digits, dots, dashes, and underscores.
           session. A branch that exists in neither the repo nor origin
           starts from origin's default branch with no upstream. A rerun
           adds new repos and keeps the stage. It writes CLAUDE.md again
-          only while nobody has edited it, and adds the deny rule to a
+          only while nobody has edited it, and adds the deny rules to a
           settings.json that someone edited.
   adopt   move linked worktrees of one branch into the ticket with git
           worktree move, then do what new does. No process may work in
@@ -2542,22 +2544,32 @@ and --topic take ASCII letters, digits, dots, dashes, and underscores.
           their sha256 as WS_SCENARIOS_SHA256 in .ws. A claude -p run
           in the vault, with no built-in tools, writes them from the
           ticket text in --from <file>, or from the Jira issue
-          WS_TICKET, which it reads through the MCP server
-          WS_JIRA_MCP, atlassian by default. The .claude/settings.json
-          that ws new writes in the ticket denies Claude edits of that
-          file.
+          WS_TICKET. For Jira it may call one tool, WS_JIRA_TOOL of the
+          MCP server WS_JIRA_MCP, getJiraIssue of atlassian by default.
+          Inside a Claude session, where CLAUDECODE is set, it replaces
+          scenarios that exist only with --replace. The
+          .claude/settings.json that ws new writes in the ticket denies
+          Claude edits of the scenarios, .ws, and the evidence of the
+          ticket. These rules and the sha256 are speed bumps, not a
+          sandbox. Claude Code applies the rules only to the shell
+          writes it parses, such as redirects, cp, tee, and sed -i.
   verify  refuse when the scenarios changed since ws scenarios wrote
           them, or when the env is down. Else set the stage to
           verifying, start claude --bg -n <id>-verify --agent
           ui-tester in a new evidence directory
           $WS_VAULT/projects/work/<topic>/evidence/<id>/<date>, and
           wait at most WS_VERIFY_TIMEOUT seconds, 1800 by default, for
-          its results.md. It holds one line per scenario, RESULT S<n>
-          PASS or RESULT S<n> FAIL <why>. When every scenario passes,
-          the stage becomes qa; else it goes back to building. A rerun
-          waits on a verify session of the ticket that still runs.
-  done    set the stage to merged, run $WS_VAULT/bin/vault-consolidate,
-          and offer ws rm.
+          its results.md. The session may not edit the scenarios, .ws,
+          or the ticket directory. results.md holds one line per
+          scenario, RESULT S<n> PASS or RESULT S<n> FAIL <why>. A
+          scenario passes only when it has exactly one such line and
+          that line is PASS. When every scenario passes, the stage
+          becomes qa; else it goes back to building. A rerun waits on a
+          verify session of the ticket that still runs.
+  done    set the stage to merged and run $WS_VAULT/bin/vault-consolidate,
+          then offer ws rm. When vault-consolidate fails, keep the
+          ticket, because vault-consolidate archives the learnings of a
+          merged ticket only while its .ws is in $WS_ROOT.
 
 up, down, and rm act on the dockyard stack of the ticket's branch only
 while its record in ~/.dockyard/slots.json names the ticket directory as
@@ -3199,29 +3211,40 @@ ticket_evidence_root() {
     printf '%s\n' "$WS_VAULT/projects/work/${ter[WS_TOPIC]:-${ter[WS_ID]}}/evidence/${ter[WS_ID]}"
 }
 
-# Claude Code reads //path as an absolute path, and an Edit rule also covers its Write tool.
+# Claude Code reads //path as an absolute path. An Edit rule also denies its Write tool and the shell writes
+# that it parses, such as redirects, cp, tee, and sed -i, but not a write by any other program.
+edit_deny_rules() {
+    local -n edr=$1
+    local p path
+    shift
+    edr=()
+    for p; do
+        path=$(realpath -m -- "${p%/\*\*}")
+        if [[ $path == *[][*?\\]* ]]; then
+            echo "ws: $(ws_shown "$path") holds a character that Claude Code reads as a pattern, so ws writes no deny rule for it" >&2
+            return 1
+        fi
+        [[ $p != */\*\* ]] || path+='/**'
+        edr+=("Edit(/$path)")
+    done
+}
+
 ticket_deny() {
-    local dir=$1/.claude file=$1/.claude/settings.json rule tmp path
-    path=$(realpath -m -- "$2")
-    rule="Edit(/$path)"
-    if [[ $path == *[][*?\\]* ]]; then
-        echo "ws: $(ws_shown "$path") holds a character that Claude Code reads as a pattern, so ws writes no deny rule for it" >&2
-        return 1
-    fi
+    local dir=$1/.claude file=$1/.claude/settings.json tmp
+    shift
     if [[ -L $dir || -L $file || (-e $file && ! -f $file) ]]; then
-        echo "ws: $(ws_shown "$file") is not a plain file, so ws writes no deny rule for the scenarios" >&2
+        echo "ws: $(ws_shown "$file") is not a plain file, so ws adds no deny rules to it" >&2
         return 1
     fi
     mkdir -p -- "$dir" || return 1
     tmp=$(mktemp -- "$dir/.settings.json.XXXXXX") || return 1
     if [[ -s $file ]]; then
-        jq --arg r "$rule" '.permissions.deny |= ((. // []) | if any(.[]; . == $r) then . else . + [$r] end)' \
-            "$file" >"$tmp" 2>/dev/null
+        jq '.permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' "$file" --args "$@" >"$tmp" 2>/dev/null
     else
-        jq -n --arg r "$rule" '{permissions: {deny: [$r]}}' >"$tmp"
+        jq -n '{permissions: {deny: $ARGS.positional}}' --args "$@" >"$tmp"
     fi || {
         rm -f -- "$tmp"
-        echo "ws: $(ws_shown "$file") does not hold a settings object with a permissions.deny list, so ws writes no deny rule for the scenarios" >&2
+        echo "ws: $(ws_shown "$file") does not hold a settings object with a permissions.deny list, so ws adds no deny rules to it" >&2
         return 1
     }
     ws_write_in_place "$file" "$tmp"
@@ -3229,7 +3252,7 @@ ticket_deny() {
 
 ticket_make() {
     local id=$1 branch=$2 ticket=$3 topic=$4 dir=$WS_ROOT/$1 repo fail=0
-    local -a extra=()
+    local -a extra=() rules=()
     local -A kv=()
     shift 4
     ticket_check "$id" "$branch" "" "$@" || return 1
@@ -3243,7 +3266,9 @@ ticket_make() {
         ticket_wt_add "$dir" "$repo" "$branch" || fail=1
     done
     ticket_claude_md "$dir" "$id" "$branch" "${TICKET_OLD[*]}" "${TICKET_REPOS[@]}" || fail=1
-    if ! ticket_read "$dir" kv || ! ticket_locked "$dir" ticket_deny "$dir" "$(ticket_scenarios_file kv)"; then
+    if ! ticket_read "$dir" kv ||
+        ! edit_deny_rules rules "$(ticket_scenarios_file kv)" "$dir/.ws" "$(ticket_evidence_root kv)/**" ||
+        ! ticket_locked "$dir" ticket_deny "$dir" "${rules[@]}"; then
         fail=1
     fi
     ticket_session "$id" "$dir" || return 1
@@ -4099,13 +4124,13 @@ scenario_ids() {
 }
 
 scenarios_prompt() {
-    local key=$1 from=$2
-    echo "You write the holdout acceptance scenarios of ticket $key. A separate Claude session builds the ticket and never sees these scenarios. Later a tester session runs each scenario in a browser and with HTTP calls against the running app, and marks it PASS or FAIL."
+    local key=$1 from=$2 tool=$3
+    echo "You write the holdout acceptance scenarios of ticket $key. A separate Claude session builds the ticket and cannot edit these scenarios. Later a tester session runs each scenario in a browser and with HTTP calls against the running app, and marks it PASS or FAIL."
     echo
     if [[ -n $from ]]; then
         echo "The ticket text follows the line TICKET TEXT at the end."
     else
-        echo "Read the Jira issue $key with the tools of the $WS_JIRA_MCP MCP server. If you cannot read it, print exactly \"ws: cannot read $key\" and nothing else."
+        echo "Read the Jira issue $key with the tool $tool. If you cannot read it, print exactly \"ws: cannot read $key\" and nothing else."
     fi
     echo
     echo "Print only the scenarios in Markdown, with nothing before or after them. Write 3 to 8 scenarios. Start each one with a heading line \"## S<n>. <title>\", numbered from S1 with no gaps. Under the heading, write a Given line, a When line, and a Then line that a tester can check in the UI or with an HTTP call. Cover the main flow, each edge case that the ticket names, and one check that nearby behavior still works. Add no requirement that the ticket does not state."
@@ -4117,7 +4142,7 @@ scenarios_prompt() {
 }
 
 ws_scenarios() {
-    local from="" dir id key file out result body tmp sum src rc=0 i
+    local from="" replace=0 tool="" dir id key file out result body tmp sum src rc=0 i
     local -a ids=() args=() heads=()
     local -A kv=()
     while (($#)); do
@@ -4130,6 +4155,7 @@ ws_scenarios() {
             from=$2
             shift
             ;;
+        --replace) replace=1 ;;
         -h | --help)
             ticket_usage
             return 0
@@ -4158,6 +4184,10 @@ ws_scenarios() {
         echo "ws: the vault $(ws_shown "$WS_VAULT") is not a directory" >&2
         return 1
     fi
+    if [[ -n ${CLAUDECODE-} && (-e $file || -L $file) ]] && ((replace == 0)); then
+        echo "ws: $id has scenarios, and CLAUDECODE says this runs inside a Claude session; pass --replace to replace them" >&2
+        return 1
+    fi
     if [[ -n $from ]]; then
         if ! from=$(realpath -e -- "$from" 2>/dev/null) || [[ ! -f $from || ! -r $from ]] ||
             ! grep -q '[^[:space:]]' -- "$from"; then
@@ -4173,11 +4203,15 @@ ws_scenarios() {
     elif [[ -z ${kv[WS_TICKET]-} ]]; then
         echo "ws: $id has no WS_TICKET, so ws cannot ask Jira for it; pass --from <file> with the ticket text" >&2
         return 1
+    elif [[ ! $WS_JIRA_MCP =~ ^[A-Za-z0-9_-]+$ || ! $WS_JIRA_TOOL =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "ws: WS_JIRA_MCP and WS_JIRA_TOOL take ASCII letters, digits, dashes, and underscores" >&2
+        return 1
     else
-        args=(--allowedTools "mcp__$WS_JIRA_MCP")
+        tool=mcp__${WS_JIRA_MCP}__$WS_JIRA_TOOL
+        args=(--allowedTools "$tool")
         src="the Jira issue $key"
     fi
-    out=$(scenarios_prompt "$key" "$from" | (cd -- "$WS_VAULT" &&
+    out=$(scenarios_prompt "$key" "$from" "$tool" | (cd -- "$WS_VAULT" &&
         timeout -k 10 600 claude -p --output-format json --tools '' "${args[@]}")) || rc=$?
     if ((rc)); then
         echo "ws: claude -p failed with status $rc, so $id has no new scenarios" >&2
@@ -4210,14 +4244,14 @@ ws_scenarios() {
         rm -f -- "$tmp"
         return 1
     fi
-    sum=$(sha256sum -- "$file") || return 1
+    sum=$(sha256sum <"$file") || return 1
     ticket_update "$dir" set WS_SCENARIOS_SHA256 "${sum%% *}" || return 1
     echo "Wrote ${#heads[@]} scenarios to $(ws_shown "$file")"
 }
 
 verify_hash_ok() {
     local sum
-    [[ -f $1 && ! -L $1 ]] && sum=$(sha256sum -- "$1") && [[ ${sum%% *} == "$2" ]]
+    [[ -f $1 && ! -L $1 ]] && sum=$(sha256sum <"$1") && [[ ${sum%% *} == "$2" ]]
 }
 
 verify_complete() {
@@ -4226,6 +4260,35 @@ verify_complete() {
     [[ -f $file ]] || return 1
     for s; do
         grep -Eq "^RESULT[[:space:]]+${s}[[:space:]]+(PASS|FAIL)([[:space:]]|$)" -- "$file" || return 1
+    done
+}
+
+# A scenario passes only when it has exactly one RESULT line and that line is PASS, so a second verdict or a
+# quoted example line for it reads as FAIL.
+verify_verdicts() {
+    local file=$1 line s n why
+    local -A count=() last=()
+    shift
+    while IFS= read -r line; do
+        [[ $line =~ ^RESULT[[:space:]]+(S[0-9]+)([[:space:]]|$) ]] || continue
+        s=${BASH_REMATCH[1]}
+        count[$s]=$((${count[$s]-0} + 1))
+        last[$s]=$line
+    done <"$file"
+    for s; do
+        n=${count[$s]-0} line=${last[$s]-}
+        if ((n == 0)); then
+            echo "$s FAIL has no RESULT line"
+        elif ((n > 1)); then
+            echo "$s FAIL has $n RESULT lines"
+        elif [[ $line =~ ^RESULT[[:space:]]+${s}[[:space:]]+PASS[[:space:]]*$ ]]; then
+            echo "$s PASS"
+        elif [[ $line =~ ^RESULT[[:space:]]+${s}[[:space:]]+FAIL([[:space:]]+(.*))?$ ]]; then
+            why=${BASH_REMATCH[2]//[[:cntrl:]]/}
+            echo "$s FAIL${why:+ $why}"
+        else
+            echo "$s FAIL has a RESULT line that is neither PASS nor FAIL"
+        fi
     done
 }
 
@@ -4301,9 +4364,9 @@ verify_prompt() {
 }
 
 ws_verify() {
-    local dir id file want root ev prior calib line s pass=0 rc=0
-    local -a ids=() scen=() allow=() failed=()
-    local -A kv=() res=() why=()
+    local dir id file want root ev prior calib s verdict why pass=0 rc=0
+    local -a ids=() scen=() allow=() deny=() failed=()
+    local -A kv=()
     case "$#:${1-}" in
     1:-h | 1:--help)
         ticket_usage
@@ -4344,6 +4407,7 @@ ws_verify() {
         echo "ws: the env of $id is down; run ws up $id first" >&2
         return 1
     fi
+    edit_deny_rules deny "$file" "$dir/.ws" "$dir/**" || return 1
     root=$(ticket_evidence_root kv)
     mkdir -p -- "$root" && root=$(realpath -e -- "$root") || return 1
     prior=${kv[WS_STAGE]-}
@@ -4363,7 +4427,7 @@ ws_verify() {
         fi
         ticket_update "$dir" set WS_STAGE verifying || return 1
         if ! (cd -- "$ev" && claude --bg -n "$id-verify" --agent ui-tester --permission-mode acceptEdits \
-            --allowedTools "${allow[@]}" -- "$(verify_prompt "$id" "$file" "$calib" "$ev" "${kv[WS_URLS]}")" </dev/null); then
+            --allowedTools "${allow[@]}" --disallowedTools "${deny[@]}" -- "$(verify_prompt "$id" "$file" "$calib" "$ev" "${kv[WS_URLS]}")" </dev/null); then
             ticket_update "$dir" set WS_STAGE "$prior" || true
             echo "ws: claude --bg failed, so nothing verifies $id" >&2
             return 1
@@ -4387,19 +4451,13 @@ ws_verify() {
         echo "ws: the verify session ended without $(ws_shown "$ev/results.md")" >&2
         return 1
     fi
-    while IFS= read -r line; do
-        if [[ $line =~ ^RESULT[[:space:]]+(S[0-9]+)[[:space:]]+(PASS|FAIL)([[:space:]]+(.*))?$ ]]; then
-            res[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
-            why[${BASH_REMATCH[1]}]=${BASH_REMATCH[4]//[[:cntrl:]]/}
-        fi
-    done <"$ev/results.md"
-    for s in "${scen[@]}"; do
-        if [[ ${res[$s]-} == PASS ]]; then
+    while read -r s verdict why; do
+        if [[ $verdict == PASS ]]; then
             pass=$((pass + 1))
         else
-            failed+=("$s ${why[$s]:-has no RESULT line}")
+            failed+=("$s${why:+ $why}")
         fi
-    done
+    done < <(verify_verdicts "$ev/results.md" "${scen[@]}")
     if ((pass == ${#scen[@]})); then
         ticket_update "$dir" set WS_STAGE qa || rc=1
     else
@@ -4444,12 +4502,15 @@ ws_done() {
         echo "ws: vault-consolidate failed" >&2
         rc=1
     fi
+    if ((rc)); then
+        echo "ws keeps $id, because vault-consolidate archives the learnings of a merged ticket only while its .ws is in $(ws_shown "$WS_ROOT"). Run ws done $id again once vault-consolidate works." >&2
+        return 1
+    fi
     if [[ -t 0 && -t 1 ]] && ws_confirm "Move the worktrees and files of $id to the trash with ws rm $id?"; then
-        ws_rm "$id" || rc=1
+        ws_rm "$id" || return 1
     else
         echo "ws rm $id moves its worktrees and files to the trash."
     fi
-    return "$rc"
 }
 
 main() {
