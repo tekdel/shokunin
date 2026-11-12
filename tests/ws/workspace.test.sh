@@ -305,6 +305,33 @@ test_stage() {
     refute "it makes no ticket dir" test -e "$WS_ROOT/t9"
 }
 
+test_stage_qa_inside_a_claude_session() {
+    local out rc md old
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws stage t1 building >/dev/null
+    out=$(CLAUDECODE=1 ws stage t1 qa 2>&1) && rc=0 || rc=$?
+    assert_eq "inside a Claude session, stage refuses qa and names ws verify" \
+        "1 ws: CLAUDECODE says this runs inside a Claude session, where only ws verify t1 sets qa" "$rc $out"
+    out=$(cd "$WS_ROOT/t1/alpha" && CLAUDECODE=1 ws stage qa 2>&1) && rc=0 || rc=$?
+    assert_eq "it refuses qa without an id too" 1 "$rc"
+    assert_eq "the stage stays" building "$(ws_value t1 WS_STAGE)"
+    CLAUDECODE=1 ws stage t1 verifying >/dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "inside a session, stage sets the other stages" "0 verifying" "$rc $(ws_value t1 WS_STAGE)"
+    ws stage t1 qa >/dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "outside a session, the operator sets qa by hand" "0 qa" "$rc $(ws_value t1 WS_STAGE)"
+
+    md=$WS_ROOT/t1/CLAUDE.md
+    refute "CLAUDE.md does not tell the session to move the ticket to any stage" \
+        grep -qF 'Run `ws stage <stage>` here to move the ticket on.' "$md"
+    assert "it says only ws verify sets qa" grep -qF 'Only `ws verify` sets `qa`' "$md"
+    old='- `.ws` holds the ticket state, and only ws writes it. Run `ws stage <stage>` here to move the ticket on.'
+    awk -v old="$old" '/^- `\.ws` holds/ { print old; next } { print }' "$md" >"$FX/md" && cp "$FX/md" "$md"
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    assert "a rerun rewrites the stage line of a CLAUDE.md that an earlier ws wrote" \
+        grep -qF 'Only `ws verify` sets `qa`' "$md"
+}
+
 test_stage_limit() {
     local n out
     new_fixture_no_ticket
@@ -1158,6 +1185,7 @@ run_test test_ws_file_writes
 run_test test_adopt
 run_test test_adopt_refuses
 run_test test_stage
+run_test test_stage_qa_inside_a_claude_session
 run_test test_stage_limit
 run_test test_rm_refuses
 run_test test_rm

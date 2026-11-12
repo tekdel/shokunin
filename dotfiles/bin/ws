@@ -29,6 +29,8 @@ WS_OPERATOR_STAGES="planned qa review"
 WS_BUILDING_LIMIT=5
 WS_ENV_START='<!-- ws env: ws up and ws down rewrite the lines up to the end marker -->'
 WS_ENV_END='<!-- /ws env -->'
+WS_CLAUDE_STAGE="- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on up to \`verifying\`. Only \`ws verify\` sets \`qa\`, when every scenario passes."
+WS_CLAUDE_STAGE_2_0_80="- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on."
 
 declare -gA WS_COMMANDS=(
     [adopt]="move existing worktrees of one branch into a ticket"
@@ -2541,6 +2543,7 @@ dashes, and underscores.
   stage   set the stage, one of spec planned building verifying qa
           review merged. Without <id>, the ticket of the current
           directory. Warns when more than 5 tickets are in building.
+          Inside a Claude session it refuses qa, which ws verify sets.
   status  --refresh asks claude agents --json and gh, and writes
           ~/.cache/ws/status.json. PR state is asked again only when it
           is WS_PR_TTL seconds old, 300 by default, or 60 seconds after
@@ -2899,7 +2902,7 @@ ticket_claude_text() {
     for repo; do
         echo "  - \`$repo/\` belongs to \`$(ws_shown "$WS_PROJECTS/$repo")\`."
     done
-    echo "- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on."
+    echo "$WS_CLAUDE_STAGE"
     echo "- Log progress with \`$(ws_shown "$WS_VAULT/bin/vault-log") $id \"<what changed>\"\`."
 }
 
@@ -2947,7 +2950,7 @@ ticket_claude_md() {
 }
 
 ticket_claude_rewrite() {
-    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header env note note_2_0_66 tmp edited=0
+    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header text env note tmp edited=0
     local -a old=()
     read -r -a old <<<"$4"
     shift 4
@@ -2955,13 +2958,17 @@ ticket_claude_rewrite() {
     env=$(ticket_claude_env "$dir" "$id")
     if [[ -e $file || -L $file ]]; then
         [[ -f $file && -r $file && ! -L $file ]] || return 0
-        header=$(ticket_claude_text "$id" "$branch" "$note" "${old[@]}")
-        note_2_0_66="ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
-        if ! printf '%s\n' "$header" | cmp -s -- "$file" - &&
-            ! ticket_claude_text "$id" "$branch" "$note_2_0_66" "${old[@]}" | cmp -s -- "$file" - &&
-            ! ticket_claude_block "$header" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
-            edited=1
-        fi
+        edited=1
+        # A file that an earlier ws wrote, with its note or its stage line, is not edited.
+        for header in "$note" "ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."; do
+            header=$(ticket_claude_text "$id" "$branch" "$header" "${old[@]}")
+            for text in "$header" "${header/"$WS_CLAUDE_STAGE"/"$WS_CLAUDE_STAGE_2_0_80"}"; do
+                if printf '%s\n' "$text" | cmp -s -- "$file" - ||
+                    ticket_claude_block "$text" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
+                    edited=0
+                fi
+            done
+        done
     fi
     tmp=$(mktemp -- "$dir/.CLAUDE.md.XXXXXX") || return 1
     if ((edited)); then
@@ -3792,6 +3799,10 @@ ws_stage() {
     fi
     if [[ -L $dir || ! -d $dir || ! -e $dir/.ws ]]; then
         echo "ws: no ticket $(ws_shown "$dir")" >&2
+        return 1
+    fi
+    if [[ $stage == qa && -n ${CLAUDECODE-} ]]; then
+        echo "ws: CLAUDECODE says this runs inside a Claude session, where only ws verify ${dir##*/} sets qa" >&2
         return 1
     fi
     ticket_update "$dir" set WS_STAGE "$stage" || return 1
