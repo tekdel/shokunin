@@ -34,9 +34,27 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   claude.log           one line per claude call
   bin/tmux             runs the real tmux on the socket name wsfx
   bin/docker           container engine shims, answer ps -q --no-trunc
-  bin/podman           and inspect from <engine>.json
+  bin/podman           and inspect from <engine>.json; docker also
+                       answers ps -q with a compose project label and
+                       status=running filter, and compose -p <project>
+                       logs, which prints one line and sleeps
   <engine>.json        the running containers, [] at first: objects with
-                       Id, Name, and Mounts of Type and Source
+                       Id, Name, Mounts of Type and Source, and Labels
+  bin/dockyard         dockyard shim: up, down, and nuke keep
+                       ~/.dockyard/slots.json as dockyard does, start
+                       and stop containers in docker.json that mount
+                       each repo of DOCKYARD_WORKSPACE, and print the
+                       URL lines of dockyard up
+  dockyard.log         one line per dockyard call: DOCKYARD_WORKSPACE,
+                       a tab, and the arguments; nuke adds a line that
+                       says whether the workspace still exists
+  dockyard.lock        create it to make up of a new stack time out on
+                       the slot lock and exit 2
+  dockyard.build       create it to make up fail after it records the
+                       slot and exit 1
+  volumes.txt          the named volumes of the stacks, one per line
+  bin/doppler          doppler shim: logs its arguments to doppler.log
+                       and exits 1, so no call reaches Doppler
   <engine>.gone        ids that ps lists and inspect no longer knows
   <engine>.err         create it to make the engine print its content to
                        stderr and exit 1
@@ -240,6 +258,14 @@ case "$*" in
     jq -r '.[].Id' "$root/$engine.json"
     [[ ! -f $root/$engine.gone ]] || cat "$root/$engine.gone"
     ;;
+"ps -q --filter label=com.docker.compose.project="*" --filter status=running")
+    jq -r --arg p "${4#label=com.docker.compose.project=}" \
+        '.[] | select(.Labels["com.docker.compose.project"] == $p) | .Id' "$root/$engine.json"
+    ;;
+"compose -p "*" logs --follow --tail 50")
+    echo "$3 | fixture log line"
+    exec sleep infinity
+    ;;
 "inspect "*)
     shift
     if [[ -f $root/$engine.inspect.err ]]; then
@@ -300,6 +326,122 @@ esac
 EOF
 chmod +x "$root/bin/claude"
 echo '[]' >"$root/agents.json"
+
+cat >"$root/bin/dockyard" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+state=$HOME/.dockyard
+slots=$state/slots.json
+printf '%s\t%s\n' "${DOCKYARD_WORKSPACE-}" "$*" >>"$root/dockyard.log"
+log() { echo -e "\033[0;32m[dockyard]\033[0m $*"; }
+die() {
+    echo -e "\033[0;31m[dockyard]\033[0m $1" >&2
+    exit "${2:-1}"
+}
+slugify() {
+    echo "$1" | sed -E 's|^(feature\|fix\|hotfix\|release)/||' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' |
+        sed 's/--*/-/g' | sed 's/^-//;s/-$//'
+}
+save() {
+    jq "$@" "$slots" >"$slots.tmp" && mv "$slots.tmp" "$slots"
+}
+containers() {
+    jq "$@" "$root/docker.json" >"$root/docker.json.tmp" && mv "$root/docker.json.tmp" "$root/docker.json"
+}
+cmd=${1-} branch=${2-}
+[[ -n $branch ]] || die "Usage: dockyard $cmd <branch>"
+slug=$(slugify "$branch")
+[[ -n $slug ]] || die "Branch '$branch' gives an empty stack name."
+project=dockyard-$slug
+record=""
+[[ ! -f $slots ]] || record=$(jq -c --arg s "$slug" '.[$s] // empty' "$slots")
+case $cmd in
+up)
+    workspace=""
+    if [[ -n ${DOCKYARD_WORKSPACE-} ]]; then
+        [[ -d $DOCKYARD_WORKSPACE ]] || die "DOCKYARD_WORKSPACE is not a directory: $DOCKYARD_WORKSPACE"
+        workspace=$(cd -P -- "$DOCKYARD_WORKSPACE" && pwd -P)
+    fi
+    log "Feature: $branch (slug: $slug)"
+    created=""
+    if [[ -n $record ]]; then
+        recorded=$(jq -r '.workspace // ""' <<<"$record")
+        [[ -z $workspace || $workspace == "$recorded" ]] ||
+            die "stack $slug is registered with workspace ${recorded:-none}; run nuke first"
+        workspace=$recorded
+        slot=$(jq -r .slot <<<"$record")
+        log "Stack already registered (slot $slot). Restarting..."
+    else
+        [[ ! -f $root/dockyard.lock ]] ||
+            die "Timed out after 10s waiting for $state/slots.lock.d, which process 1 holds." 2
+        mkdir -p "$state"
+        [[ -f $slots ]] || echo '{}' >"$slots"
+        slot=$(jq '[.[].slot] as $used | first(range(1; infinite) | select(IN($used[]) | not))' "$slots")
+        save --arg s "$slug" --argjson slot "$slot" --arg w "$workspace" \
+            '.[$s] = {slot: $slot, repos: [], profiles: [], created: "2026-01-01T00:00:00Z", workspace: $w}'
+        log "Allocated slot $slot — web-ui:$((4000 + slot * 100)) gateway:$((8000 + slot * 100))"
+        created=1
+    fi
+    if [[ -f $root/dockyard.build ]]; then
+        echo -e "\033[0;31m[dockyard]\033[0m Build failed. Last 30 lines:" >&2
+        [[ -z $created ]] ||
+            echo -e "\033[0;31m[dockyard]\033[0m Run 'dockyard nuke $branch' to remove what this up created." >&2
+        exit 1
+    fi
+    containers --arg p "$project" 'map(select(.Labels["com.docker.compose.project"] != $p))
+        + [{Id: "id-\($p)-redis-1", Name: "/\($p)-redis-1", Mounts: [], Labels: {"com.docker.compose.project": $p}}]'
+    for dir in "$workspace"/*/; do
+        [[ -n $workspace && -d $dir ]] || continue
+        dir=${dir%/}
+        containers --arg p "$project" --arg n "$project-${dir##*/}-1" --arg src "$dir" \
+            '. + [{Id: "id-\($n)", Name: "/\($n)", Mounts: [{Type: "bind", Source: $src, Destination: "/app"}],
+                Labels: {"com.docker.compose.project": $p}}]'
+    done
+    for volume in web-node-modules api-node-modules; do
+        grep -qxF "${project}_$volume" "$root/volumes.txt" 2>/dev/null || echo "${project}_$volume" >>"$root/volumes.txt"
+    done
+    log "Services started."
+    echo
+    echo -e "\033[1mStack: $slug\033[0m"
+    echo -e "  \033[0;34mWeb UI:\033[0m           http://localhost:$((4000 + slot * 100))"
+    echo -e "  \033[0;34mAPI Gateway:\033[0m      http://localhost:$((8000 + slot * 100))"
+    echo -e "  \033[0;34mPortal:\033[0m           (internal, routed via gateway)"
+    ;;
+down)
+    [[ -n $record ]] || die "No stack found for '$branch' (slug: $slug)"
+    containers --arg p "$project" 'map(select(.Labels["com.docker.compose.project"] != $p))'
+    log "Stack stopped. Volumes preserved. Use 'dockyard up $branch' to restart."
+    ;;
+nuke)
+    [[ -n $record ]] || die "No stack found for '$branch' (slug: $slug)"
+    workspace=$(jq -r '.workspace // ""' <<<"$record")
+    if [[ -n $workspace && -e $workspace ]]; then
+        printf 'nuke %s: workspace exists\n' "$slug" >>"$root/dockyard.log"
+    else
+        printf 'nuke %s: workspace gone\n' "$slug" >>"$root/dockyard.log"
+    fi
+    containers --arg p "$project" 'map(select(.Labels["com.docker.compose.project"] != $p))'
+    if [[ -f $root/volumes.txt ]]; then
+        grep -v "^${project}_" "$root/volumes.txt" >"$root/volumes.tmp" || true
+        mv "$root/volumes.tmp" "$root/volumes.txt"
+    fi
+    save --arg s "$slug" 'del(.[$s])'
+    log "Stack $slug completely removed."
+    ;;
+*) die "dockyard shim: unsupported call: $*" 3 ;;
+esac
+EOF
+chmod +x "$root/bin/dockyard"
+
+cat >"$root/bin/doppler" <<'EOF'
+#!/usr/bin/env bash
+root=$(cd "$(dirname "$0")/.." && pwd)
+printf '%s\n' "$*" >>"$root/doppler.log"
+echo "doppler shim: no call reaches Doppler" >&2
+exit 1
+EOF
+chmod +x "$root/bin/doppler"
 
 if [[ -n $real_tmux ]]; then
     printf '#!/usr/bin/env bash\nexec %q -L wsfx "$@"\n' "$real_tmux" >"$root/bin/tmux"
