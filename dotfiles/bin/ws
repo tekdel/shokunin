@@ -44,7 +44,7 @@ declare -gA WS_COMMANDS=(
     [scenarios]="write the holdout scenarios of a ticket from its Jira issue or a file"
     [stage]="set the stage of a ticket"
     [status]="refresh the status cache, or print how many sessions wait on you"
-    [up]="start the dockyard env of a ticket and record its slot and URLs"
+    [up]="start the dockyard services of a ticket's repos and record the slot and URLs"
     [verify]="run the holdout scenarios of a ticket against its env in a background Claude session"
 )
 declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=() P_STATES=()
@@ -2552,16 +2552,24 @@ dashes, and underscores.
           "N waiting" for every Claude session that waits on you. pick
           and --waiting start a refresh in the background. Without a
           flag, status refreshes and runs ls.
-  up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>, write
-          the slot and the URLs that dockyard prints to .ws and to the
-          env lines of CLAUDE.md, and tail the container logs in the env
-          window. up replaces that window only when it shows the logs of
-          an earlier up or an idle shell; else it prints the command that
-          tails them. When .ws has URLs and a container of the stack runs,
-          up says the env is already up and skips dockyard. A failed
-          dockyard up makes ws up exit with its status. --wait then asks
-          each URL until it answers with an HTTP status below 500, for
-          at most WS_UP_TIMEOUT seconds, 300 by default.
+  up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>
+          --services <list>, write the slot and the URLs that dockyard
+          prints to .ws and to the env lines of CLAUDE.md, and tail the
+          container logs in the env window. <list> holds the ticket's
+          repos that dockyard services lists; dockyard adds the
+          infrastructure they need. up names each repo that has no
+          service, and starts nothing and exits 1 when no repo has one.
+          When dockyard services fails or prints anything but names, as
+          a dockyard without that command does, up runs dockyard up
+          <branch> and the whole stack starts. up replaces the env
+          window only when it shows the logs of an earlier up or an idle
+          shell; else it prints the command that tails them. When .ws
+          has URLs and a container of the stack runs, up says the env is
+          already up and skips dockyard, so a repo added since starts
+          after ws down and ws up. A failed dockyard up makes ws up exit
+          with its status. --wait then asks each URL until it answers
+          with an HTTP status below 500, for at most WS_UP_TIMEOUT
+          seconds, 300 by default.
   down    run dockyard down <branch>, which stops the containers and
           keeps the slot and the volumes, and clear WS_URLS.
   rm      run ws down, then refuse when a worktree has a KEEP reason of
@@ -3886,9 +3894,54 @@ ws_stage() {
     fi
 }
 
+# A dockyard without the services command prints its usage and exits 0.
+ticket_dockyard_services() {
+    local out line
+    local -n tds=$1
+    tds=()
+    out=$(dockyard services </dev/null 2>/dev/null) || return 1
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        ticket_name_ok "$line" || return 1
+        tds+=(["$line"]=1)
+    done <<<"$out"
+}
+
+ticket_up_args() {
+    local id=$1 repo list
+    local -a repos=() chosen=() skipped=()
+    local -A known=()
+    local -n tua=$3
+    tua=()
+    if ! ticket_dockyard_services known; then
+        echo "dockyard cannot list its services, so ws up starts the whole stack"
+        return 0
+    fi
+    read -r -a repos <<<"$2"
+    for repo in "${repos[@]}"; do
+        if [[ -n ${known[$repo]+set} ]]; then
+            chosen+=("$repo")
+        else
+            skipped+=("$repo")
+        fi
+    done
+    if ((${#chosen[@]} == 0)); then
+        echo "ws: no repo of $id has a dockyard service, so ws up starts nothing" >&2
+        return 1
+    fi
+    if ((${#skipped[@]} == 1)); then
+        echo "${skipped[0]} has no dockyard service, so ws up does not start it"
+    elif ((${#skipped[@]})); then
+        printf -v list '%s, ' "${skipped[@]:0:${#skipped[@]}-1}"
+        echo "${list%, } and ${skipped[-1]} have no dockyard service, so ws up does not start them"
+    fi
+    list=${chosen[*]}
+    tua+=(--services "${list// /,}")
+}
+
 ws_up() {
     local wait=0 dir real id branch out rc=0 urls pair why=""
-    local -a pairs=() ids=()
+    local -a pairs=() ids=() up_args=()
     local -A kv=() env=() said=()
     while (($#)); do
         case $1 in
@@ -3947,10 +4000,11 @@ ws_up() {
             echo "  ${pair%%=*} ${pair#*=}"
         done
     else
+        ticket_up_args "$id" "${kv[WS_REPOS]-}" up_args || return 1
         out=$(mktemp) || return 1
         # dockyard handles Ctrl-C itself, so ws waits for it and then records what is left.
         trap : INT
-        DOCKYARD_WORKSPACE=$real dockyard up "$branch" </dev/null | tee -i -- "$out" || rc=${PIPESTATUS[0]}
+        DOCKYARD_WORKSPACE=$real dockyard up "$branch" "${up_args[@]}" </dev/null | tee -i -- "$out" || rc=${PIPESTATUS[0]}
         trap - INT
         ticket_dockyard_out "$out" said
         rm -f -- "$out"

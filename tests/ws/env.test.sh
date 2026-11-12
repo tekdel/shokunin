@@ -15,6 +15,11 @@ containers_of() {
     jq -r --arg p "dockyard-$1" '[.[] | select(.Labels["com.docker.compose.project"] == $p)] | length' "$FX/docker.json"
 }
 
+container_names() {
+    jq -r --arg p "dockyard-$1" '[.[] | select(.Labels["com.docker.compose.project"] == $p) | .Name | ltrimstr("/")]
+        | sort | join(" ")' "$FX/docker.json"
+}
+
 volumes_of() {
     grep -c "^dockyard-$1_" "$FX/volumes.txt" 2>/dev/null
 }
@@ -123,8 +128,8 @@ test_up() {
     real=$(realpath -e "$WS_ROOT/t1")
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
     assert_eq "up exits 0" 0 "$rc"
-    assert_eq "up runs dockyard up on the ticket branch with the ticket as its workspace" "$real"$'\t'"up feat/x" \
-        "$(cat "$FX/dockyard.log")"
+    assert_eq "up asks dockyard for its services, then runs dockyard up on the ticket branch with the ticket as its workspace" \
+        $'\tservices\n'"$real"$'\tup feat/x' "$(cat "$FX/dockyard.log")"
     assert "up shows what dockyard prints" grep -qF "Allocated slot 1" <<<"$out"
     assert_eq ".ws holds the slot" 1 "$(ws_value t1 WS_SLOT)"
     assert_eq ".ws holds each URL that dockyard printed" '"web-ui=http://localhost:4100 api-gateway=http://localhost:8100"' \
@@ -152,6 +157,71 @@ test_up() {
     refute "it does not call it already up" grep -qF "already up" <<<"$out"
     assert_eq ".ws holds the new slot" 3 "$(ws_value t1 WS_SLOT)"
     assert "and its URLs" grep -qF "web-ui=http://localhost:4300" <<<"$(ws_value t1 WS_URLS)"
+}
+
+test_up_starts_the_ticket_services() {
+    local out rc real
+    new_fixture_no_ticket
+    add_repo gamma
+    printf '%s\n' alpha gamma delta >"$FX/dockyard.services"
+    ws new t1 feat/x alpha beta gamma >/dev/null 2>&1
+    real=$(realpath -e "$WS_ROOT/t1")
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 0" 0 "$rc"
+    assert_eq "up passes the ticket repos that dockyard services lists" \
+        $'\tservices\n'"$real"$'\tup feat/x --services alpha,gamma' "$(cat "$FX/dockyard.log")"
+    assert "it names the repo that has no service" \
+        grep -qxF "beta has no dockyard service, so ws up does not start it" <<<"$out"
+    assert_eq "the stack runs the infrastructure and those repos" \
+        "dockyard-feat-x-alpha-1 dockyard-feat-x-gamma-1 dockyard-feat-x-redis-1" "$(container_names feat-x)"
+    assert_eq ".ws holds the slot" 1 "$(ws_value t1 WS_SLOT)"
+
+    echo alpha >"$FX/dockyard.services"
+    ws new t2 feat/y alpha beta gamma >/dev/null 2>&1
+    out=$(ws up t2 2>&1) && rc=0 || rc=$?
+    assert_eq "up of a ticket with one repo that has a service exits 0" 0 "$rc"
+    assert_eq "it passes that repo" 1 "$(dockyard_calls "up feat/y --services alpha")"
+    assert_eq "it names the repos that have no service in one line" \
+        "beta and gamma have no dockyard service, so ws up does not start them" "$(grep -F "no dockyard service" <<<"$out")"
+}
+
+test_up_starts_nothing_without_a_service() {
+    local out rc
+    new_fixture_no_ticket
+    echo gamma >"$FX/dockyard.services"
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 1 when no repo of the ticket has a dockyard service" 1 "$rc"
+    assert_eq "it says why" "ws: no repo of t1 has a dockyard service, so ws up starts nothing" "$out"
+    assert_eq "it runs no dockyard up" 0 "$(cut -f2 "$FX/dockyard.log" | grep -c '^up ')"
+    assert_eq "no container runs" 0 "$(containers_of feat-x)"
+    assert_eq ".ws has no slot" "" "$(ws_value t1 WS_SLOT)"
+}
+
+test_up_starts_the_whole_stack_without_services() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 0 when dockyard services prints its usage" 0 "$rc"
+    assert "it says the whole stack starts" \
+        grep -qxF "dockyard cannot list its services, so ws up starts the whole stack" <<<"$out"
+    assert_eq "it runs dockyard up without --services" 1 "$(dockyard_calls "up feat/x")"
+    assert_eq "the whole stack runs" 3 "$(containers_of feat-x)"
+
+    ws down t1 >/dev/null 2>&1
+    touch "$FX/dockyard.services-fail"
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 0 when dockyard services fails" 0 "$rc"
+    assert_eq "it says the whole stack starts in one line" 1 "$(grep -c "whole stack" <<<"$out")"
+    assert_eq "it runs dockyard up without --services again" 2 "$(dockyard_calls "up feat/x")"
+    rm "$FX/dockyard.services-fail"
+
+    ws down t1 >/dev/null 2>&1
+    printf '%s\n' alpha 'beta service' >"$FX/dockyard.services"
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 0 when dockyard services prints a line that is not a name" 0 "$rc"
+    assert_eq "it runs dockyard up without --services" 3 "$(dockyard_calls "up feat/x")"
 }
 
 test_up_twice() {
@@ -735,6 +805,9 @@ test_drop_fixtures_waits_for_the_panes() {
 }
 
 run_test test_up
+run_test test_up_starts_the_ticket_services
+run_test test_up_starts_nothing_without_a_service
+run_test test_up_starts_the_whole_stack_without_services
 run_test test_up_twice
 run_test test_down
 run_test test_up_fails
