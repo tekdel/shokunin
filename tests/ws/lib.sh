@@ -116,7 +116,8 @@ ws_guard() {
     local path gh cmd
     [[ -n $_sandbox && -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
     gh=$(command -v gh) || gh=
-    for path in "$HOME" "${WS_ROOT-}" "${WS_PROJECTS-}" "${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}" "$gh"; do
+    for path in "$HOME" "${WS_ROOT-}" "${WS_PROJECTS-}" "${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}" "$gh" \
+        "${WS_VAULT-}" "${WS_VAULT-}/bin/vault-consolidate"; do
         [[ -n $path && $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: '$path' is outside $_sandbox"
     done
     for cmd in docker podman; do

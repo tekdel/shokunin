@@ -27,10 +27,30 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   bin/claude           claude shim: agents --json prints agents.json,
                        stop <id> marks that session stopped and kills
                        its pid, agents alone prints a banner and waits
-                       for a line, and anything else prints its
-                       arguments and sleeps
+                       for a line, -p and --bg act as below, and
+                       anything else prints its arguments and sleeps
   agents.json          the sessions claude agents --json lists, [] at
                        first
+  claude.result        what claude -p answers as the result of its JSON
+                       output; three scenarios when it is missing.
+                       claude -p saves its prompt to claude.prompt and
+                       its directory to claude.cwd
+  claude.p-fail        create it to make claude -p exit 1
+  claude.bg-fail       create it to make claude --bg exit 1
+  claude.bg-args       the arguments of the last claude --bg, one per
+                       NUL-terminated field
+  verify.results       claude --bg adds a busy session for its
+                       directory to agents.json, copies this file to
+                       results.md there, and marks the session idle;
+                       without the file it only marks the session idle
+  verify.delay         holds seconds for claude --bg to wait, in the
+                       background, before it does that
+  verify.blocked       create it to leave the session blocked instead
+  verify.tamper        create it to make claude --bg also append a line
+                       to every scenarios file in the vault
+  vault/bin/vault-consolidate
+                       logs WS_VAULT, WS_ROOT, and its arguments to
+                       consolidate.log; consolidate.fail makes it exit 1
   claude.log           one line per claude call
   bin/tmux             runs the real tmux on the socket name wsfx
   bin/docker           container engine shims, answer ps -q --no-trunc
@@ -81,8 +101,8 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        <root>, TMPDIR as <root>/.tmp, GIT_CONFIG_GLOBAL,
                        GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
                        WS_VAULT, PATH, and a short TMUX_TMPDIR under
-                       /tmp, and unsets TMUX and TMUX_PANE; remove
-                       TMUX_TMPDIR with <root>
+                       /tmp, and unsets TMUX, TMUX_PANE, and CLAUDECODE;
+                       remove TMUX_TMPDIR with <root>
 EOF
 }
 
@@ -134,7 +154,7 @@ export XDG_DATA_HOME=$(printf %q "$root/.local/share")
 export XDG_STATE_HOME=$(printf %q "$root/.local/state")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
 export TMPDIR=$(printf %q "$root/.tmp")
-unset TMUX TMUX_PANE
+unset TMUX TMUX_PANE CLAUDECODE
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
 export WS_ROOT=$(printf %q "$root/work")
@@ -315,6 +335,13 @@ cat >"$root/bin/claude" <<'EOF'
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 printf '%s\n' "$*" >>"$root/claude.log"
+edit_agents() {
+    local tmp=$root/agents.json.$BASHPID
+    (
+        flock 9
+        jq "$@" "$root/agents.json" >"$tmp" && mv "$tmp" "$root/agents.json"
+    ) 9>>"$root/agents.lock"
+}
 case ${1-} in
 agents)
     if [[ " $* " == *" --json "* ]]; then
@@ -324,15 +351,60 @@ agents)
     echo "claude agents (fixture shim)"
     read -r _ || true
     ;;
+-p)
+    cat >"$root/claude.prompt"
+    pwd -P >"$root/claude.cwd"
+    if [[ -f $root/claude.p-fail ]]; then
+        echo "claude shim: -p failed" >&2
+        exit 1
+    fi
+    if [[ -f $root/claude.result ]]; then
+        jq -n --rawfile r "$root/claude.result" '{type: "result", is_error: false, result: $r}'
+    else
+        jq -n '{type: "result", is_error: false,
+            result: "## S1. Open\n\nGiven a\nWhen b\nThen c\n\n## S2. Save\n\nGiven d\nWhen e\nThen f\n\n## S3. Undo\n\nGiven g\nWhen h\nThen i"}'
+    fi
+    ;;
+--bg)
+    printf '%s\0' "$@" >"$root/claude.bg-args"
+    if [[ -f $root/claude.bg-fail ]]; then
+        echo "Workspace not trusted. Run \`claude\` in $PWD once and accept the trust prompt, then retry." >&2
+        exit 1
+    fi
+    name=
+    while (($#)); do
+        [[ $1 != -n ]] || name=$2
+        shift
+    done
+    id=bg$(jq length "$root/agents.json")
+    cwd=$(pwd -P)
+    edit_agents --arg id "$id" --arg name "$name" --arg cwd "$cwd" \
+        '. + [{id: $id, name: $name, cwd: $cwd, kind: "background", state: "working", status: "busy"}]'
+    finish() {
+        sleep "$(cat "$root/verify.delay" 2>/dev/null || echo 0)"
+        [[ ! -f $root/verify.results ]] || cp "$root/verify.results" "$cwd/results.md"
+        if [[ -f $root/verify.tamper ]]; then
+            find "$root/vault/projects" -path '*/scenarios/*.md' -exec sh -c 'echo tampered >>"$1"' _ {} \;
+        fi
+        state=working
+        [[ ! -f $root/verify.blocked ]] || state=blocked
+        edit_agents --arg id "$id" --arg s "$state" \
+            'map(if .id == $id and .state != "stopped" then .state = $s | .status = "idle" else . end)'
+    }
+    if [[ -f $root/verify.delay ]]; then
+        finish </dev/null >/dev/null 2>&1 &
+    else
+        finish
+    fi
+    echo "backgrounded · $id · $name"
+    ;;
 stop | kill)
     jq -e --arg id "${2-}" 'any(.[]; .id == $id)' "$root/agents.json" >/dev/null || {
         echo "No background session ${2-}" >&2
         exit 1
     }
     pid=$(jq -r --arg id "$2" '.[] | select(.id == $id) | .pid | numbers' "$root/agents.json")
-    jq --arg id "$2" 'map(if .id == $id then .state = "stopped" | del(.pid, .status, .waitingFor) else . end)' \
-        "$root/agents.json" >"$root/agents.json.new"
-    mv "$root/agents.json.new" "$root/agents.json"
+    edit_agents --arg id "$2" 'map(if .id == $id then .state = "stopped" | del(.pid, .status, .waitingFor) else . end)'
     [[ -z $pid ]] || kill "$pid" 2>/dev/null || true
     ;;
 *)
@@ -490,6 +562,19 @@ echo "doppler shim: no call reaches Doppler" >&2
 exit 1
 EOF
 chmod +x "$root/bin/doppler"
+
+mkdir -p "$root/vault/bin"
+cat >"$root/vault/bin/vault-consolidate" <<'EOF'
+#!/usr/bin/env bash
+root=$(cd "$(dirname "$0")/../.." && pwd)
+printf 'WS_VAULT=%s WS_ROOT=%s args=%s\n' "${WS_VAULT-}" "${WS_ROOT-}" "$*" >>"$root/consolidate.log"
+if [[ -f $root/consolidate.fail ]]; then
+    echo "vault-consolidate: cannot take the lock" >&2
+    exit 1
+fi
+echo "vault-consolidate: read 0 inbox files; changed 0 files"
+EOF
+chmod +x "$root/vault/bin/vault-consolidate"
 
 if [[ -n $real_tmux ]]; then
     printf '#!/usr/bin/env bash\nexec %q -L wsfx "$@"\n' "$real_tmux" >"$root/bin/tmux"
