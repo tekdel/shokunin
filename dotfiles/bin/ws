@@ -2563,9 +2563,10 @@ dashes, and underscores.
           or the ticket directory. results.md holds one line per
           scenario, RESULT S<n> PASS or RESULT S<n> FAIL <why>. A
           scenario passes only when it has exactly one such line and
-          that line is PASS. When every scenario passes, the stage
-          becomes qa; else it goes back to building. A rerun waits on a
-          verify session of the ticket that still runs.
+          that line is PASS. When every scenario passes and no line
+          marks another id FAIL, the stage becomes qa; else it goes
+          back to building. A rerun waits on a verify session of the
+          ticket that still runs.
   done    set the stage to merged and run $WS_VAULT/bin/vault-consolidate,
           then offer ws rm. When vault-consolidate fails, keep the
           ticket, because vault-consolidate archives the learnings of a
@@ -4264,16 +4265,17 @@ verify_complete() {
 }
 
 # A scenario passes only when it has exactly one RESULT line and that line is PASS, so a second verdict or a
-# quoted example line for it reads as FAIL.
+# quoted example line for it reads as FAIL. A FAIL line for an id that is not a scenario fails the run too.
 verify_verdicts() {
     local file=$1 line s n why
-    local -A count=() last=()
+    local -A count=() last=() failing=()
     shift
     while IFS= read -r line; do
         [[ $line =~ ^RESULT[[:space:]]+(S[0-9]+)([[:space:]]|$) ]] || continue
         s=${BASH_REMATCH[1]}
         count[$s]=$((${count[$s]-0} + 1))
         last[$s]=$line
+        [[ ! $line =~ ^RESULT[[:space:]]+S[0-9]+[[:space:]]+FAIL([[:space:]]|$) ]] || failing[$s]=1
     done <"$file"
     for s; do
         n=${count[$s]-0} line=${last[$s]-}
@@ -4290,6 +4292,9 @@ verify_verdicts() {
             echo "$s FAIL has a RESULT line that is neither PASS nor FAIL"
         fi
     done
+    for s in "${!failing[@]}"; do
+        [[ " $* " == *" $s "* ]] || echo "$s FAIL is not in the scenarios file, but results.md marks it FAIL"
+    done | sort -V
 }
 
 verify_rows() {
@@ -4458,7 +4463,7 @@ ws_verify() {
             failed+=("$s${why:+ $why}")
         fi
     done < <(verify_verdicts "$ev/results.md" "${scen[@]}")
-    if ((pass == ${#scen[@]})); then
+    if ((${#failed[@]} == 0)); then
         ticket_update "$dir" set WS_STAGE qa || rc=1
     else
         ticket_update "$dir" set WS_STAGE building || true

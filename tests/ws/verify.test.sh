@@ -355,6 +355,15 @@ test_verify_fails() {
     out=$(ws verify t1 2>&1) && rc=0 || rc=$?
     assert "a FAIL line shows its reason without control characters" grep -qxF "  FAIL S3 the toast [2Jsaid nothing" <<<"$out"
 
+    results "S1 PASS" "S2 PASS" "S3 PASS" "S9 FAIL the export button is gone"
+    out=$(ws verify t1 2>&1) && rc=0 || rc=$?
+    assert_eq "a FAIL line for an id that is not a scenario fails the run" "1 building" "$rc $(ws_value t1 WS_STAGE)"
+    assert "it names that id" grep -qxF "  FAIL S9 is not in the scenarios file, but results.md marks it FAIL" <<<"$out"
+
+    results "S1 PASS" "S2 PASS" "S3 PASS" "S9 PASS"
+    out=$(ws verify t1 2>&1) && rc=0 || rc=$?
+    assert_eq "a PASS line for an id that is not a scenario changes nothing" "0 qa" "$rc $(ws_value t1 WS_STAGE)"
+
     printf 'RESULT\tS1\tPASS\r\nRESULT S2 PASS \r\nRESULT S3 PASS\t\n' >"$FX/verify.results"
     out=$(ws verify t1 2>&1) && rc=0 || rc=$?
     assert_eq "tabs, trailing spaces, and CRLF line ends still pass" "0 qa" "$rc $(ws_value t1 WS_STAGE)"
