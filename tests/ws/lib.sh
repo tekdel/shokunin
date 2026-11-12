@@ -117,7 +117,7 @@ ws_guard() {
     [[ -n $_sandbox && -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
     gh=$(command -v gh) || gh=
     for path in "$HOME" "${WS_ROOT-}" "${WS_PROJECTS-}" "${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}" "$gh" \
-        "${WS_VAULT-}" "${WS_VAULT-}/bin/vault-consolidate"; do
+        "${WS_VAULT-}" "${WS_VAULT-}/bin/vault-consolidate" "${XDG_CONFIG_HOME:-$HOME/.config}/ws/config"; do
         [[ -n $path && $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: '$path' is outside $_sandbox"
     done
     for cmd in docker podman; do
@@ -289,6 +289,24 @@ add_worktree() {
             git -C "$path" commit -qm "work on $branch" &&
             git -C "$path" push -q -u origin "$branch"
     } || abort "cannot add worktree $path"
+}
+
+add_repo() {
+    local seed=$FX/seed-$1
+    {
+        git init -q "$seed" &&
+            echo "$1" >"$seed/README" &&
+            git -C "$seed" add README &&
+            git -C "$seed" commit -qm "init $1" &&
+            git clone -q --bare "$seed" "$FX/origins/$1.git" &&
+            rm -rf "$seed" &&
+            git clone -q "https://github.com/fixture/$1.git" "$WS_PROJECTS/$1"
+    } || abort "cannot add repo $1"
+}
+
+ws_config() {
+    { mkdir -p "$XDG_CONFIG_HOME/ws" && printf '%s\n' "$@" >"$XDG_CONFIG_HOME/ws/config"; } ||
+        abort "cannot write the ws config"
 }
 
 add_pr() {

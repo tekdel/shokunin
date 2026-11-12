@@ -154,6 +154,58 @@ test_up() {
     assert "and its URLs" grep -qF "web-ui=http://localhost:4300" <<<"$(ws_value t1 WS_URLS)"
 }
 
+test_up_passes_the_profiles_of_the_ticket_repos() {
+    local out rc real
+    new_fixture_no_ticket
+    add_repo gamma
+    ws_config 'WS_DEFAULT_REPOS=alpha' 'WS_UP_PROFILES="beta:worker gamma:portal gamma:worker"'
+    ws new t1 feat/x beta gamma >/dev/null 2>&1
+    real=$(realpath -e "$WS_ROOT/t1")
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 0" 0 "$rc"
+    assert_eq "up passes each profile of the ticket repos once, in repo order" \
+        "$real"$'\tup feat/x --profile worker,portal' "$(cat "$FX/dockyard.log")"
+    refute "it names no repo, since each is a default or has a profile" grep -qF "no dockyard service" <<<"$out"
+    assert_eq ".ws holds the slot" 1 "$(ws_value t1 WS_SLOT)"
+
+    ws down t1 >/dev/null 2>&1
+    WS_UP_PROFILES=beta:aws ws up t1 >/dev/null 2>&1
+    assert_eq "WS_UP_PROFILES in the environment wins over the config" 1 "$(dockyard_calls "up feat/x --profile aws")"
+}
+
+test_up_names_the_repos_without_a_service() {
+    local out rc
+    new_fixture_no_ticket
+    add_repo gamma
+    add_repo delta
+    ws_config 'WS_DEFAULT_REPOS=alpha' 'WS_UP_PROFILES=gamma:portal'
+    ws new --only t1 feat/x delta beta >/dev/null 2>&1
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up of a ticket with no default or mapped repo exits 0" 0 "$rc"
+    assert_eq "it runs dockyard up as before, so the core stack starts" 1 "$(dockyard_calls "up feat/x")"
+    assert_eq "it names each repo that is neither a default nor mapped, one line each" \
+        $'delta has no dockyard service, so ws up does not start it\nbeta has no dockyard service, so ws up does not start it' \
+        "$(grep -F "no dockyard service" <<<"$out")"
+
+    rm "$XDG_CONFIG_HOME/ws/config"
+    ws new t2 feat/y beta >/dev/null 2>&1
+    out=$(ws up t2 2>&1) && rc=0 || rc=$?
+    refute "without either setting, up names no repo" grep -qF "no dockyard service" <<<"$out"
+    assert_eq "and runs dockyard up as before" 1 "$(dockyard_calls "up feat/y")"
+}
+
+test_up_refuses_a_bad_profile_pair() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_UP_PROFILES="beta:portal gamma"'
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up exits 1 on a WS_UP_PROFILES word that is not repo:profile" 1 "$rc"
+    assert_eq "it names the word and the config" \
+        "ws: WS_UP_PROFILES in ~/.config/ws/config holds 'gamma', which is not <repo>:<profile>" "$out"
+    refute "it runs no dockyard call" test -e "$FX/dockyard.log"
+}
+
 test_up_twice() {
     local out rc pane
     new_fixture_no_ticket
@@ -735,6 +787,9 @@ test_drop_fixtures_waits_for_the_panes() {
 }
 
 run_test test_up
+run_test test_up_passes_the_profiles_of_the_ticket_repos
+run_test test_up_names_the_repos_without_a_service
+run_test test_up_refuses_a_bad_profile_pair
 run_test test_up_twice
 run_test test_down
 run_test test_up_fails

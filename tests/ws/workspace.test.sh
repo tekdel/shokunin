@@ -233,6 +233,114 @@ test_ws_file_writes() {
     refute "the refused write leaves no temp file" compgen -G "$WS_ROOT/t1/.ws.*"
 }
 
+test_new_default_repos() {
+    local out rc
+    new_fixture_no_ticket
+    add_repo gamma
+    ws_config '# the repos of every new ticket' 'WS_DEFAULT_REPOS="alpha beta"' 'WS_OTHER=1'
+    out=$(ws new t1 feat/x 2>&1) && rc=0 || rc=$?
+    assert_eq "new with no repo named exits 0 when the config names defaults" 0 "$rc"
+    assert_eq "the ticket gets the default repos" '"alpha beta"' "$(ws_value t1 WS_REPOS)"
+    assert "it makes the alpha worktree" is_worktree "$WS_ROOT/t1/alpha"
+    assert "it makes the beta worktree" is_worktree "$WS_ROOT/t1/beta"
+
+    ws new t2 feat/y gamma beta >/dev/null 2>&1
+    assert_eq "a named repo adds to the defaults, defaults first and each repo once" '"alpha beta gamma"' \
+        "$(ws_value t2 WS_REPOS)"
+    assert "it makes the gamma worktree" is_worktree "$WS_ROOT/t2/gamma"
+
+    WS_DEFAULT_REPOS="gamma  alpha" ws new t3 feat/z >/dev/null 2>&1
+    assert_eq "WS_DEFAULT_REPOS in the environment wins over the config" '"gamma alpha"' "$(ws_value t3 WS_REPOS)"
+    WS_DEFAULT_REPOS='' ws new t4 feat/w beta >/dev/null 2>&1
+    assert_eq "an empty WS_DEFAULT_REPOS in the environment turns the defaults off" beta "$(ws_value t4 WS_REPOS)"
+
+    rm "$XDG_CONFIG_HOME/ws/config"
+    out=$(ws new t5 feat/v 2>&1) && rc=0 || rc=$?
+    assert_eq "with no defaults, new with no repo named exits 1" 1 "$rc"
+    assert "it prints the usage" grep -qF "usage: ws new" <<<"$out"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/t5"
+}
+
+test_new_parses_the_config() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config "WS_DEFAULT_REPOS=\"\$(touch $FX/pwned) alpha\""
+    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a default that is not a repo name" 1 "$rc"
+    assert "it names the config" grep -qF "ws: WS_DEFAULT_REPOS in ~/.config/ws/config holds '\$(touch'" <<<"$out"
+    refute "ws never runs the config" test -e "$FX/pwned"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/t1"
+
+    ws_config 'export WS_DEFAULT_REPOS=alpha'
+    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    assert_eq "new refuses a config line that is not KEY=value" 1 "$rc"
+    assert_eq "it names the line" "ws: line 1 of ~/.config/ws/config is not KEY=value" "$out"
+}
+
+test_new_names_a_missing_default_repo() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_DEFAULT_REPOS="alpha delta"'
+    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    assert_eq "new exits 1 when a default repo is not in WS_PROJECTS" 1 "$rc"
+    assert_eq "it names the repo and the config that lists it" \
+        "ws: WS_DEFAULT_REPOS in ~/.config/ws/config lists delta, but ~/projects/delta is not a git checkout" "$out"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/t1"
+    refute "it makes no branch in a default repo" has_branch alpha feat/x
+    refute "it makes no branch in the named repo" has_branch beta feat/x
+
+    out=$(WS_DEFAULT_REPOS="alpha delta" ws new t1 feat/x 2>&1) && rc=0 || rc=$?
+    assert_eq "it names the environment when the list comes from there" \
+        "ws: WS_DEFAULT_REPOS in the environment lists delta, but ~/projects/delta is not a git checkout" "$out"
+
+    out=$(ws new --only t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    assert_eq "--only does not read the defaults" 0 "$rc"
+}
+
+test_new_only() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_DEFAULT_REPOS="alpha beta"'
+    out=$(ws new --only --ticket T-1 t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    assert_eq "new --only exits 0" 0 "$rc"
+    assert_eq "--only gives exactly the named repos" beta "$(ws_value t1 WS_REPOS)"
+    refute "it makes no worktree of a default repo" test -e "$WS_ROOT/t1/alpha"
+    assert_eq "it keeps the other flags" T-1 "$(ws_value t1 WS_TICKET)"
+
+    out=$(ws new --only t2 feat/y 2>&1) && rc=0 || rc=$?
+    assert_eq "--only with no repo exits 1" 1 "$rc"
+    assert_eq "it says --only needs a repo" "ws: --only takes at least one repo" "$out"
+    refute "it makes no ticket dir" test -e "$WS_ROOT/t2"
+}
+
+test_new_rerun_adds_no_defaults() {
+    local out rc
+    new_fixture_no_ticket
+    add_repo gamma
+    ws_config 'WS_DEFAULT_REPOS="alpha beta"'
+    ws new --only t1 feat/x gamma >/dev/null 2>&1
+    out=$(ws new t1 feat/x beta 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun with a repo exits 0" 0 "$rc"
+    assert_eq "a rerun adds only the repo it names" '"gamma beta"' "$(ws_value t1 WS_REPOS)"
+    refute "a rerun adds no default repo" test -e "$WS_ROOT/t1/alpha"
+
+    out=$(ws new t1 feat/x 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun with no repo exits 1 though defaults are set" 1 "$rc"
+    assert "it prints the usage" grep -qF "usage: ws new" <<<"$out"
+    assert_eq "it leaves the repos" '"gamma beta"' "$(ws_value t1 WS_REPOS)"
+}
+
+test_adopt_adds_no_defaults() {
+    local out rc
+    new_fixture_no_ticket
+    ws_config 'WS_DEFAULT_REPOS="alpha beta"'
+    add_worktree beta "$WS_PROJECTS/beta-t3" feat/t3
+    out=$(ws adopt t3 "$WS_PROJECTS/beta-t3" 2>&1) && rc=0 || rc=$?
+    assert_eq "adopt exits 0 while defaults are set" 0 "$rc"
+    assert_eq "adopt keeps exactly the worktrees it adopts" beta "$(ws_value t3 WS_REPOS)"
+    refute "it adds no default repo" test -e "$WS_ROOT/t3/alpha"
+}
+
 test_adopt() {
     local out rc
     new_fixture_no_ticket
@@ -1182,6 +1290,12 @@ run_test test_new_rerun
 run_test test_new_takes_a_dir_without_ws
 run_test test_new_refuses
 run_test test_ws_file_writes
+run_test test_new_default_repos
+run_test test_new_parses_the_config
+run_test test_new_names_a_missing_default_repo
+run_test test_new_only
+run_test test_new_rerun_adds_no_defaults
+run_test test_adopt_adds_no_defaults
 run_test test_adopt
 run_test test_adopt_refuses
 run_test test_stage
