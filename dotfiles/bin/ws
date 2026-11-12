@@ -37,7 +37,7 @@ declare -gA WS_COMMANDS=(
     [done]="set a ticket to merged, run vault-consolidate, and offer ws rm"
     [down]="stop the dockyard env of a ticket and keep its slot"
     [ls]="list the tickets"
-    [new]="make or repair a ticket: worktrees, .ws, CLAUDE.md, and a tmux session"
+    [new]="make or repair a ticket of the default and named repos, with its tmux session"
     [pick]="pick a ticket, a project, or the vault and switch to its tmux session"
     [prune]="list worktrees whose PR merged or closed, --apply moves them to the trash"
     [rm]="stop a ticket's sessions and env and move its worktrees to the trash"
@@ -2498,7 +2498,7 @@ ws_prune() {
 
 ticket_usage() {
     cat <<'EOF'
-usage: ws new [--ticket <key>] [--topic <name>] <id> <branch> <repo>...
+usage: ws new [--ticket <key>] [--topic <name>] [--only] <id> <branch> [<repo>...]
        ws adopt <id> <worktree>...
        ws ls
        ws pick [--print]
@@ -2523,14 +2523,17 @@ dashes, and underscores.
           CLAUDE.md, .claude/settings.json, and the tmux session, whose
           claude window runs claude -n <id>. Then switch to the
           session. A branch that exists in neither the repo nor origin
-          starts from origin's default branch with no upstream. A rerun
-          adds new repos and keeps the stage. It writes CLAUDE.md again
-          only while nobody has edited it, and adds the deny rules to a
+          starts from origin's default branch with no upstream. A new
+          ticket gets the default repos first, then the repos you name,
+          each once. --only skips the defaults and takes at least one
+          repo. A rerun adds only the repos you name, never the
+          defaults, and keeps the stage. It writes CLAUDE.md again only
+          while nobody has edited it, and adds the deny rules to a
           settings.json that someone edited.
   adopt   move linked worktrees of one branch into the ticket with git
-          worktree move, then do what new does. No process may work in
-          them, no container may mount them, and no other ticket may
-          hold them.
+          worktree move, then do what new does with exactly those
+          repos. No process may work in them, no container may mount
+          them, and no other ticket may hold them.
   ls      list the tickets with their stage, the Claude sessions that
           wait on you, PR state, env state, and branch.
   pick    list the tickets, then every directory in $WS_PROJECTS, then
@@ -2609,6 +2612,16 @@ up, down, and rm act on the dockyard stack of the ticket's branch only
 while its record in ~/.dockyard/slots.json names the ticket directory as
 its workspace. A stack that another ticket or a plain dockyard up made
 stays as it is.
+
+The default repos of ws new are the space-separated list in
+WS_DEFAULT_REPOS. When the environment does not set it, ws reads it
+from ${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines
+and # comments that ws parses and never runs:
+
+  WS_DEFAULT_REPOS="alpha beta"
+
+An empty WS_DEFAULT_REPOS in the environment turns the defaults off.
+Without defaults, ws new needs at least one repo.
 EOF
 }
 
@@ -2629,10 +2642,10 @@ ticket_check_id() {
     fi
 }
 
-ticket_read() {
-    local file=$1/.ws want=${3:-${1##*/}} content="" line key value n=0 shown LC_ALL=C
-    local -n tr_kv=$2
-    tr_kv=()
+ws_kv_read() {
+    local file=$1 content="" line key value n=0 shown LC_ALL=C
+    local -n wkr=$2
+    wkr=()
     REPLY=
     shown=${file/#"$HOME/"/\~/}
     if [[ ! -f $file || ! -r $file ]]; then
@@ -2660,8 +2673,15 @@ ticket_read() {
             REPLY="line $n of $shown has an unclosed quote"
             return 1
         fi
-        tr_kv["$key"]=$value
+        wkr+=(["$key"]=$value)
     done <<<"$content"
+}
+
+ticket_read() {
+    local file=$1/.ws want=${3:-${1##*/}} shown
+    local -n tr_kv=$2
+    shown=${file/#"$HOME/"/\~/}
+    ws_kv_read "$file" "$2" || return 1
     if ! ticket_name_ok "${tr_kv[WS_ID]-}" || [[ ${tr_kv[WS_ID]} != "$want" ]]; then
         REPLY="WS_ID in $shown is not $want"
         return 1
@@ -2858,9 +2878,13 @@ ticket_wt_ready() {
         head=$(git -C "$wt" symbolic-ref -q HEAD) && [[ $head == "refs/heads/$3" ]]
 }
 
+ticket_repo_ok() {
+    [[ -d $WS_PROJECTS/$1/.git && ! -L $WS_PROJECTS/$1/.git ]]
+}
+
 ticket_wt_blocker() {
     local wt=$1/$2 main=$WS_PROJECTS/$2 where
-    if [[ ! -d $main/.git || -L $main/.git ]]; then
+    if ! ticket_repo_ok "$2"; then
         echo "$(ws_shown "$main") is not a git checkout"
     elif [[ -e $wt || -L $wt ]]; then
         echo "$(ws_shown "$wt") exists and is not a worktree of $(ws_shown "$main") on $3"
@@ -3320,8 +3344,37 @@ ticket_make() {
     ws_switch "$id"
 }
 
+ticket_defaults() {
+    local file=${XDG_CONFIG_HOME:-$HOME/.config}/ws/config from repo fail=0
+    local -A kv=()
+    local -n td=$1
+    td=()
+    if [[ -n ${WS_DEFAULT_REPOS+set} ]]; then
+        from="WS_DEFAULT_REPOS in the environment"
+        read -r -a td <<<"$WS_DEFAULT_REPOS"
+    elif [[ -e $file || -L $file ]]; then
+        if ! ws_kv_read "$file" kv; then
+            echo "ws: $REPLY" >&2
+            return 1
+        fi
+        from="WS_DEFAULT_REPOS in $(ws_shown "$file")"
+        read -r -a td <<<"${kv[WS_DEFAULT_REPOS]-}"
+    fi
+    for repo in "${td[@]}"; do
+        if ! ticket_name_ok "$repo"; then
+            echo "ws: $from holds '$repo', which is not a repo name" >&2
+            fail=1
+        elif ! ticket_repo_ok "$repo"; then
+            echo "ws: $from lists $repo, but $(ws_shown "$WS_PROJECTS/$repo") is not a git checkout" >&2
+            fail=1
+        fi
+    done
+    ((fail == 0))
+}
+
 ws_new() {
-    local ticket="" topic=""
+    local ticket="" topic="" only=0 id branch
+    local -a repos=()
     while (($#)); do
         case $1 in
         --ticket | --topic)
@@ -3331,6 +3384,10 @@ ws_new() {
             fi
             if [[ $1 == --ticket ]]; then ticket=$2; else topic=$2; fi
             shift 2
+            ;;
+        --only)
+            only=1
+            shift
             ;;
         -h | --help)
             ticket_usage
@@ -3343,11 +3400,26 @@ ws_new() {
         *) break ;;
         esac
     done
-    if (($# < 3)); then
+    if (($# < 2)); then
         ticket_usage >&2
         return 1
     fi
-    ticket_make "$1" "$2" "$ticket" "$topic" "${@:3}"
+    if ((only && $# == 2)); then
+        echo "ws: --only takes at least one repo" >&2
+        return 1
+    fi
+    id=$1 branch=$2
+    shift 2
+    ticket_check_id "$id" || return 1
+    if ((only == 0)) && [[ ! -e $WS_ROOT/$id/.ws && ! -L $WS_ROOT/$id/.ws ]]; then
+        ticket_defaults repos || return 1
+    fi
+    repos+=("$@")
+    if ((${#repos[@]} == 0)); then
+        ticket_usage >&2
+        return 1
+    fi
+    ticket_make "$id" "$branch" "$ticket" "$topic" "${repos[@]}"
 }
 
 ticket_adopt_blocker() {

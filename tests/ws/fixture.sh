@@ -101,8 +101,8 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        <root>, TMPDIR as <root>/.tmp, GIT_CONFIG_GLOBAL,
                        GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
                        WS_VAULT, PATH, and a short TMUX_TMPDIR under
-                       /tmp, and unsets TMUX, TMUX_PANE, and CLAUDECODE;
-                       remove TMUX_TMPDIR with <root>
+                       /tmp, and unsets TMUX, TMUX_PANE, CLAUDECODE, and
+                       WS_DEFAULT_REPOS; remove TMUX_TMPDIR with <root>
 EOF
 }
 
@@ -154,7 +154,7 @@ export XDG_DATA_HOME=$(printf %q "$root/.local/share")
 export XDG_STATE_HOME=$(printf %q "$root/.local/state")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
 export TMPDIR=$(printf %q "$root/.tmp")
-unset TMUX TMUX_PANE CLAUDECODE
+unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
 export WS_ROOT=$(printf %q "$root/work")
