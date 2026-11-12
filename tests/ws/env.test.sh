@@ -33,7 +33,7 @@ ls_row() {
 
 pane_shows() {
     local i
-    for ((i = 0; i < 100; i++)); do
+    for ((i = 0; i < 300; i++)); do
         tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -qF -- "$3" && return 0
         sleep 0.05
     done

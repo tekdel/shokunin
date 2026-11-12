@@ -37,7 +37,7 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   bin/podman           and inspect from <engine>.json; docker also
                        answers ps -q with a compose project label and
                        status=running filter, and compose -p <project>
-                       logs, which prints one line and sleeps
+                       logs, which prints one line and waits
   <engine>.json        the running containers, [] at first: objects with
                        Id, Name, Mounts of Type and Source, and Labels
   bin/dockyard         dockyard shim: up, down, and nuke keep
@@ -274,7 +274,9 @@ case "$*" in
     ;;
 "compose -p "*" logs --follow --tail 50")
     echo "$3 | fixture log line"
-    exec sleep infinity
+    while :; do
+        sleep 60
+    done
     ;;
 "inspect "*)
     shift
