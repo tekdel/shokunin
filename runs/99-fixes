@@ -79,13 +79,15 @@ fi
 
 # NVIDIA fixes (only if NVIDIA GPU is present)
 if lspci | grep -qi 'nvidia'; then
-    # Configure NVIDIA for clean shutdown and suspend
-    if [ ! -f /etc/modprobe.d/nvidia.conf ]; then
-        echo "Configuring NVIDIA power management..."
-        sudo tee /etc/modprobe.d/nvidia.conf > /dev/null << 'EOF'
-options nvidia NVreg_PreserveVideoMemoryAllocations=0
-EOF
-        echo "✓ NVIDIA power management configured"
+    # Drop old PreserveVideoMemoryAllocations=0 override: it discards VRAM on suspend,
+    # so the GPU faults on resume (Xid 13/31/154) and needs a reboot. The open
+    # driver's default (2 = auto) preserves VRAM via kernel suspend notifiers.
+    if grep -qs 'NVreg_PreserveVideoMemoryAllocations=0' /etc/modprobe.d/nvidia.conf; then
+        echo "Removing NVIDIA option that breaks resume from suspend..."
+        sudo sed -i '/NVreg_PreserveVideoMemoryAllocations=0/d' /etc/modprobe.d/nvidia.conf
+        [ -s /etc/modprobe.d/nvidia.conf ] || sudo rm /etc/modprobe.d/nvidia.conf
+        sudo mkinitcpio -P  # nvidia loads from initramfs, which embeds modprobe.d
+        echo "✓ NVIDIA suspend fixed (reboot required)"
     fi
 
     # Enable nvidia-persistenced for faster shutdown
@@ -123,13 +125,6 @@ if lspci | grep -qi 'mediatek.*mt79' && grep -qi 'amd' /proc/cpuinfo; then
             echo "Added iommu=pt to $LIMINE_CONF (reboot required)"
         fi
     fi
-fi
-
-# Disable suspend/sleep on System76 hardware (doesn't wake reliably)
-if sudo dmidecode -s system-manufacturer 2>/dev/null | grep -qi 'system76'; then
-    echo "System76 detected, disabling suspend/sleep..."
-    sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
-    echo "✓ Sleep/suspend/hibernate disabled (System76)"
 fi
 
 echo ""
