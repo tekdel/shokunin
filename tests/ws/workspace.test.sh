@@ -305,6 +305,33 @@ test_stage() {
     refute "it makes no ticket dir" test -e "$WS_ROOT/t9"
 }
 
+test_stage_qa_inside_a_claude_session() {
+    local out rc md old
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws stage t1 building >/dev/null
+    out=$(CLAUDECODE=1 ws stage t1 qa 2>&1) && rc=0 || rc=$?
+    assert_eq "inside a Claude session, stage refuses qa and names ws verify" \
+        "1 ws: CLAUDECODE says this runs inside a Claude session, where only ws verify t1 sets qa" "$rc $out"
+    out=$(cd "$WS_ROOT/t1/alpha" && CLAUDECODE=1 ws stage qa 2>&1) && rc=0 || rc=$?
+    assert_eq "it refuses qa without an id too" 1 "$rc"
+    assert_eq "the stage stays" building "$(ws_value t1 WS_STAGE)"
+    CLAUDECODE=1 ws stage t1 verifying >/dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "inside a session, stage sets the other stages" "0 verifying" "$rc $(ws_value t1 WS_STAGE)"
+    ws stage t1 qa >/dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "outside a session, the operator sets qa by hand" "0 qa" "$rc $(ws_value t1 WS_STAGE)"
+
+    md=$WS_ROOT/t1/CLAUDE.md
+    refute "CLAUDE.md does not tell the session to move the ticket to any stage" \
+        grep -qF 'Run `ws stage <stage>` here to move the ticket on.' "$md"
+    assert "it says only ws verify sets qa" grep -qF 'Only `ws verify` sets `qa`' "$md"
+    old='- `.ws` holds the ticket state, and only ws writes it. Run `ws stage <stage>` here to move the ticket on.'
+    awk -v old="$old" '/^- `\.ws` holds/ { print old; next } { print }' "$md" >"$FX/md" && cp "$FX/md" "$md"
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    assert "a rerun rewrites the stage line of a CLAUDE.md that an earlier ws wrote" \
+        grep -qF 'Only `ws verify` sets `qa`' "$md"
+}
+
 test_stage_limit() {
     local n out
     new_fixture_no_ticket
@@ -665,6 +692,69 @@ test_rm_moves_nothing_when_a_process_survives() {
     assert "it keeps alpha" is_worktree "$WS_ROOT/t1/alpha"
     assert "it keeps beta" is_worktree "$WS_ROOT/t1/beta"
     assert "it keeps .ws" test -f "$WS_ROOT/t1/.ws"
+}
+
+proc_state() {
+    local stat
+    { IFS= read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+    stat=${stat##*) }
+    printf '%s\n' "${stat%% *}"
+}
+
+test_rm_skips_a_process_that_exited() {
+    local out rc parent zombie i
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    (cd "$FX" && exec bash -c '(echo "$BASHPID" >"$1" && sleep 0.2) & exec sleep 300' _ "$FX/zombie.pid") &
+    parent=$!
+    wait_for_file "$FX/zombie.pid"
+    zombie=$(<"$FX/zombie.pid")
+    for ((i = 0; i < 100; i++)); do
+        [[ $(proc_state "$zombie") == Z ]] && break
+        sleep 0.05
+    done
+    assert_eq "a child of sleep has exited and waits for its parent" Z "$(proc_state "$zombie")"
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$parent"
+    assert_eq "rm takes a ticket while a process of yours waits to be reaped" 0 "$rc"
+    refute "it does not name that process" grep -qF "process $zombie " <<<"$out"
+    refute "it removes the ticket" test -e "$WS_ROOT/t1"
+}
+
+start_thread_after_main_exits() {
+    local i
+    (cd "$1" && exec python3 -I -c 'import ctypes, threading, time
+threading.Thread(target=time.sleep, args=(300,)).start()
+ctypes.CDLL(None).pthread_exit(None)') >/dev/null 2>&1 &
+    STARTED=$!
+    for ((i = 0; i < 100; i++)); do
+        [[ $(proc_state "$STARTED") == Z ]] && return 0
+        sleep 0.05
+    done
+    abort "the main thread of process $STARTED did not exit"
+}
+
+test_rm_reads_the_threads_of_a_zombie() {
+    local out rc
+    if ! command -v python3 >/dev/null; then
+        ok "the zombie thread check is skipped: no python3"
+        return
+    fi
+    new_fixture_no_ticket
+    export WS_PROC=/proc
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    start_thread_after_main_exits "$WS_ROOT/t1/alpha"
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$STARTED"
+    assert_eq "rm refuses a zombie whose thread still works in the ticket" 1 "$rc"
+    assert "it names that process" grep -qF "process $STARTED (python3) works in ~/work/t1" <<<"$out"
+
+    start_thread_after_main_exits "$FX"
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    stop_started "$STARTED"
+    assert_eq "rm takes a ticket while a zombie's thread works elsewhere" 0 "$rc"
+    refute "it removes the ticket" test -e "$WS_ROOT/t1"
 }
 
 test_rm_when_claude_stop_fails() {
@@ -1095,6 +1185,7 @@ run_test test_ws_file_writes
 run_test test_adopt
 run_test test_adopt_refuses
 run_test test_stage
+run_test test_stage_qa_inside_a_claude_session
 run_test test_stage_limit
 run_test test_rm_refuses
 run_test test_rm
@@ -1107,6 +1198,8 @@ run_test test_names_are_ascii
 run_test test_rm_refuses_a_foreign_process
 run_test test_rm_ignores_its_own_sessions
 run_test test_rm_moves_nothing_when_a_process_survives
+run_test test_rm_skips_a_process_that_exited
+run_test test_rm_reads_the_threads_of_a_zombie
 run_test test_rm_when_claude_stop_fails
 run_test test_ws_starts_tmux_outside_the_ticket
 run_test test_rm_ignores_a_tmux_server_in_the_ticket

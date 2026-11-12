@@ -29,6 +29,8 @@ WS_OPERATOR_STAGES="planned qa review"
 WS_BUILDING_LIMIT=5
 WS_ENV_START='<!-- ws env: ws up and ws down rewrite the lines up to the end marker -->'
 WS_ENV_END='<!-- /ws env -->'
+WS_CLAUDE_STAGE="- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on up to \`verifying\`. Only \`ws verify\` sets \`qa\`, when every scenario passes."
+WS_CLAUDE_STAGE_2_0_80="- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on."
 
 declare -gA WS_COMMANDS=(
     [adopt]="move existing worktrees of one branch into a ticket"
@@ -136,15 +138,18 @@ A process in another mount namespace counts when its directory is the
 worktree or a directory up to three levels below it, outside
 WS_REGENERABLE directories. A process of yours whose directory or status
 file ws cannot read, because it turned off core dumps or holds extra
-capabilities, makes every worktree KEEP unreadable while it runs, and so
-does a zombie process of yours until its parent reaps it; the row names
-the zombie's parent. The check skips such a process when its parent
-belongs to another user, as for SSH logins, when its parent is a process
-of yours whose own parent is init, as for user services and daemons such
-as a tmux server, and when it runs below a containerd-shim in docker's
-containerd namespace, moby, while docker answered, or below a conmon
-while podman answered, since the container check covers it. So a command
-that turns off core dumps and runs directly in a tmux pane is not seen.
+capabilities, makes every worktree KEEP unreadable while it runs. A
+zombie process of yours counts by the directories of its threads that
+still run, and makes every worktree KEEP unreadable when ws cannot read
+those either; the row names the zombie's parent. A process that has
+exited holds no directory, so the check skips it before its parent reaps
+it. The check skips a hidden process when its parent belongs to another
+user, as for SSH logins, when its parent is a process of yours whose own
+parent is init, as for user services and daemons such as a tmux server,
+and when it runs below a containerd-shim in docker's containerd
+namespace, moby, while docker answered, or below a conmon while podman
+answered, since the container check covers it. So a command that turns
+off core dumps and runs directly in a tmux pane is not seen.
 The check does not see processes of other users either. It does not look
 at open files. A process whose directory is elsewhere can hold an ignored
 file in a worktree open, and a write it makes in the about 45 ms between
@@ -351,6 +356,31 @@ ws_comm() {
     printf '%s\n' "${stat%)*}"
 }
 
+# A process whose main thread exited is a zombie, but its other threads keep
+# running in their own working directories.
+ws_thread_cwd() {
+    local link found=""
+    while IFS= read -r -d '' link; do
+        [[ -n $link ]] || continue
+        found=$link
+        [[ $link != "$2" && $link != "$2"/* ]] || break
+    done < <(find "$WS_PROC/$1"/task/*/cwd -maxdepth 0 -printf '%l\0' 2>/dev/null)
+    [[ -n $found ]] && printf '%s\n' "$found"
+}
+
+# The kernel drops the working directory of a process that exits, long before
+# its parent reaps it.
+ws_exited() {
+    local stat flags pf_exiting=4
+    local -a f=() tasks=()
+    { IFS= read -r stat <"$WS_PROC/$1/stat"; } 2>/dev/null || return 1
+    read -r -a f <<<"${stat##*) }"
+    flags=${f[6]-}
+    [[ $flags =~ ^[0-9]+$ ]] && ((flags & pf_exiting)) || return 1
+    tasks=("$WS_PROC/$1"/task/*)
+    [[ ${#tasks[@]} == 1 && ${tasks[0]} == "$WS_PROC/$1/task/$1" ]]
+}
+
 # Docker runs its containers in the containerd namespace moby; k3s and
 # other containerd clients use their own. The shim's flag parser keeps
 # the last -namespace it is given.
@@ -524,12 +554,13 @@ ws_cwd_count() {
             [[ -O $proc ]] || continue
             name=$(ws_comm "${proc##*/}") || name=
         fi
-        if link=$(readlink -- "$proc/cwd" 2>/dev/null); then
+        if link=$(readlink -- "$proc/cwd" 2>/dev/null) || link=$(ws_thread_cwd "${proc##*/}" "$real"); then
             if [[ $link == "$real" || $link == "$real"/* ]] && ! ws_owned "$exempt" "${proc##*/}"; then
                 WS_CWD_PIDS+=("${proc##*/}")
                 n=$((n + 1))
             fi
-        elif [[ -e $proc ]] && ! ws_system_child "${proc##*/}" && ! ws_engine_vouches "${proc##*/}"; then
+        elif [[ -e $proc ]] && ! ws_exited "${proc##*/}" && ! ws_system_child "${proc##*/}" &&
+            ! ws_engine_vouches "${proc##*/}"; then
             if [[ $state == Z ]]; then
                 parent=$(ws_comm "$ppid") || parent="parent gone"
                 echo "process ${proc##*/} ($name) is a zombie child of process $ppid ($parent)"
@@ -2510,6 +2541,7 @@ dashes, and underscores.
   stage   set the stage, one of spec planned building verifying qa
           review merged. Without <id>, the ticket of the current
           directory. Warns when more than 5 tickets are in building.
+          Inside a Claude session it refuses qa, which ws verify sets.
   status  --refresh asks claude agents --json and gh, and writes
           ~/.cache/ws/status.json. PR state is asked again only when it
           is WS_PR_TTL seconds old, 300 by default, or 60 seconds after
@@ -2547,11 +2579,12 @@ dashes, and underscores.
           WS_TICKET. For Jira it may call one tool, WS_JIRA_TOOL of the
           MCP server WS_JIRA_MCP, getJiraIssue of atlassian by default.
           Inside a Claude session, where CLAUDECODE is set, it replaces
-          scenarios that exist only with --replace. The
-          .claude/settings.json that ws new writes in the ticket denies
-          Claude edits of the scenarios, .ws, and the evidence of the
-          ticket. These rules and the sha256 are speed bumps, not a
-          sandbox. Claude Code applies the rules only to the shell
+          scenarios that exist only with --replace. Before claude -p
+          runs, it adds the rules of ws new that deny Claude edits of
+          the scenarios, .ws, and the evidence of the ticket to the
+          ticket's .claude/settings.json, and it writes no scenarios
+          when it cannot. These rules and the sha256 are speed bumps,
+          not a sandbox. Claude Code applies the rules only to the shell
           writes it parses, such as redirects, cp, tee, and sed -i.
   verify  refuse when the scenarios changed since ws scenarios wrote
           them, or when the env is down. Else set the stage to
@@ -2867,7 +2900,7 @@ ticket_claude_text() {
     for repo; do
         echo "  - \`$repo/\` belongs to \`$(ws_shown "$WS_PROJECTS/$repo")\`."
     done
-    echo "- \`.ws\` holds the ticket state, and only ws writes it. Run \`ws stage <stage>\` here to move the ticket on."
+    echo "$WS_CLAUDE_STAGE"
     echo "- Log progress with \`$(ws_shown "$WS_VAULT/bin/vault-log") $id \"<what changed>\"\`."
 }
 
@@ -2915,7 +2948,7 @@ ticket_claude_md() {
 }
 
 ticket_claude_rewrite() {
-    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header env note note_2_0_66 tmp edited=0
+    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header text env note note_2_0_66 n tmp edited=0
     local -a old=()
     read -r -a old <<<"$4"
     shift 4
@@ -2923,13 +2956,17 @@ ticket_claude_rewrite() {
     env=$(ticket_claude_env "$dir" "$id")
     if [[ -e $file || -L $file ]]; then
         [[ -f $file && -r $file && ! -L $file ]] || return 0
-        header=$(ticket_claude_text "$id" "$branch" "$note" "${old[@]}")
         note_2_0_66="ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
-        if ! printf '%s\n' "$header" | cmp -s -- "$file" - &&
-            ! ticket_claude_text "$id" "$branch" "$note_2_0_66" "${old[@]}" | cmp -s -- "$file" - &&
-            ! ticket_claude_block "$header" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
-            edited=1
-        fi
+        edited=1
+        for n in "$note" "$note_2_0_66"; do
+            header=$(ticket_claude_text "$id" "$branch" "$n" "${old[@]}")
+            for text in "$header" "${header/"$WS_CLAUDE_STAGE"/"$WS_CLAUDE_STAGE_2_0_80"}"; do
+                if printf '%s\n' "$text" | cmp -s -- "$file" - ||
+                    ticket_claude_block "$text" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
+                    edited=0
+                fi
+            done
+        done
     fi
     tmp=$(mktemp -- "$dir/.CLAUDE.md.XXXXXX") || return 1
     if ((edited)); then
@@ -3221,8 +3258,8 @@ edit_deny_rules() {
     edr=()
     for p; do
         path=$(realpath -m -- "${p%/\*\*}")
-        if [[ $path == *[][*?\\]* ]]; then
-            echo "ws: $(ws_shown "$path") holds a character that Claude Code reads as a pattern, so ws writes no deny rule for it" >&2
+        if [[ $path == *[][*?\\{}\$]* ]]; then
+            echo "ws: $(ws_shown "$path") holds a character that Claude Code reads as a pattern or a shell expansion, so ws writes no deny rule for it" >&2
             return 1
         fi
         [[ $p != */\*\* ]] || path+='/**'
@@ -3231,19 +3268,21 @@ edit_deny_rules() {
 }
 
 ticket_deny() {
-    local dir=$1/.claude file=$1/.claude/settings.json tmp
+    local dir=$1/.claude file=$1/.claude/settings.json src=/dev/null tmp n
     shift
     if [[ -L $dir || -L $file || (-e $file && ! -f $file) ]]; then
         echo "ws: $(ws_shown "$file") is not a plain file, so ws adds no deny rules to it" >&2
         return 1
     fi
+    [[ ! -e $file ]] || src=$file
+    if n=$(jq -s length "$src" 2>/dev/null) && ((n > 1)); then
+        echo "ws: $(ws_shown "$file") holds $n JSON documents, so ws adds no deny rules to it" >&2
+        return 1
+    fi
     mkdir -p -- "$dir" || return 1
     tmp=$(mktemp -- "$dir/.settings.json.XXXXXX") || return 1
-    if [[ -s $file ]]; then
-        jq '.permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' "$file" --args "$@" >"$tmp" 2>/dev/null
-    else
-        jq -n '{permissions: {deny: $ARGS.positional}}' --args "$@" >"$tmp"
-    fi || {
+    jq -s 'if length == 0 then {} else .[0] end | .permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' \
+        "$src" --args "$@" >"$tmp" 2>/dev/null || {
         rm -f -- "$tmp"
         echo "ws: $(ws_shown "$file") does not hold a settings object with a permissions.deny list, so ws adds no deny rules to it" >&2
         return 1
@@ -3251,9 +3290,15 @@ ticket_deny() {
     ws_write_in_place "$file" "$tmp"
 }
 
+ticket_deny_edits() {
+    local -a rules=()
+    edit_deny_rules rules "$(ticket_scenarios_file "$2")" "$1/.ws" "$(ticket_evidence_root "$2")/**" &&
+        ticket_locked "$1" ticket_deny "$1" "${rules[@]}"
+}
+
 ticket_make() {
     local id=$1 branch=$2 ticket=$3 topic=$4 dir=$WS_ROOT/$1 repo fail=0
-    local -a extra=() rules=()
+    local -a extra=()
     local -A kv=()
     shift 4
     ticket_check "$id" "$branch" "" "$@" || return 1
@@ -3267,9 +3312,7 @@ ticket_make() {
         ticket_wt_add "$dir" "$repo" "$branch" || fail=1
     done
     ticket_claude_md "$dir" "$id" "$branch" "${TICKET_OLD[*]}" "${TICKET_REPOS[@]}" || fail=1
-    if ! ticket_read "$dir" kv ||
-        ! edit_deny_rules rules "$(ticket_scenarios_file kv)" "$dir/.ws" "$(ticket_evidence_root kv)/**" ||
-        ! ticket_locked "$dir" ticket_deny "$dir" "${rules[@]}"; then
+    if ! ticket_read "$dir" kv || ! ticket_deny_edits "$dir" kv; then
         fail=1
     fi
     ticket_session "$id" "$dir" || return 1
@@ -3755,6 +3798,10 @@ ws_stage() {
         echo "ws: no ticket $(ws_shown "$dir")" >&2
         return 1
     fi
+    if [[ $stage == qa && -n ${CLAUDECODE-} ]]; then
+        echo "ws: CLAUDECODE says this runs inside a Claude session, where only ws verify ${dir##*/} sets qa" >&2
+        return 1
+    fi
     ticket_update "$dir" set WS_STAGE "$stage" || return 1
     echo "${dir##*/} is at $stage"
     [[ $stage == building ]] || return 0
@@ -4211,6 +4258,10 @@ ws_scenarios() {
         tool=mcp__${WS_JIRA_MCP}__$WS_JIRA_TOOL
         args=(--allowedTools "$tool")
         src="the Jira issue $key"
+    fi
+    if ! ticket_deny_edits "$dir" kv; then
+        echo "ws: ws cannot deny Claude edits of the scenarios of $id, so it writes none" >&2
+        return 1
     fi
     out=$(scenarios_prompt "$key" "$from" "$tool" | (cd -- "$WS_VAULT" &&
         timeout -k 10 600 claude -p --output-format json --tools '' "${args[@]}")) || rc=$?
