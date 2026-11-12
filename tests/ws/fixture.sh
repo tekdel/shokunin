@@ -66,14 +66,7 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        ~/.dockyard/slots.json as dockyard does, start
                        and stop containers in docker.json that mount
                        each repo of DOCKYARD_WORKSPACE, and print the
-                       URL lines of dockyard up; up --services <a,b>
-                       starts only those repos and exits 2 on a name
-                       that dockyard.services does not hold
-  dockyard.services    the app services that dockyard services prints;
-                       without it, services prints its usage and exits
-                       0, as a dockyard without that command does
-  dockyard.services-fail
-                       create it to make dockyard services exit 1
+                       URL lines of dockyard up
   dockyard.log         one line per dockyard call: DOCKYARD_WORKSPACE,
                        a tab, and the arguments; nuke adds a line that
                        says whether the workspace still exists
@@ -108,8 +101,9 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        <root>, TMPDIR as <root>/.tmp, GIT_CONFIG_GLOBAL,
                        GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
                        WS_VAULT, PATH, and a short TMUX_TMPDIR under
-                       /tmp, and unsets TMUX, TMUX_PANE, CLAUDECODE, and
-                       WS_DEFAULT_REPOS; remove TMUX_TMPDIR with <root>
+                       /tmp, and unsets TMUX, TMUX_PANE, CLAUDECODE,
+                       WS_DEFAULT_REPOS, and WS_UP_PROFILES; remove
+                       TMUX_TMPDIR with <root>
 EOF
 }
 
@@ -161,7 +155,7 @@ export XDG_DATA_HOME=$(printf %q "$root/.local/share")
 export XDG_STATE_HOME=$(printf %q "$root/.local/state")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
 export TMPDIR=$(printf %q "$root/.tmp")
-unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS
+unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS WS_UP_PROFILES
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
 export WS_ROOT=$(printf %q "$root/work")
@@ -446,28 +440,8 @@ save() {
 containers() {
     jq "$@" "$root/docker.json" >"$root/docker.json.tmp" && mv "$root/docker.json.tmp" "$root/docker.json"
 }
-cmd=${1-} branch=${2-} services=""
-if [[ $cmd == services ]]; then
-    [[ ! -f $root/dockyard.services-fail ]] || die "cannot read the compose file"
-    if [[ -f $root/dockyard.services ]]; then
-        cat "$root/dockyard.services"
-    else
-        echo -e "\033[1mdockyard\033[0m - Per-feature Docker environments with git worktrees"
-        echo
-        echo "Usage:"
-        echo "  dockyard up <branch> [--repo repo1,repo2] [--profile worker,aws]"
-    fi
-    exit 0
-fi
+cmd=${1-} branch=${2-}
 [[ -n $branch ]] || die "Usage: dockyard $cmd <branch>"
-if [[ $cmd == up && ${3-} == --services ]]; then
-    list=${4-}
-    services=,$list,
-    for name in ${list//,/ }; do
-        grep -qxF -- "$name" "$root/dockyard.services" 2>/dev/null ||
-            die "Unknown service '$name'. Valid: $(paste -sd , "$root/dockyard.services" 2>/dev/null)" 2
-    done
-fi
 slug=$(slugify "$branch")
 [[ -n $slug ]] || die "Branch '$branch' gives an empty stack name."
 project=dockyard-$slug
@@ -518,7 +492,6 @@ up)
     for dir in "$workspace"/*/; do
         [[ -n $workspace && -d $dir ]] || continue
         dir=${dir%/}
-        [[ -z $services || $services == *",${dir##*/},"* ]] || continue
         containers --arg p "$project" --arg n "$project-${dir##*/}-1" --arg src "$dir" \
             '. + [{Id: "id-\($n)", Name: "/\($n)", Mounts: [{Type: "bind", Source: $src, Destination: "/app"}],
                 Labels: {"com.docker.compose.project": $p}}]'

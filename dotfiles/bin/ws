@@ -44,7 +44,7 @@ declare -gA WS_COMMANDS=(
     [scenarios]="write the holdout scenarios of a ticket from its Jira issue or a file"
     [stage]="set the stage of a ticket"
     [status]="refresh the status cache, or print how many sessions wait on you"
-    [up]="start the dockyard services of a ticket's repos and record the slot and URLs"
+    [up]="start the dockyard env of a ticket and record its slot and URLs"
     [verify]="run the holdout scenarios of a ticket against its env in a background Claude session"
 )
 declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_ENV=() T_BAD=() P_STATES=()
@@ -2552,24 +2552,22 @@ dashes, and underscores.
           "N waiting" for every Claude session that waits on you. pick
           and --waiting start a refresh in the background. Without a
           flag, status refreshes and runs ls.
-  up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>
-          --services <list>, write the slot and the URLs that dockyard
-          prints to .ws and to the env lines of CLAUDE.md, and tail the
-          container logs in the env window. <list> holds the ticket's
-          repos that dockyard services lists; dockyard adds the
-          infrastructure they need. up names each repo that has no
-          service, and starts nothing and exits 1 when no repo has one.
-          When dockyard services fails or prints anything but names, as
-          a dockyard without that command does, up runs dockyard up
-          <branch> and the whole stack starts. up replaces the env
-          window only when it shows the logs of an earlier up or an idle
-          shell; else it prints the command that tails them. When .ws
-          has URLs and a container of the stack runs, up says the env is
-          already up and skips dockyard, so a repo added since starts
-          after ws down and ws up. A failed dockyard up makes ws up exit
-          with its status. --wait then asks each URL until it answers
-          with an HTTP status below 500, for at most WS_UP_TIMEOUT
-          seconds, 300 by default.
+  up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>,
+          write the slot and the URLs that dockyard prints to .ws and to
+          the env lines of CLAUDE.md, and tail the container logs in the
+          env window. When WS_UP_PROFILES maps repos of the ticket to
+          compose profiles, up adds --profile with each of those
+          profiles once. When WS_DEFAULT_REPOS or WS_UP_PROFILES is set,
+          up names each repo of the ticket that is in neither, since
+          dockyard starts no service for it. up replaces the env window
+          only when it shows the logs of an earlier up or an idle shell;
+          else it prints the command that tails them. When .ws has URLs
+          and a container of the stack runs, up says the env is already
+          up and skips dockyard, so a repo added since starts after ws
+          down and ws up. A failed dockyard up makes ws up exit with its
+          status. --wait then asks each URL until it answers with an
+          HTTP status below 500, for at most WS_UP_TIMEOUT seconds, 300
+          by default.
   down    run dockyard down <branch>, which stops the containers and
           keeps the slot and the volumes, and clear WS_URLS.
   rm      run ws down, then refuse when a worktree has a KEEP reason of
@@ -2621,15 +2619,18 @@ while its record in ~/.dockyard/slots.json names the ticket directory as
 its workspace. A stack that another ticket or a plain dockyard up made
 stays as it is.
 
-The default repos of ws new are the space-separated list in
-WS_DEFAULT_REPOS. When the environment does not set it, ws reads it
-from ${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines
-and # comments that ws parses and never runs:
+ws reads two settings from the environment, or else from
+${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines and
+# comments that ws parses and never runs:
 
   WS_DEFAULT_REPOS="alpha beta"
+  WS_UP_PROFILES="gamma:portal"
 
-An empty WS_DEFAULT_REPOS in the environment turns the defaults off.
-Without defaults, ws new needs at least one repo.
+WS_DEFAULT_REPOS lists the default repos of ws new, the repos whose
+services dockyard starts without a profile. An empty WS_DEFAULT_REPOS
+in the environment turns the defaults off. Without defaults, ws new
+needs at least one repo. WS_UP_PROFILES holds <repo>:<profile> pairs
+for ws up.
 EOF
 }
 
@@ -3352,22 +3353,33 @@ ticket_make() {
     ws_switch "$id"
 }
 
-ticket_defaults() {
-    local file=${XDG_CONFIG_HOME:-$HOME/.config}/ws/config from repo fail=0
+ws_setting() {
+    local key=$1 file=${XDG_CONFIG_HOME:-$HOME/.config}/ws/config value=""
+    local -a words=()
     local -A kv=()
-    local -n td=$1
-    td=()
-    if [[ -n ${WS_DEFAULT_REPOS+set} ]]; then
-        from="WS_DEFAULT_REPOS in the environment"
-        read -r -a td <<<"$WS_DEFAULT_REPOS"
+    local -n wsg=$2
+    wsg=()
+    REPLY=
+    if [[ -n ${!key+set} ]]; then
+        value=${!key}
+        REPLY="$key in the environment"
     elif [[ -e $file || -L $file ]]; then
         if ! ws_kv_read "$file" kv; then
             echo "ws: $REPLY" >&2
             return 1
         fi
-        from="WS_DEFAULT_REPOS in $(ws_shown "$file")"
-        read -r -a td <<<"${kv[WS_DEFAULT_REPOS]-}"
+        value=${kv[$key]-}
+        REPLY="$key in $(ws_shown "$file")"
     fi
+    read -r -a words <<<"$value"
+    wsg+=("${words[@]}")
+}
+
+ticket_defaults() {
+    local from repo fail=0
+    local -n td=$1
+    ws_setting WS_DEFAULT_REPOS td || return 1
+    from=$REPLY
     for repo in "${td[@]}"; do
         if ! ticket_name_ok "$repo"; then
             echo "ws: $from holds '$repo', which is not a repo name" >&2
@@ -3894,49 +3906,36 @@ ws_stage() {
     fi
 }
 
-# A dockyard without the services command prints its usage and exits 0.
-ticket_dockyard_services() {
-    local out line
-    local -n tds=$1
-    tds=()
-    out=$(dockyard services </dev/null 2>/dev/null) || return 1
-    while IFS= read -r line; do
-        [[ -n $line ]] || continue
-        ticket_name_ok "$line" || return 1
-        tds+=(["$line"]=1)
-    done <<<"$out"
-}
-
 ticket_up_args() {
-    local id=$1 repo list
-    local -a repos=() chosen=() skipped=()
-    local -A known=()
-    local -n tua=$3
+    local repo pair profile list from
+    local -a repos=() defaults=() pairs=() profiles=()
+    local -A mapped=() known=() seen=()
+    local -n tua=$2
     tua=()
-    if ! ticket_dockyard_services known; then
-        echo "dockyard cannot list its services, so ws up starts the whole stack"
-        return 0
-    fi
-    read -r -a repos <<<"$2"
+    ws_setting WS_DEFAULT_REPOS defaults && ws_setting WS_UP_PROFILES pairs || return 1
+    from=$REPLY
+    for pair in "${pairs[@]}"; do
+        if [[ ! $pair =~ ^([A-Za-z0-9][A-Za-z0-9._-]*):([A-Za-z0-9][A-Za-z0-9._-]*)$ ]]; then
+            echo "ws: $from holds '$pair', which is not <repo>:<profile>" >&2
+            return 1
+        fi
+        mapped[${BASH_REMATCH[1]}]+=" ${BASH_REMATCH[2]}"
+    done
+    for repo in "${defaults[@]}"; do
+        known[$repo]=1
+    done
+    read -r -a repos <<<"$1"
     for repo in "${repos[@]}"; do
-        if [[ -n ${known[$repo]+set} ]]; then
-            chosen+=("$repo")
-        else
-            skipped+=("$repo")
+        for profile in ${mapped[$repo]-}; do
+            [[ -n ${seen[$profile]+set} ]] || profiles+=("$profile")
+            seen[$profile]=1
+        done
+        if ((${#defaults[@]} + ${#pairs[@]})) && [[ -z ${known[$repo]+set} && -z ${mapped[$repo]+set} ]]; then
+            echo "$repo has no dockyard service, so ws up does not start it"
         fi
     done
-    if ((${#chosen[@]} == 0)); then
-        echo "ws: no repo of $id has a dockyard service, so ws up starts nothing" >&2
-        return 1
-    fi
-    if ((${#skipped[@]} == 1)); then
-        echo "${skipped[0]} has no dockyard service, so ws up does not start it"
-    elif ((${#skipped[@]})); then
-        printf -v list '%s, ' "${skipped[@]:0:${#skipped[@]}-1}"
-        echo "${list%, } and ${skipped[-1]} have no dockyard service, so ws up does not start them"
-    fi
-    list=${chosen[*]}
-    tua+=(--services "${list// /,}")
+    list=${profiles[*]}
+    [[ -z $list ]] || tua+=(--profile "${list// /,}")
 }
 
 ws_up() {
@@ -4000,7 +3999,7 @@ ws_up() {
             echo "  ${pair%%=*} ${pair#*=}"
         done
     else
-        ticket_up_args "$id" "${kv[WS_REPOS]-}" up_args || return 1
+        ticket_up_args "${kv[WS_REPOS]-}" up_args || return 1
         out=$(mktemp) || return 1
         # dockyard handles Ctrl-C itself, so ws waits for it and then records what is left.
         trap : INT
