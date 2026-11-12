@@ -613,6 +613,9 @@ test_env_window_after_the_tail() {
     assert "up leaves a shell whose terminal still runs a process it left behind" \
         grep -qF "The env window of t1 is in use" <<<"$out"
     assert "that process still runs" alive "$orphan"
+    [[ -z $orphan ]] || kill "$orphan" 2>/dev/null
+    wait_exit "$orphan"
+    refute "the test leaves no process behind" alive "$orphan"
 
     tmux kill-window -t "=t1:env"
     tmux new-window -d -t "=t1:" -n "my env" bash
