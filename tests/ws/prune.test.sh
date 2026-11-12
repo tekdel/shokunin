@@ -1593,19 +1593,30 @@ EOF
 
 test_hidden_cwd() {
     new_fixture
-    local entry out pid
-    if command -v python3 >/dev/null; then
-        python3 -I -c 'import ctypes, sys, time
+    local entry out
+    if command -v python3 >/dev/null && unshare --user --map-current-user true 2>/dev/null; then
+        # The process hides its directory only from processes in its own user namespace, so ws runs of
+        # other suites on this machine still read it.
+        cat >"$FX/hidden.sh" <<'EOF'
+python3 -I -c 'import ctypes, sys, time
 ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
 open(sys.argv[1], "w").write("ready")
-time.sleep(30)' "$FX/hidden.ready" &
-        pid=$!
-        wait_for "$FX/hidden.ready" ready
-        out=$(ws prune 2>/dev/null)
-        kill "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
+time.sleep(30)' "$1" &
+pid=$!
+for ((i = 0; i < 100; i++)); do
+    [[ $(cat "$1" 2>/dev/null) == ready ]] && break
+    sleep 0.05
+done
+bash "$2" prune 2>/dev/null
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+EOF
+        ws_guard
+        out=$(unshare --user --map-current-user bash "$FX/hidden.sh" "$FX/hidden.ready" "$WS_TESTS/../../dotfiles/bin/ws")
         assert_eq "a real process that hides its directory does not reach a fake process tree" REMOVE \
             "$(action_of "$out" "$WS_PROJECTS/alpha-merged")"
+    else
+        ok "the real hidden process check is skipped: no python3 or no user namespace"
     fi
 
     ws prune --apply <<<y >/dev/null 2>&1
