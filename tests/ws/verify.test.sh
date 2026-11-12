@@ -73,6 +73,65 @@ test_new_writes_the_deny_rules() {
     assert_eq "it leaves that file as it was" '{"permissions": "ask"}' "$(cat "$WS_ROOT/t3/.claude/settings.json")"
 }
 
+test_new_takes_odd_settings_files() {
+    local out rc file
+    new_fixture_no_ticket
+    mkdir -p "$WS_ROOT/t1/.claude" "$WS_ROOT/t2/.claude"
+    printf ' \n\t\n' >"$WS_ROOT/t1/.claude/settings.json"
+    ws new t1 feat/x alpha >/dev/null 2>&1 && rc=0 || rc=$?
+    assert_eq "new exits 0 for a settings.json that holds only whitespace" 0 "$rc"
+    assert_eq "it writes the three deny rules into it" 3 \
+        "$(jq '.permissions.deny | length' "$WS_ROOT/t1/.claude/settings.json" 2>/dev/null)"
+
+    file=$WS_ROOT/t2/.claude/settings.json
+    printf '{"model": "opus"}\n{"model": "haiku"}\n' >"$file"
+    out=$(ws new t2 feat/y alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new exits 1 for a settings.json that holds two JSON documents" 1 "$rc"
+    assert "it says why" grep -qxF \
+        "ws: ~/work/t2/.claude/settings.json holds 2 JSON documents, so ws adds no deny rules to it" <<<"$out"
+    assert_eq "it leaves that file as it was" $'{"model": "opus"}\n{"model": "haiku"}' "$(cat "$file")"
+}
+
+test_new_refuses_a_vault_path_that_a_shell_expands() {
+    local out rc name
+    for name in "v{a,b}" "v\$x"; do
+        new_fixture_no_ticket
+        mv "$WS_VAULT" "$FX/$name"
+        export WS_VAULT=$FX/$name
+        out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
+        assert_eq "new exits 1 when the vault path holds $name" 1 "$rc"
+        assert "it says why" grep -qxF \
+            "ws: ~/$name/projects/work/t1/scenarios/t1.md holds a character that Claude Code reads as a pattern or a shell expansion, so ws writes no deny rule for it" \
+            <<<"$out"
+        refute "it writes no settings.json" test -e "$WS_ROOT/t1/.claude/settings.json"
+    done
+}
+
+test_scenarios_adds_the_deny_rules_first() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    rm -r "$WS_ROOT/t1/.claude"
+    printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
+    out=$(ws scenarios t1 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
+    assert_eq "scenarios exits 0 for a ticket that an older ws made without deny rules" 0 "$rc"
+    assert_eq "it adds the three deny rules to the ticket" 3 \
+        "$(jq '.permissions.deny | length' "$WS_ROOT/t1/.claude/settings.json" 2>/dev/null)"
+
+    new_fixture_no_ticket
+    mv "$WS_VAULT" "$FX/v[1]"
+    export WS_VAULT="$FX/v[1]"
+    ws new t1 feat/x alpha >/dev/null 2>&1
+    printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
+    : >"$FX/claude.log"
+    out=$(ws scenarios t1 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
+    assert_eq "scenarios exits 1 when it cannot write the deny rules" 1 "$rc"
+    assert "it says it writes no scenarios" grep -qxF "ws: ws cannot deny Claude edits of the scenarios of t1, so it writes none" \
+        <<<"$out"
+    refute "it runs no claude -p" grep -q -- "^-p " "$FX/claude.log"
+    refute "it writes no scenarios file" test -e "$(scenarios_of t1)"
+}
+
 test_scenarios_from_a_file() {
     local out rc file
     new_fixture_no_ticket
@@ -226,14 +285,14 @@ test_scenarios_and_verify_through_a_vault_path_with_a_backslash() {
 test_verify_refuses_a_ticket_it_cannot_write_deny_rules_for() {
     local out rc
     new_fixture_no_ticket
-    mkdir "$FX/work[1]"
-    export WS_ROOT="$FX/work[1]"
     ticket_ready
+    mv "$WS_ROOT" "$FX/work[1]"
+    export WS_ROOT="$FX/work[1]"
     results "S1 PASS" "S2 PASS" "S3 PASS"
     out=$(ws verify t1 2>&1) && rc=0 || rc=$?
     assert_eq "verify exits 1 when the ticket path holds a pattern character" 1 "$rc"
     assert "it says why" grep -qxF \
-        "ws: ~/work[1]/t1/.ws holds a character that Claude Code reads as a pattern, so ws writes no deny rule for it" <<<"$out"
+        "ws: ~/work[1]/t1/.ws holds a character that Claude Code reads as a pattern or a shell expansion, so ws writes no deny rule for it" <<<"$out"
     refute "it starts no verify session" test -e "$FX/claude.bg-args"
     assert_eq "the stage stays" spec "$(ws_value t1 WS_STAGE)"
 }
@@ -486,6 +545,9 @@ test_done_offers_rm() {
 }
 
 run_test test_new_writes_the_deny_rules
+run_test test_new_takes_odd_settings_files
+run_test test_new_refuses_a_vault_path_that_a_shell_expands
+run_test test_scenarios_adds_the_deny_rules_first
 run_test test_scenarios_from_a_file
 run_test test_scenarios_from_jira
 run_test test_scenarios_refuses_bad_output

@@ -2578,11 +2578,12 @@ dashes, and underscores.
           WS_TICKET. For Jira it may call one tool, WS_JIRA_TOOL of the
           MCP server WS_JIRA_MCP, getJiraIssue of atlassian by default.
           Inside a Claude session, where CLAUDECODE is set, it replaces
-          scenarios that exist only with --replace. The
-          .claude/settings.json that ws new writes in the ticket denies
-          Claude edits of the scenarios, .ws, and the evidence of the
-          ticket. These rules and the sha256 are speed bumps, not a
-          sandbox. Claude Code applies the rules only to the shell
+          scenarios that exist only with --replace. Before claude -p
+          runs, it adds the rules of ws new that deny Claude edits of
+          the scenarios, .ws, and the evidence of the ticket to the
+          ticket's .claude/settings.json, and it writes no scenarios
+          when it cannot. These rules and the sha256 are speed bumps,
+          not a sandbox. Claude Code applies the rules only to the shell
           writes it parses, such as redirects, cp, tee, and sed -i.
   verify  refuse when the scenarios changed since ws scenarios wrote
           them, or when the env is down. Else set the stage to
@@ -3244,7 +3245,8 @@ ticket_evidence_root() {
 }
 
 # Claude Code reads //path as an absolute path. An Edit rule also denies its Write tool and the shell writes
-# that it parses, such as redirects, cp, tee, and sed -i, but not a write by any other program.
+# that it parses, such as redirects, cp, tee, and sed -i, but not a write by any other program. A rule for a
+# path with braces or a dollar sign denies Edit and Write but not a shell redirect to that path.
 edit_deny_rules() {
     local -n edr=$1
     local p path
@@ -3252,8 +3254,8 @@ edit_deny_rules() {
     edr=()
     for p; do
         path=$(realpath -m -- "${p%/\*\*}")
-        if [[ $path == *[][*?\\]* ]]; then
-            echo "ws: $(ws_shown "$path") holds a character that Claude Code reads as a pattern, so ws writes no deny rule for it" >&2
+        if [[ $path == *[][*?\\{}\$]* ]]; then
+            echo "ws: $(ws_shown "$path") holds a character that Claude Code reads as a pattern or a shell expansion, so ws writes no deny rule for it" >&2
             return 1
         fi
         [[ $p != */\*\* ]] || path+='/**'
@@ -3262,19 +3264,21 @@ edit_deny_rules() {
 }
 
 ticket_deny() {
-    local dir=$1/.claude file=$1/.claude/settings.json tmp
+    local dir=$1/.claude file=$1/.claude/settings.json src=/dev/null tmp n
     shift
     if [[ -L $dir || -L $file || (-e $file && ! -f $file) ]]; then
         echo "ws: $(ws_shown "$file") is not a plain file, so ws adds no deny rules to it" >&2
         return 1
     fi
+    [[ ! -e $file ]] || src=$file
+    if n=$(jq -s length "$src" 2>/dev/null) && ((n > 1)); then
+        echo "ws: $(ws_shown "$file") holds $n JSON documents, so ws adds no deny rules to it" >&2
+        return 1
+    fi
     mkdir -p -- "$dir" || return 1
     tmp=$(mktemp -- "$dir/.settings.json.XXXXXX") || return 1
-    if [[ -s $file ]]; then
-        jq '.permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' "$file" --args "$@" >"$tmp" 2>/dev/null
-    else
-        jq -n '{permissions: {deny: $ARGS.positional}}' --args "$@" >"$tmp"
-    fi || {
+    jq -s 'if length == 0 then {} else .[0] end | .permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' \
+        "$src" --args "$@" >"$tmp" 2>/dev/null || {
         rm -f -- "$tmp"
         echo "ws: $(ws_shown "$file") does not hold a settings object with a permissions.deny list, so ws adds no deny rules to it" >&2
         return 1
@@ -3282,9 +3286,15 @@ ticket_deny() {
     ws_write_in_place "$file" "$tmp"
 }
 
+ticket_deny_edits() {
+    local -a rules=()
+    edit_deny_rules rules "$(ticket_scenarios_file "$2")" "$1/.ws" "$(ticket_evidence_root "$2")/**" &&
+        ticket_locked "$1" ticket_deny "$1" "${rules[@]}"
+}
+
 ticket_make() {
     local id=$1 branch=$2 ticket=$3 topic=$4 dir=$WS_ROOT/$1 repo fail=0
-    local -a extra=() rules=()
+    local -a extra=()
     local -A kv=()
     shift 4
     ticket_check "$id" "$branch" "" "$@" || return 1
@@ -3298,9 +3308,7 @@ ticket_make() {
         ticket_wt_add "$dir" "$repo" "$branch" || fail=1
     done
     ticket_claude_md "$dir" "$id" "$branch" "${TICKET_OLD[*]}" "${TICKET_REPOS[@]}" || fail=1
-    if ! ticket_read "$dir" kv ||
-        ! edit_deny_rules rules "$(ticket_scenarios_file kv)" "$dir/.ws" "$(ticket_evidence_root kv)/**" ||
-        ! ticket_locked "$dir" ticket_deny "$dir" "${rules[@]}"; then
+    if ! ticket_read "$dir" kv || ! ticket_deny_edits "$dir" kv; then
         fail=1
     fi
     ticket_session "$id" "$dir" || return 1
@@ -4242,6 +4250,10 @@ ws_scenarios() {
         tool=mcp__${WS_JIRA_MCP}__$WS_JIRA_TOOL
         args=(--allowedTools "$tool")
         src="the Jira issue $key"
+    fi
+    if ! ticket_deny_edits "$dir" kv; then
+        echo "ws: ws cannot deny Claude edits of the scenarios of $id, so it writes none" >&2
+        return 1
     fi
     out=$(scenarios_prompt "$key" "$from" "$tool" | (cd -- "$WS_VAULT" &&
         timeout -k 10 600 claude -p --output-format json --tools '' "${args[@]}")) || rc=$?
