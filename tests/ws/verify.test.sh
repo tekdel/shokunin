@@ -28,7 +28,7 @@ ticket_with_scenarios() {
 }
 
 ticket_ready() {
-    ticket_with_scenarios t1 feat/x alpha
+    ticket_with_scenarios t1 feat/x +alpha
     ws up t1 >/dev/null 2>&1 || abort "ws up t1 failed"
     echo 0.3 >"$FX/verify.delay"
 }
@@ -45,7 +45,7 @@ bg_args() {
 test_new_writes_the_deny_rules() {
     local settings vault root rules out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     settings=$WS_ROOT/t1/.claude/settings.json
     vault=$(realpath -m "$WS_VAULT") root=$(realpath -m "$WS_ROOT")
     rules="[\"Edit(/$vault/projects/work/t1/scenarios/t1.md)\",\"Edit(/$root/t1/.ws)\",\"Edit(/$vault/projects/work/t1/evidence/t1/**)\"]"
@@ -54,18 +54,21 @@ test_new_writes_the_deny_rules() {
 
     jq '.permissions.allow = ["Bash(npm test)"] | .model = "opus" | .permissions.deny |= .[:1]' "$settings" >"$FX/s.json"
     cp "$FX/s.json" "$settings"
-    ws new t1 feat/x alpha beta >/dev/null 2>&1
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
     assert_eq "a rerun keeps what someone added and adds each missing rule once" "[\"Bash(npm test)\"] opus $rules" \
         "$(jq -r '"\(.permissions.allow | tojson) \(.model) \(.permissions.deny | tojson)"' "$settings")"
 
-    ws new --topic billing t2 feat/y alpha >/dev/null 2>&1
+    { mkdir -p "$WS_ROOT/t2" && printf 'WS_ID=t2\nWS_BRANCH=feat/y\nWS_REPOS=alpha\nWS_TOPIC=billing\n' >"$WS_ROOT/t2/.ws"; } ||
+        abort "cannot write the .ws of an older ticket"
+    ws new t2 >/dev/null 2>&1
+    assert_eq "a rerun keeps the topic that an older ws wrote" billing "$(ws_value t2 WS_TOPIC)"
     assert_eq "the rules follow the ticket's topic" \
         "[\"Edit(/$vault/projects/work/billing/scenarios/t2.md)\",\"Edit(/$root/t2/.ws)\",\"Edit(/$vault/projects/work/billing/evidence/t2/**)\"]" \
         "$(jq -c .permissions.deny "$WS_ROOT/t2/.claude/settings.json")"
 
     mkdir -p "$WS_ROOT/t3/.claude"
     echo '{"permissions": "ask"}' >"$WS_ROOT/t3/.claude/settings.json"
-    out=$(ws new t3 feat/z alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t3 feat/z +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new exits 1 when settings.json has no deny list it can extend" 1 "$rc"
     assert "it says why" grep -qxF \
         "ws: ~/work/t3/.claude/settings.json does not hold a settings object with a permissions.deny list, so ws adds no deny rules to it" \
@@ -78,14 +81,14 @@ test_new_takes_odd_settings_files() {
     new_fixture_no_ticket
     mkdir -p "$WS_ROOT/t1/.claude" "$WS_ROOT/t2/.claude"
     printf ' \n\t\n' >"$WS_ROOT/t1/.claude/settings.json"
-    ws new t1 feat/x alpha >/dev/null 2>&1 && rc=0 || rc=$?
+    ws new t1 feat/x +alpha >/dev/null 2>&1 && rc=0 || rc=$?
     assert_eq "new exits 0 for a settings.json that holds only whitespace" 0 "$rc"
     assert_eq "it writes the three deny rules into it" 3 \
         "$(jq '.permissions.deny | length' "$WS_ROOT/t1/.claude/settings.json" 2>/dev/null)"
 
     file=$WS_ROOT/t2/.claude/settings.json
     printf '{"model": "opus"}\n{"model": "haiku"}\n' >"$file"
-    out=$(ws new t2 feat/y alpha 2>&1) && rc=0 || rc=$?
+    out=$(ws new t2 feat/y +alpha 2>&1) && rc=0 || rc=$?
     assert_eq "new exits 1 for a settings.json that holds two JSON documents" 1 "$rc"
     assert "it says why" grep -qxF \
         "ws: ~/work/t2/.claude/settings.json holds 2 JSON documents, so ws adds no deny rules to it" <<<"$out"
@@ -98,7 +101,7 @@ test_new_refuses_a_vault_path_that_a_shell_expands() {
         new_fixture_no_ticket
         mv "$WS_VAULT" "$FX/$name"
         export WS_VAULT=$FX/$name
-        out=$(ws new t1 feat/x alpha 2>&1) && rc=0 || rc=$?
+        out=$(ws new t1 feat/x +alpha 2>&1) && rc=0 || rc=$?
         assert_eq "new exits 1 when the vault path holds $name" 1 "$rc"
         assert "it says why" grep -qxF \
             "ws: ~/$name/projects/work/t1/scenarios/t1.md holds a character that Claude Code reads as a pattern or a shell expansion, so ws writes no deny rule for it" \
@@ -110,7 +113,7 @@ test_new_refuses_a_vault_path_that_a_shell_expands() {
 test_scenarios_adds_the_deny_rules_first() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     rm -r "$WS_ROOT/t1/.claude"
     printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
     out=$(ws scenarios t1 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
@@ -121,7 +124,7 @@ test_scenarios_adds_the_deny_rules_first() {
     new_fixture_no_ticket
     mv "$WS_VAULT" "$FX/v[1]"
     export WS_VAULT="$FX/v[1]"
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
     : >"$FX/claude.log"
     out=$(ws scenarios t1 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
@@ -135,7 +138,7 @@ test_scenarios_adds_the_deny_rules_first() {
 test_scenarios_from_a_file() {
     local out rc file
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
     cat >"$FX/claude.result" <<'EOF'
 Here are the scenarios.
@@ -176,8 +179,8 @@ EOF
 test_scenarios_from_jira() {
     local out rc
     new_fixture_no_ticket
-    ws new --ticket KEY-7 t1 feat/x alpha >/dev/null 2>&1
-    out=$(ws scenarios t1 2>&1) && rc=0 || rc=$?
+    ws new KEY-7 feat/x +alpha >/dev/null 2>&1
+    out=$(ws scenarios KEY-7 2>&1) && rc=0 || rc=$?
     assert_eq "scenarios without --from exits 0" 0 "$rc"
     assert "claude -p may call only the read tool of the atlassian MCP server" grep -qxF -- \
         "-p --output-format json --tools  --allowedTools mcp__atlassian__getJiraIssue" "$FX/claude.log"
@@ -185,19 +188,19 @@ test_scenarios_from_jira() {
         "Read the Jira issue KEY-7 with the tool mcp__atlassian__getJiraIssue." "$FX/claude.prompt"
     assert "and to say when it cannot" grep -qF 'print exactly "ws: cannot read KEY-7" and nothing else' "$FX/claude.prompt"
     assert_eq "the file names the issue" "ws scenarios wrote this file on $(date +%F) from the Jira issue KEY-7. ws verify refuses to run once anything else changes it." \
-        "$(sed -n 3p "$(scenarios_of t1)")"
+        "$(sed -n 3p "$(scenarios_of key7-x)")"
 
-    WS_JIRA_MCP=jira WS_JIRA_TOOL=get_issue ws scenarios t1 >/dev/null 2>&1
+    WS_JIRA_MCP=jira WS_JIRA_TOOL=get_issue ws scenarios key7-x >/dev/null 2>&1
     assert "WS_JIRA_MCP and WS_JIRA_TOOL name another server and its read tool" grep -qxF -- \
         "-p --output-format json --tools  --allowedTools mcp__jira__get_issue" "$FX/claude.log"
 
     : >"$FX/claude.log"
-    out=$(WS_JIRA_TOOL="getJiraIssue mcp__atlassian" ws scenarios t1 2>&1) && rc=0 || rc=$?
+    out=$(WS_JIRA_TOOL="getJiraIssue mcp__atlassian" ws scenarios key7-x 2>&1) && rc=0 || rc=$?
     assert_eq "scenarios refuses a tool name that would allow more than one tool" \
         "1 ws: WS_JIRA_MCP and WS_JIRA_TOOL take ASCII letters, digits, dashes, and underscores" "$rc $out"
     refute "it runs no claude -p then" grep -q -- "^-p " "$FX/claude.log"
 
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     : >"$FX/claude.log"
     out=$(ws scenarios t2 2>&1) && rc=0 || rc=$?
     assert_eq "scenarios exits 1 for a ticket with no WS_TICKET and no --from" 1 "$rc"
@@ -209,7 +212,7 @@ test_scenarios_from_jira() {
 test_scenarios_refuses_bad_output() {
     local out rc file sum
     new_fixture_no_ticket
-    ticket_with_scenarios t1 feat/x alpha
+    ticket_with_scenarios t1 feat/x +alpha
     file=$(scenarios_of t1)
     sum=$(ws_value t1 WS_SCENARIOS_SHA256)
     cp "$file" "$FX/before.md"
@@ -242,7 +245,7 @@ test_scenarios_refuses_bad_output() {
 test_scenarios_inside_a_claude_session() {
     local out rc file sum
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
     out=$(CLAUDECODE=1 ws scenarios t1 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
     assert_eq "inside a Claude session, scenarios writes the first scenarios of a ticket" 0 "$rc"
@@ -269,7 +272,7 @@ test_scenarios_and_verify_through_a_vault_path_with_a_backslash() {
     new_fixture_no_ticket
     ln -s "$WS_VAULT" "$FX/v\\x"
     export WS_VAULT=$FX/v\\x
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     printf 'As a user I can undo a save.\n' >"$FX/ticket.txt"
     out=$(ws scenarios t1 --from "$FX/ticket.txt" 2>&1) && rc=0 || rc=$?
     file=$(scenarios_of t1)
@@ -313,7 +316,7 @@ test_verify_refuses_changed_scenarios() {
     out=$(ws verify t1 2>&1) && rc=0 || rc=$?
     assert_eq "verify refuses when the scenarios file is gone" "1 ws: scenarios changed since intake" "$rc $out"
 
-    ws new t2 feat/y beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
     out=$(ws verify t2 2>&1) && rc=0 || rc=$?
     assert_eq "verify refuses a ticket with no scenarios" "1 ws: t2 has no scenarios; run ws scenarios t2 first" "$rc $out"
 }
@@ -321,7 +324,7 @@ test_verify_refuses_changed_scenarios() {
 test_verify_refuses_when_the_env_is_down() {
     local out rc
     new_fixture_no_ticket
-    ticket_with_scenarios t1 feat/x alpha
+    ticket_with_scenarios t1 feat/x +alpha
     out=$(ws verify t1 2>&1) && rc=0 || rc=$?
     assert_eq "verify exits 1 before ws up" 1 "$rc"
     assert_eq "it names ws up" "ws: the env of t1 is down; run ws up t1 first" "$out"
@@ -504,7 +507,7 @@ test_verify_when_claude_bg_fails() {
 test_done() {
     local out rc
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     out=$(ws "done" t1 2>&1) && rc=0 || rc=$?
     assert_eq "done exits 0" 0 "$rc"
     assert_eq "the stage becomes merged" merged "$(ws_value t1 WS_STAGE)"
@@ -529,7 +532,7 @@ test_done() {
 test_done_offers_rm() {
     local out
     new_fixture_no_ticket
-    ws new t1 feat/x alpha >/dev/null 2>&1
+    ws new t1 feat/x +alpha >/dev/null 2>&1
     ws_guard
     touch "$FX/consolidate.fail"
     out=$(script -qec "bash $(printf %q "$WS_TESTS/../../dotfiles/bin/ws") done t1" /dev/null <<<"y" 2>&1 | tr -d '\r')
