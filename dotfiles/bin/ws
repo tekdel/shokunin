@@ -2916,28 +2916,35 @@ ticket_env_running() {
         [[ -n $ids ]]
 }
 
-ticket_env_urls() {
-    local line LC_ALL=C color=$'\e\\[[0-9;]*m'
-    local re='^[[:space:]]+([A-Za-z][A-Za-z0-9 ]*[A-Za-z0-9]):[[:space:]]+(https?://[^[:space:]]+)$'
+ticket_dockyard_out() {
+    local line LC_ALL=C color=$'\e\\[[0-9;]*m' stack_re='\(slug: ([a-z0-9-]+)\)$'
+    local url_re='^[[:space:]]+([A-Za-z][A-Za-z0-9 ]*[A-Za-z0-9]):[[:space:]]+(https?://[^[:space:]]+)$'
     local -a urls=()
+    local -n to=$2
+    to=(["stack"]="")
     while IFS= read -r line; do
         while [[ $line =~ $color ]]; do
             line=${line/"${BASH_REMATCH[0]}"/}
         done
-        [[ $line =~ $re ]] || continue
-        line=${BASH_REMATCH[1],,}
-        urls+=("${line// /-}=${BASH_REMATCH[2]}")
-    done <<<"$1"
-    printf '%s\n' "${urls[*]}"
+        if [[ -z ${to["stack"]} && $line =~ $stack_re ]]; then
+            to["stack"]=${BASH_REMATCH[1]}
+        elif [[ $line =~ $url_re ]]; then
+            line=${BASH_REMATCH[1],,}
+            urls+=("${line// /-}=${BASH_REMATCH[2]}")
+        fi
+    done <"$1"
+    to["urls"]=${urls[*]}
 }
 
 ticket_env_down() {
     local rc=0
     if [[ -n $3 ]]; then
         dockyard down "$2" </dev/null || rc=$?
-        if ((rc)); then
+        if ((rc)) && ticket_env_running "$4"; then
             echo "ws: dockyard down $2 failed with status $rc" >&2
             return "$rc"
+        elif ((rc)); then
+            echo "ws: dockyard down $2 failed with status $rc, and no container of the stack runs" >&2
         fi
     fi
     ticket_update "$1" set WS_SLOT "$3" WS_URLS "" || return 1
@@ -2945,27 +2952,41 @@ ticket_env_down() {
 }
 
 ticket_env_logs() {
-    local path
+    local path panes cmd tail="docker compose -p $3 logs --follow --tail 50"
     local -a have=()
     path=$(ticket_session_path "$1") && [[ $(realpath -m -- "$path") == "$(realpath -m -- "$2")" ]] || return 0
+    if [[ -n ${TMUX_PANE-} &&
+        $(tmux display-message -p -t "$TMUX_PANE" '#{session_name}:#{window_name}' 2>/dev/null) == "$1:env" ]]; then
+        echo "ws runs in the env window, so it leaves the window. Tail the logs with: $tail"
+        return 0
+    fi
     mapfile -t have < <(tmux list-windows -t "=$1:" -F '#{window_name}')
     if [[ " ${have[*]} " != *" env "* ]]; then
         tmux new-window -d -a -t "=$1:{end}" -n env -c "$2" || return 1
+    else
+        read -r panes cmd < <(tmux display-message -p -t "=$1:env" '#{window_panes} #{pane_current_command}')
+        if [[ $panes != 1 || ! " docker bash zsh sh dash fish ksh tcsh ${SHELL##*/} " == *" ${cmd:-sh} "* ]]; then
+            echo "The env window of $1 runs ${cmd:-a program}, so ws leaves it. Tail the logs with: $tail"
+            return 0
+        fi
     fi
-    tmux respawn-window -k -t "=$1:env" -c "$2" &&
-        tmux send-keys -t "=$1:env" "docker compose -p $3 logs --follow --tail 50" Enter
+    tmux respawn-window -k -t "=$1:env" -c "$2" && tmux send-keys -t "=$1:env" "$tail" Enter
 }
 
 ticket_env_wait() {
-    local pair code now deadline
+    local pair code now deadline max
     local -a left=() next=()
     read -r -a left <<<"$1"
     printf -v now '%(%s)T' -1
-    deadline=$((now + WS_UP_TIMEOUT))
+    deadline=$((now + 10#$WS_UP_TIMEOUT))
     while ((${#left[@]})); do
         next=()
         for pair in "${left[@]}"; do
-            code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' -- "${pair#*=}" </dev/null) || true
+            printf -v now '%(%s)T' -1
+            max=$((deadline - now))
+            ((max <= 5)) || max=5
+            ((max >= 1)) || max=1
+            code=$(curl -s -o /dev/null -m "$max" -w '%{http_code}' -- "${pair#*=}" </dev/null) || true
             if [[ $code =~ ^[1-4][0-9][0-9]$ ]]; then
                 echo "${pair%%=*} ${pair#*=} ready"
             else
@@ -3598,9 +3619,9 @@ ws_stage() {
 }
 
 ws_up() {
-    local wait=0 dir real id branch out rc=0 urls pair
+    local wait=0 dir real id branch out rc=0 urls pair why=""
     local -a pairs=()
-    local -A kv=() env=()
+    local -A kv=() env=() said=()
     while (($#)); do
         case $1 in
         --wait)
@@ -3622,7 +3643,7 @@ ws_up() {
         ticket_usage >&2
         return 1
     fi
-    if ! [[ $WS_UP_TIMEOUT =~ ^[0-9]+$ ]]; then
+    if ((wait)) && ! [[ $WS_UP_TIMEOUT =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
         echo "ws: WS_UP_TIMEOUT must be a number of seconds" >&2
         return 1
     fi
@@ -3651,7 +3672,8 @@ ws_up() {
         echo "ws: dockyard stack ${env[stack]} is registered with ${env[other]}, so ws up starts nothing" >&2
         return 1
     fi
-    if [[ -n ${kv[WS_URLS]-} && -n ${env[slot]} ]] && ticket_env_running "${env[project]}"; then
+    if [[ -n ${kv[WS_URLS]-} && -n ${env[slot]} && ${kv[WS_SLOT]-} == "${env[slot]}" ]] &&
+        ticket_env_running "${env[project]}"; then
         urls=${kv[WS_URLS]}
         echo "The env of $id is already up on slot ${env[slot]}."
         read -r -a pairs <<<"$urls"
@@ -3660,27 +3682,31 @@ ws_up() {
         done
     else
         out=$(mktemp) || return 1
-        DOCKYARD_WORKSPACE=$real dockyard up "$branch" </dev/null | tee -- "$out" || rc=${PIPESTATUS[0]}
-        urls=$(ticket_env_urls "$(<"$out")")
+        # dockyard handles Ctrl-C itself, so ws waits for it and then records what is left.
+        trap : INT
+        DOCKYARD_WORKSPACE=$real dockyard up "$branch" </dev/null | tee -i -- "$out" || rc=${PIPESTATUS[0]}
+        trap - INT
+        ticket_dockyard_out "$out" said
         rm -f -- "$out"
+        urls=${said["urls"]}
         ticket_env env "$real" "$branch" || return 1
         if ((rc)); then
-            if [[ -n ${env[slot]} ]] && ticket_env_running "${env[project]}"; then
-                ticket_update "$dir" set WS_SLOT "${env[slot]}" || true
-            else
-                ticket_update "$dir" set WS_SLOT "${env[slot]}" WS_URLS "" || true
-            fi
+            why="dockyard up $branch failed with status $rc"
+        elif [[ ${said["stack"]} != "${env[stack]}" ]]; then
+            why="dockyard named the stack '${said["stack"]}', not ${env[stack]}"
+            rc=1
+        elif [[ -z ${env[slot]} ]]; then
+            why="dockyard up $branch left no record that names $(ws_shown "$dir") as its workspace"
+            rc=1
+        elif [[ -z $urls ]]; then
+            why="dockyard up $branch printed no URLs"
+            rc=1
+        fi
+        if ((rc)); then
+            ticket_update "$dir" set WS_SLOT "${env[slot]}" WS_URLS "" || true
             ticket_claude_refresh "$dir" || true
-            echo "ws: dockyard up $branch failed with status $rc" >&2
+            echo "ws: $why" >&2
             return "$rc"
-        fi
-        if [[ -z ${env[slot]} ]]; then
-            echo "ws: dockyard up $branch left no record that names $(ws_shown "$dir") as its workspace" >&2
-            return 1
-        fi
-        if [[ -z $urls ]]; then
-            echo "ws: dockyard up $branch printed no URLs" >&2
-            return 1
         fi
     fi
     ticket_update "$dir" set WS_SLOT "${env[slot]}" WS_URLS "$urls" || return 1
@@ -3715,7 +3741,7 @@ ws_down() {
     if [[ -n ${env[other]} ]]; then
         echo "ws: dockyard stack ${env[stack]} is registered with ${env[other]}, so ws leaves it" >&2
     fi
-    ticket_env_down "$dir" "$branch" "${env[slot]}" || return
+    ticket_env_down "$dir" "$branch" "${env[slot]}" "${env[project]}" || return
     if [[ -n ${env[slot]} ]]; then
         echo "The env of $id is down and keeps slot ${env[slot]}."
     else
@@ -3790,12 +3816,14 @@ ws_rm() {
         echo "ws: this is the tmux session of $id; switch to another session first" >&2
         return 1
     fi
+    WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
+    ws_env_ok || return 1
     if ticket_read "$dir" kv; then
         ticket_env env "$real" "${kv[WS_BRANCH]-}" || return 1
         if ((purge)) && [[ -n ${env[other]} ]]; then
             echo "ws: dockyard stack ${env[stack]} is registered with ${env[other]}, so --purge leaves it" >&2
         fi
-        if [[ -n ${env[slot]} ]] && ! ticket_env_down "$dir" "${kv[WS_BRANCH]}" "${env[slot]}"; then
+        if [[ -n ${env[slot]} ]] && ! ticket_env_down "$dir" "${kv[WS_BRANCH]}" "${env[slot]}" "${env[project]}"; then
             echo "ws: kept $id" >&2
             return 1
         fi
@@ -3803,8 +3831,6 @@ ws_rm() {
         echo "ws: $REPLY, so ws cannot tell which env to purge" >&2
         return 1
     fi
-    WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
-    ws_env_ok || return 1
     ws_engine_mounts
     d=$(mktemp -d) || return 1
     mapfile -t wts < <(ws_worktrees "$dir")
@@ -3897,6 +3923,9 @@ ws_rm() {
         rm -rf -- "$d"
         echo "ws: kept $id, so ws moved nothing" >&2
         return 1
+    fi
+    if ((purge)) && [[ -n ${env[slot]-} ]]; then
+        ticket_update "$dir" set WS_SLOT "" WS_URLS "" && ticket_claude_refresh "$dir" || true
     fi
     : "${WS_STAMP:=$(date -u +%Y%m%dT%H%M%SZ)}"
     for i in "${!wts[@]}"; do

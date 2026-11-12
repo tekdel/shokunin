@@ -106,7 +106,7 @@ ws_guard() {
         path=$(command -v "$cmd") || continue
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
-    for cmd in claude tmux dockyard doppler; do
+    for cmd in claude tmux dockyard doppler curl; do
         path=$(type -P "$cmd") || abort "ws refused: no $cmd on PATH"
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done

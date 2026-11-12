@@ -52,6 +52,16 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        the slot lock and exit 2
   dockyard.build       create it to make up fail after it records the
                        slot and exit 1
+  dockyard.steal       holds a directory; down then writes it into the
+                       stack's record as the workspace
+  dockyard.down-fail   create it to make down exit 1 and stop nothing
+  dockyard.nuke-fail   create it to make nuke exit 1 and remove nothing
+  dockyard.prefix      holds text that the stack name starts with, as
+                       if dockyard named stacks another way
+  bin/curl             curl shim: answers with the first line of
+                       http/<port> and drops that line while more
+                       follow, or fails as a closed port; logs each URL
+                       to http/calls
   volumes.txt          the named volumes of the stacks, one per line
   bin/doppler          doppler shim: logs its arguments to doppler.log
                        and exits 1, so no call reaches Doppler
@@ -340,6 +350,7 @@ die() {
     exit "${2:-1}"
 }
 slugify() {
+    [[ ! -f $root/dockyard.prefix ]] || printf '%s' "$(<"$root/dockyard.prefix")"
     echo "$1" | sed -E 's|^(feature\|fix\|hotfix\|release)/||' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' |
         sed 's/--*/-/g' | sed 's/^-//;s/-$//'
 }
@@ -410,11 +421,14 @@ up)
     ;;
 down)
     [[ -n $record ]] || die "No stack found for '$branch' (slug: $slug)"
+    [[ ! -f $root/dockyard.down-fail ]] || die "compose down failed"
     containers --arg p "$project" 'map(select(.Labels["com.docker.compose.project"] != $p))'
+    [[ ! -f $root/dockyard.steal ]] || save --arg s "$slug" --arg w "$(<"$root/dockyard.steal")" '.[$s].workspace = $w'
     log "Stack stopped. Volumes preserved. Use 'dockyard up $branch' to restart."
     ;;
 nuke)
     [[ -n $record ]] || die "No stack found for '$branch' (slug: $slug)"
+    [[ ! -f $root/dockyard.nuke-fail ]] || die "compose down failed, so the slot, worktrees, and Doppler config are kept."
     workspace=$(jq -r '.workspace // ""' <<<"$record")
     if [[ -n $workspace && -e $workspace ]]; then
         printf 'nuke %s: workspace exists\n' "$slug" >>"$root/dockyard.log"
@@ -433,6 +447,24 @@ nuke)
 esac
 EOF
 chmod +x "$root/bin/dockyard"
+
+mkdir -p "$root/http"
+cat >"$root/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+http=$(cd "$(dirname "$0")/../http" && pwd)
+url=${*: -1}
+port=${url##*:}
+port=${port%%/*}
+printf '%s\n' "$url" >>"$http/calls"
+if [[ ! -s $http/$port ]]; then
+    printf 000
+    exit 7
+fi
+code=$(head -n 1 "$http/$port")
+(($(wc -l <"$http/$port") < 2)) || sed -i 1d "$http/$port"
+printf '%s' "$code"
+EOF
+chmod +x "$root/bin/curl"
 
 cat >"$root/bin/doppler" <<'EOF'
 #!/usr/bin/env bash
