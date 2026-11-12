@@ -38,9 +38,11 @@ declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=() R_PATH=() R_TEXT=()
 declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
 declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=() WS_CWD_PIDS=()
+declare -ga TICKET_OLD=() TICKET_REPOS=() TICKET_ADD=()
 WS_ENGINE_ERR="ws did not ask the container engines"
 WS_ENGINES_OK=
 WS_MOVED_TO=
+WS_TMUX_PIDS=" "
 
 # shellcheck disable=SC2016
 WS_MOUNTS_JQ='
@@ -412,8 +414,12 @@ ws_dir_ids() {
     find "$1" -mindepth 1 -maxdepth 3 "${skip[@]}" -type d -printf '%D:%i\n' 2>/dev/null
 }
 
+# A tmux server or client holds its working directory but runs nothing
+# there, and the server is the parent of every pane, so ws ignores only
+# the exact pids of WS_TMUX_PIDS, never their children.
 ws_owned() {
     local exempt=$1 pid=$2 i
+    [[ $WS_TMUX_PIDS != *" $pid "* ]] || return 0
     [[ $exempt == *[0-9]* ]] || return 1
     for ((i = 0; i < 64; i++)); do
         [[ $exempt != *" $pid "* ]] || return 0
@@ -2735,11 +2741,11 @@ ticket_wt_add() {
 }
 
 ticket_claude_text() {
-    local id=$1 branch=$2 repo
-    shift 2
+    local id=$1 branch=$2 note=$3 repo
+    shift 3
     echo "# Ticket $id"
     echo
-    echo "ws wrote this file. It imports no other file. \`ws new $id\` writes it again until you edit it."
+    echo "$note"
     echo
     echo "- Each repo directory here is a git worktree on branch \`$branch\`."
     for repo; do
@@ -2750,20 +2756,29 @@ ticket_claude_text() {
 }
 
 ticket_claude_md() {
-    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md tmp
+    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md tmp have note note_2_0_66
     local -a old=()
     read -r -a old <<<"$4"
     shift 4
+    note="ws wrote this file. It imports no other file. \`ws new $id\` writes it again until you edit it."
     if [[ -e $file || -L $file ]]; then
-        [[ -f $file && ! -L $file &&
-            $(cat -- "$file" 2>/dev/null) == "$(ticket_claude_text "$id" "$branch" "${old[@]}")" ]] || return 0
+        [[ -f $file && ! -L $file ]] || return 0
+        have=$(cat -- "$file" 2>/dev/null)
+        note_2_0_66="ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
+        [[ $have == "$(ticket_claude_text "$id" "$branch" "$note" "${old[@]}")" ]] ||
+            [[ $have == "$(ticket_claude_text "$id" "$branch" "$note_2_0_66" "${old[@]}")" ]] || return 0
     fi
     tmp=$(mktemp -- "$dir/.CLAUDE.md.XXXXXX") || return 1
-    if ticket_claude_text "$id" "$branch" "$@" >"$tmp" && mv -T -- "$tmp" "$file"; then
+    if ticket_claude_text "$id" "$branch" "$note" "$@" >"$tmp" && mv -T -- "$tmp" "$file"; then
         return 0
     fi
     rm -f -- "$tmp"
     return 1
+}
+
+# A tmux server keeps the working directory of the client that started it.
+ws_new_session() {
+    (cd / && tmux new-session -d "$@")
 }
 
 ticket_session_path() {
@@ -2786,7 +2801,7 @@ ticket_session() {
         return 1
     fi
     if ! tmux has-session -t "=$id:" 2>/dev/null; then
-        tmux new-session -d -s "$id" -c "$dir" -n shell || return 1
+        ws_new_session -s "$id" -c "$dir" -n shell || return 1
     fi
     mapfile -t have < <(tmux list-windows -t "=$id:" -F '#{window_name}')
     if [[ " ${have[*]} " != *" claude "* ]]; then
@@ -2811,17 +2826,16 @@ ws_switch() {
     fi
 }
 
-ticket_make() {
-    local id=$1 branch=$2 ticket=$3 topic=$4 dir repo why fail=0
-    local -a repos=() add=() old=() extra=()
+ticket_check() {
+    local id=$1 branch=$2 arriving=" $3 " dir=$WS_ROOT/$1 repo why fail=0
     local -A kv=() seen=()
-    shift 4
+    shift 3
+    TICKET_OLD=() TICKET_REPOS=() TICKET_ADD=()
     ticket_check_id "$id" || return 1
     if ! ticket_branch_ok "$branch"; then
         echo "ws: '$branch' is not a branch name ws takes" >&2
         return 1
     fi
-    dir=$WS_ROOT/$id
     if [[ -L $dir || (-e $dir && ! -d $dir) ]]; then
         echo "ws: $(ws_shown "$dir") is not a directory" >&2
         return 1
@@ -2835,9 +2849,9 @@ ticket_make() {
             echo "ws: ticket $id is on branch ${kv[WS_BRANCH]}, not $branch" >&2
             return 1
         fi
-        read -r -a old <<<"${kv[WS_REPOS]-}"
+        read -r -a TICKET_OLD <<<"${kv[WS_REPOS]-}"
     fi
-    for repo in "${old[@]}" "$@"; do
+    for repo in "${TICKET_OLD[@]}" "$@"; do
         if ! ticket_name_ok "$repo"; then
             echo "ws: '$repo' is not a repo name" >&2
             fail=1
@@ -2845,8 +2859,8 @@ ticket_make() {
         fi
         [[ -z ${seen[$repo]+set} ]] || continue
         seen[$repo]=1
-        repos+=("$repo")
-        if ticket_wt_ready "$dir" "$repo" "$branch"; then
+        TICKET_REPOS+=("$repo")
+        if [[ $arriving == *" $repo "* ]] || ticket_wt_ready "$dir" "$repo" "$branch"; then
             continue
         fi
         why=$(ticket_wt_blocker "$dir" "$repo" "$branch")
@@ -2854,24 +2868,31 @@ ticket_make() {
             echo "ws: $why" >&2
             fail=1
         else
-            add+=("$repo")
+            TICKET_ADD+=("$repo")
         fi
     done
     if why=$(ticket_session_foreign "$id" "$dir"); then
         echo "ws: $why" >&2
         fail=1
     fi
-    ((fail == 0)) || return 1
+    ((fail == 0))
+}
+
+ticket_make() {
+    local id=$1 branch=$2 ticket=$3 topic=$4 dir=$WS_ROOT/$1 repo fail=0
+    local -a extra=()
+    shift 4
+    ticket_check "$id" "$branch" "" "$@" || return 1
 
     mkdir -p -- "$dir" || return 1
     [[ -z $ticket ]] || extra+=(WS_TICKET "$ticket")
     [[ -z $topic ]] || extra+=(WS_TOPIC "$topic")
-    ticket_update "$dir" set WS_ID "$id" WS_BRANCH "$branch" WS_REPOS "${repos[*]}" "${extra[@]}" \
+    ticket_update "$dir" set WS_ID "$id" WS_BRANCH "$branch" WS_REPOS "${TICKET_REPOS[*]}" "${extra[@]}" \
         default WS_TOPIC "$id" WS_STAGE spec WS_CREATED "$(date +%F)" || return 1
-    for repo in "${add[@]}"; do
+    for repo in "${TICKET_ADD[@]}"; do
         ticket_wt_add "$dir" "$repo" "$branch" || fail=1
     done
-    ticket_claude_md "$dir" "$id" "$branch" "${old[*]}" "${repos[@]}" || fail=1
+    ticket_claude_md "$dir" "$id" "$branch" "${TICKET_OLD[*]}" "${TICKET_REPOS[@]}" || fail=1
     ticket_session "$id" "$dir" || return 1
     ((fail == 0)) || return 1
     ws_switch "$id"
@@ -2931,7 +2952,7 @@ ticket_adopt_blocker() {
 ws_adopt() {
     local id dir real d why main repo owner branch="" i fail=0
     local -a reals=() commons=() repos=() branches=()
-    local -A kv=() seen=()
+    local -A seen=()
     case ${1-} in
     -h | --help)
         ticket_usage
@@ -3004,12 +3025,7 @@ ws_adopt() {
             break
         fi
     done
-    if [[ -e $WS_ROOT/$id/.ws ]] && ticket_read "$WS_ROOT/$id" kv && [[ -n ${kv[WS_BRANCH]-} && ${kv[WS_BRANCH]} != "$branch" ]]; then
-        echo "ws: ticket $id is on branch ${kv[WS_BRANCH]}, not $branch" >&2
-        fail=1
-    fi
-    if why=$(ticket_session_foreign "$id" "$WS_ROOT/$id"); then
-        echo "ws: $why" >&2
+    if ((${#reals[@]})) && ! ticket_check "$id" "$branch" "${repos[*]}" "${repos[@]}"; then
         fail=1
     fi
     ((fail == 0)) || return 1
@@ -3276,7 +3292,7 @@ pick_open() {
     name=${path##*/}
     name=${name//./_}
     if ! tmux has-session -t "=$name:" 2>/dev/null; then
-        tmux new-session -d -s "$name" -c "$path" || return 1
+        ws_new_session -s "$name" -c "$path" || return 1
         for f in "$path/.tmux-ready" "$HOME/.tmux-ready"; do
             if [[ -f $f ]]; then
                 tmux send-keys -t "=$name:" "source $(printf %q "$f")" C-m
@@ -3389,16 +3405,18 @@ ws_argv_has() {
 }
 
 ticket_wait_idle() {
-    local n k
+    local k pid why
     for ((k = 0; k < 50; k++)); do
-        if ! n=$(ws_cwd_count "$1"); then
-            echo "${n:-ws cannot tell which processes work in $(ws_shown "$1")}"
+        if ! ws_cwd_count "$1" >"$2"; then
+            why=$(<"$2")
+            echo "${why:-ws cannot tell which processes work in $(ws_shown "$1")}"
             return 1
         fi
-        ((n != 0)) || return 0
+        ((${#WS_CWD_PIDS[@]})) || return 0
         sleep 0.1
     done
-    echo "a process still works in $(ws_shown "$1") after its sessions ended"
+    pid=${WS_CWD_PIDS[0]}
+    echo "process $pid ($(ws_comm "$pid" || echo '?')) still works in $(ws_shown "$1")"
     return 1
 }
 
@@ -3468,9 +3486,11 @@ ws_rm() {
     else
         echo "ws: claude agents --json failed, so ws stops no background session" >&2
     fi
+    WS_TMUX_PIDS=" $(tmux display-message -p '#{pid}' 2>/dev/null || true) "
     if spath=$(ticket_session_path "$id") && [[ $(realpath -m -- "$spath") == "$real" ]]; then
         ours=1
         mapfile -t -O "${#mine[@]}" mine < <(tmux list-panes -s -t "=$id:" -F '#{pane_pid}' 2>/dev/null)
+        WS_TMUX_PIDS+="$(tmux list-clients -t "=$id:" -F '#{client_pid}' 2>/dev/null | paste -sd ' ' || true) "
     fi
     if ! ws_cwd_count "$real" "${mine[@]}" >"$d/in-use"; then
         why=$(<"$d/in-use")
@@ -3502,7 +3522,7 @@ ws_rm() {
     elif [[ -n $spath ]]; then
         echo "ws: tmux session $id works in $(ws_shown "$spath"), so ws leaves it" >&2
     fi
-    if ! why=$(ticket_wait_idle "$dir"); then
+    if ! why=$(ticket_wait_idle "$dir" "$d/in-use"); then
         rm -rf -- "$d"
         echo "ws: $why, so ws moved nothing" >&2
         return 1
