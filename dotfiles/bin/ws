@@ -2602,15 +2602,17 @@ command that takes an <id> also takes the Jira key of the ticket.
           not running, it runs none and exits 1.
   down    run dockyard down <branch>, which stops the containers and
           keeps the slot and the volumes, and clear WS_URLS.
-  rm      run ws down, then refuse when a worktree has a KEEP reason of
-          ws prune -h, or when a process works in the ticket outside its
-          tmux session and its background Claude sessions. Then stop
-          those Claude sessions with claude stop, kill the tmux session,
-          and move the worktrees and the ticket files to the trash. When
-          a process outlives them, ws moves nothing. ws prune --restore
-          <id> brings the ticket back. --purge then runs dockyard nuke
-          <branch>, which removes the env's containers, volumes, and
-          slot, and leaves the worktrees to ws.
+  rm      refuse inside the directory or the tmux session of the
+          ticket, which rm moves and kills, and say where to run it.
+          Else run ws down, then refuse when a worktree has a KEEP
+          reason of ws prune -h, or when a process works in the ticket
+          outside its tmux session and its background Claude sessions.
+          Then stop those Claude sessions with claude stop, kill the
+          tmux session, and move the worktrees and the ticket files to
+          the trash. When a process outlives them, ws moves nothing. ws
+          prune --restore <id> brings the ticket back. --purge then
+          runs dockyard nuke <branch>, which removes the env's
+          containers, volumes, and slot, and leaves the worktrees to ws.
   scenarios
           write the holdout scenarios of the ticket to
           $WS_VAULT/projects/work/<topic>/scenarios/<id>.md and record
@@ -2642,7 +2644,9 @@ command that takes an <id> also takes the Jira key of the ticket.
           back to building. A rerun waits on a verify session of the
           ticket that still runs.
   done    set the stage to merged and run $WS_VAULT/bin/vault-consolidate,
-          then offer ws rm. When vault-consolidate fails, keep the
+          then offer ws rm. Inside the directory or the tmux session of
+          the ticket, where ws rm cannot run, done says where to run it
+          instead of offering it. When vault-consolidate fails, keep the
           ticket, because vault-consolidate archives the learnings of a
           merged ticket only while its .ws is in $WS_ROOT.
 
@@ -4400,8 +4404,22 @@ ticket_wait_idle() {
     return 1
 }
 
+# The session comes first, since cd leaves the directory but not the session.
+ticket_rm_blocker() {
+    local id=$1 dir=$2 real here
+    if [[ -n ${TMUX-} && $(tmux display-message -p '#{session_name}' 2>/dev/null) == "$id" ]]; then
+        echo "this is the tmux session of $id, which ws rm kills; run ws rm $id from another session, for example after ws pick to $(ws_shown "$WS_PROJECTS")"
+        return
+    fi
+    real=$(realpath -m -- "$dir")
+    here=$(pwd -P)
+    if [[ $here == "$real" || $here == "$real"/* ]]; then
+        echo "you are in $(ws_shown "$dir"); cd out of it first, then run ws rm $id"
+    fi
+}
+
 ws_rm() {
-    local id dir real here d i why agents rows sid pid parent path spath="" ours=0 fail=0 purge=0 rc=0 trash
+    local id dir real d i why agents rows sid pid parent path spath="" ours=0 fail=0 purge=0 rc=0 trash
     local -a wts=() stop=() mine=() repos=()
     local -A kv=() env=()
     if [[ ${1-} == --purge ]]; then
@@ -4422,13 +4440,9 @@ ws_rm() {
     ticket_target "ws rm <id>" "$1" || return 1
     dir=$REPLY id=${REPLY##*/}
     real=$(realpath -e -- "$dir") || return 1
-    here=$(pwd -P)
-    if [[ $here == "$real" || $here == "$real"/* ]]; then
-        echo "ws: you are in $(ws_shown "$dir"); cd out of it first" >&2
-        return 1
-    fi
-    if [[ -n ${TMUX-} && $(tmux display-message -p '#{session_name}' 2>/dev/null) == "$id" ]]; then
-        echo "ws: this is the tmux session of $id; switch to another session first" >&2
+    why=$(ticket_rm_blocker "$id" "$dir")
+    if [[ -n $why ]]; then
+        echo "ws: $why" >&2
         return 1
     fi
     WS_TRASH=$(realpath -m -- "$WS_TRASH") || return 1
@@ -4943,7 +4957,7 @@ ws_verify() {
 }
 
 ws_done() {
-    local dir id consolidate rc=0
+    local dir id consolidate why rc=0
     local -A kv=()
     case "$#:${1-}" in
     1:-h | 1:--help)
@@ -4977,10 +4991,12 @@ ws_done() {
         echo "ws keeps $id, because vault-consolidate archives the learnings of a merged ticket only while its .ws is in $(ws_shown "$WS_ROOT"). Run ws done $id again once vault-consolidate works." >&2
         return 1
     fi
-    if [[ -t 0 && -t 1 ]] && ws_confirm "Move the worktrees and files of $id to the trash with ws rm $id?"; then
+    why=$(ticket_rm_blocker "$id" "$dir")
+    if [[ -z $why && -t 0 && -t 1 ]] && ws_confirm "Move the worktrees and files of $id to the trash with ws rm $id?"; then
         ws_rm "$id" || return 1
     else
         echo "ws rm $id moves its worktrees and files to the trash."
+        [[ -z $why ]] || echo "${why^}."
     fi
 }
 
