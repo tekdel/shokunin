@@ -539,6 +539,37 @@ test_rm_refuses() {
     assert "the ticket stays" test -f "$WS_ROOT/t1/.ws"
 }
 
+test_rm_refuses_inside_its_session() {
+    local out rc pane why help tmux_env=$TMUX_TMPDIR/tmux-$UID/wsfx,1,0
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    tmux new-session -d -s other -c "$HOME" || abort "cannot make the session other"
+    agents '[{"kind":"background","id":"bg1","state":"working","cwd":"'"$WS_ROOT"'/t1","startedAt":0}]'
+    pane=$(tmux list-panes -s -t "=t1:" -F '#{pane_id}' | head -n 1)
+    why="ws: this is the tmux session of t1, which ws rm kills; run ws rm t1 from another session, for example after ws pick to ~/projects"
+    out=$(cd "$HOME" && TMUX=$tmux_env TMUX_PANE=$pane ws rm t1 2>&1) && rc=0 || rc=$?
+    assert_eq "rm refuses inside the ticket's session" 1 "$rc"
+    assert_eq "it says why and where to run it" "$why" "$out"
+    assert "the session stays" has_session t1
+    assert "the worktree stays" is_worktree "$WS_ROOT/t1/alpha"
+    refute "it asks claude for no session list" grep -qs '^agents' "$FX/claude.log"
+
+    out=$(cd "$WS_ROOT/t1/alpha" && TMUX=$tmux_env TMUX_PANE=$pane ws rm t1 2>&1) && rc=0 || rc=$?
+    assert_eq "rm refuses inside the ticket's session and directory" 1 "$rc"
+    assert_eq "it names the session, which cd does not leave" "$why" "$out"
+
+    out=$(cd "$HOME" && TMUX=$tmux_env TMUX_PANE=$(tmux list-panes -t "=other:" -F '#{pane_id}') ws rm t1 2>&1) && rc=0 || rc=$?
+    assert_eq "rm runs from another session" 0 "$rc"
+    assert "there it asks claude for the session list" grep -qs '^agents' "$FX/claude.log"
+    refute "it kills the ticket's session" has_session t1
+    refute "it removes the ticket" test -e "$WS_ROOT/t1"
+
+    help=$(ws rm --help | tr '\n' ' ' | tr -s ' ')
+    assert "help says rm refuses inside the ticket's directory or session" grep -qF \
+        'rm refuse inside the directory or the tmux session of the ticket, which rm moves and kills, and say where to run it.' \
+        <<<"$help"
+}
+
 test_rm() {
     local out rc
     new_fixture_no_ticket
@@ -1689,6 +1720,7 @@ run_test test_stage
 run_test test_stage_qa_inside_a_claude_session
 run_test test_stage_limit
 run_test test_rm_refuses
+run_test test_rm_refuses_inside_its_session
 run_test test_rm
 run_test test_pick_lists_what_the_sessionizer_listed
 run_test test_pick_order

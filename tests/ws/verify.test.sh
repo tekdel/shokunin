@@ -547,6 +547,86 @@ test_done_offers_rm() {
     refute "the ticket is gone" test -e "$WS_ROOT/t1"
 }
 
+# Runs ws with a TTY in directory $1, inside tmux pane $2 or outside tmux when $2 is empty, answering $3.
+# The output goes to $FX/tty.out.
+ws_tty() {
+    local dir=$1 pane=$2 answer=$3
+    shift 3
+    ws_guard
+    (
+        cd "$dir" || exit 9
+        [[ -z $pane ]] || export TMUX=$TMUX_TMPDIR/tmux-$UID/wsfx,1,0 TMUX_PANE=$pane
+        script -qec "bash $(printf '%q ' "$WS_TESTS/../../dotfiles/bin/ws" "$@")" /dev/null <<<"$answer" >"$FX/tty.out" 2>&1
+    )
+}
+
+pane_of() {
+    tmux list-panes -s -t "=$1:" -F '#{pane_id}' | head -n 1
+}
+
+has_text() {
+    [[ $2 == *"$1"* ]]
+}
+
+test_done_inside_the_ticket() {
+    local out rc pane other in_session in_dir key_session
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    tmux new-session -d -s other -c "$HOME" || abort "cannot make the session other"
+    pane=$(pane_of t1) other=$(pane_of other)
+    in_session=$'ws rm t1 moves its worktrees and files to the trash.\nThis is the tmux session of t1, which ws rm kills; run ws rm t1 from another session, for example after ws pick to ~/projects.'
+    in_dir=$'ws rm t1 moves its worktrees and files to the trash.\nYou are in ~/work/t1; cd out of it first, then run ws rm t1.'
+
+    ws_tty "$HOME" "$pane" y "done" t1 && rc=0 || rc=$?
+    out=$(tr -d '\r' <"$FX/tty.out")
+    assert_eq "done exits 0 inside the ticket's session" 0 "$rc"
+    refute "it does not ask about ws rm there" grep -qF "[y/N]" <<<"$out"
+    assert "it prints the ws rm command, why it cannot run there, and where to run it" has_text "$in_session" "$out"
+    assert "the ticket stays" test -e "$WS_ROOT/t1/.ws"
+    assert "the session stays" tmux has-session -t "=t1:"
+    assert_eq "the stage becomes merged" merged "$(ws_value t1 WS_STAGE)"
+
+    ws_tty "$WS_ROOT/t1/alpha" "$pane" y "done" t1 && rc=0 || rc=$?
+    out=$(tr -d '\r' <"$FX/tty.out")
+    assert_eq "done exits 0 inside the ticket's session and directory" 0 "$rc"
+    assert "it names the session, which cd does not leave" has_text "$in_session" "$out"
+
+    out=$(cd "$HOME" && TMUX=$TMUX_TMPDIR/tmux-$UID/wsfx,1,0 TMUX_PANE=$pane ws "done" t1 2>&1) && rc=0 || rc=$?
+    assert_eq "done without a TTY exits 0 inside the ticket's session" 0 "$rc"
+    assert "it says where to run ws rm too" has_text "$in_session" "$out"
+
+    ws_tty "$WS_ROOT/t1/alpha" "" y "done" t1 && rc=0 || rc=$?
+    out=$(tr -d '\r' <"$FX/tty.out")
+    assert_eq "done exits 0 inside the ticket's directory" 0 "$rc"
+    refute "it does not ask about ws rm there" grep -qF "[y/N]" <<<"$out"
+    assert "it says to cd out of the ticket first" has_text "$in_dir" "$out"
+    assert "so a y on its input removes nothing" test -e "$WS_ROOT/t1/.ws"
+
+    ws_tty "$HOME" "$other" n "done" t1 && rc=0 || rc=$?
+    out=$(tr -d '\r' <"$FX/tty.out")
+    assert "done in another session still asks" \
+        grep -qF "Move the worktrees and files of t1 to the trash with ws rm t1? [y/N]" <<<"$out"
+    ws_tty "$HOME" "$other" y "done" t1 && rc=0 || rc=$?
+    out=$(tr -d '\r' <"$FX/tty.out")
+    assert_eq "yes there exits 0" 0 "$rc"
+    assert "yes there runs ws rm" grep -qxF "Removed ticket t1. ws prune --restore t1 brings it back." <<<"$out"
+
+    ws new KEY-7 sync +alpha >/dev/null 2>&1
+    key_session=$'ws rm key7-sync moves its worktrees and files to the trash.\nThis is the tmux session of key7-sync, which ws rm kills; run ws rm key7-sync from another session, for example after ws pick to ~/projects.'
+    ws_tty "$HOME" "$(pane_of key7-sync)" y "done" KEY-7 && rc=0 || rc=$?
+    out=$(tr -d '\r' <"$FX/tty.out")
+    assert "done by key inside the session prints ws rm with the id" has_text "$key_session" "$out"
+}
+
+test_done_help() {
+    local help
+    new_fixture_no_ticket
+    help=$(ws "done" --help | tr '\n' ' ' | tr -s ' ')
+    assert "help says done tells where to run ws rm when it cannot run here" grep -qF \
+        'Inside the directory or the tmux session of the ticket, where ws rm cannot run, done says where to run it instead of offering it.' \
+        <<<"$help"
+}
+
 run_test test_new_writes_the_deny_rules
 run_test test_new_takes_odd_settings_files
 run_test test_new_refuses_a_vault_path_that_a_shell_expands
@@ -568,4 +648,6 @@ run_test test_verify_scenarios_change_during_the_run
 run_test test_verify_when_claude_bg_fails
 run_test test_done
 run_test test_done_offers_rm
+run_test test_done_inside_the_ticket
+run_test test_done_help
 finish
