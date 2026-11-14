@@ -210,10 +210,182 @@ test_up_refuses_a_bad_profile_pair() {
     ws_config 'WS_UP_PROFILES="beta:portal gamma"'
     ws new t1 feat/x +alpha >/dev/null 2>&1
     out=$(ws up t1 2>&1) && rc=0 || rc=$?
-    assert_eq "up exits 1 on a WS_UP_PROFILES word that is not repo:profile" 1 "$rc"
+    assert_eq "up exits 1 on a WS_UP_PROFILES word that is not name:profile" 1 "$rc"
     assert_eq "it names the word and the config" \
-        "ws: WS_UP_PROFILES in ~/.config/ws/config holds 'gamma', which is not <repo>:<profile>" "$out"
+        "ws: WS_UP_PROFILES in ~/.config/ws/config holds 'gamma', which is not <name>:<profile>" "$out"
     refute "it runs no dockyard call" test -e "$FX/dockyard.log"
+}
+
+services_config() {
+    ws_config 'WS_DEFAULT_REPOS=alpha' 'WS_UP_PROFILES="beta:worker gamma:admin omega:portal omicron:shop"'
+}
+
+test_up_adds_a_service() {
+    local out rc real
+    new_fixture_no_ticket
+    add_repo gamma
+    services_config
+    ws new t1 feat/x +beta >/dev/null 2>&1
+    real=$(realpath -e "$WS_ROOT/t1")
+    answer 4100 200
+    answer 8100 200
+    answer 5101 200
+    answer 5102 200
+    out=$(cd "$WS_ROOT/t1/beta" && ws up --wait --migrate +ome 2>&1) && rc=0 || rc=$?
+    assert_eq "up --wait --migrate +<start of a service> inside the ticket exits 0" 0 "$rc"
+    assert_eq "it adds the profile of the one service that starts with it after the profiles of the repos" \
+        "$real"$'\tup feat/x --profile worker,portal' "$(cat "$FX/dockyard.log")"
+    assert_eq ".ws keeps the full name of the service" omega "$(ws_value t1 WS_SERVICES)"
+    assert "it says the ticket keeps the service and how to drop it" \
+        grep -qxF "Added omega to t1; every ws up starts it until ws up --drop omega." <<<"$out"
+    assert "it records the URL that dockyard prints for the service" \
+        grep -qF "portal-ui=http://localhost:5102" <<<"$(ws_value t1 WS_URLS)"
+    assert "CLAUDE.md lists it" grep -qxF -- "- portal-ui: http://localhost:5102" "$WS_ROOT/t1/CLAUDE.md"
+    assert "--wait asks the URL of the service" grep -qxF "portal-ui http://localhost:5102 ready" <<<"$out"
+    refute "a service that is no repo gets no note on where it runs from" grep -qF "runs from" <<<"$out"
+
+    : >"$FX/dockyard.log"
+    cp "$WS_ROOT/t1/.ws" "$FX/ws.before"
+    out=$(ws up +om t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up +<start of more than one service> exits 1" 1 "$rc"
+    assert_eq "it lists the services" \
+        "ws: no single service of WS_UP_PROFILES in ~/.config/ws/config starts with 'om'; name one of: beta gamma omega omicron" "$out"
+    out=$(ws up +zeta t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up +<unknown service> exits 1" 1 "$rc"
+    assert_eq "it lists the services too" \
+        "ws: no single service of WS_UP_PROFILES in ~/.config/ws/config starts with 'zeta'; name one of: beta gamma omega omicron" "$out"
+    out=$(ws up + t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up with a bare + exits 1" 1 "$rc"
+    refute "neither runs dockyard" test -s "$FX/dockyard.log"
+    assert "neither changes .ws" cmp -s "$FX/ws.before" "$WS_ROOT/t1/.ws"
+
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    WS_UP_PROFILES="omega:portal omega-admin:admin" ws up +omega t2 >/dev/null 2>&1
+    assert_eq "a whole name wins over a longer name that starts with it" omega "$(ws_value t2 WS_SERVICES)"
+    WS_UP_PROFILES="omega:portal omega-admin:admin" ws up +omega- t2 >/dev/null 2>&1
+    assert_eq "the start of one name picks that name" '"omega omega-admin"' "$(ws_value t2 WS_SERVICES)"
+    assert_eq "both profiles go to dockyard" 1 "$(dockyard_calls "up feat/y --profile portal,admin")"
+    out=$(WS_UP_PROFILES='' ws up +omega t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up +<service> without WS_UP_PROFILES exits 1" 1 "$rc"
+    assert_eq "it says there is no service" "ws: 'omega' is no service, since WS_UP_PROFILES in the environment names none" "$out"
+}
+
+test_up_keeps_the_services() {
+    local out rc
+    new_fixture_no_ticket
+    add_repo gamma
+    services_config
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws up +omega t1 >/dev/null 2>&1
+    ws down t1 >/dev/null 2>&1
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up after down exits 0" 0 "$rc"
+    assert_eq "every later up passes the profile of the service, also after down" 2 "$(dockyard_calls "up feat/x --profile portal")"
+    refute "it says nothing about adding it" grep -qF "Added" <<<"$out"
+
+    out=$(ws up --drop om t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --drop <start of a service of the ticket> exits 0" 0 "$rc"
+    assert_eq ".ws drops the service" "" "$(ws_value t1 WS_SERVICES)"
+    assert "it says when the service stops and what dockyard keeps" grep -qxF \
+        "Dropped omega from t1. ws up no longer adds its profile, and a running omega stops at the next ws down. dockyard keeps the profile in its record of the stack until ws rm --purge, so it still prints its URL, which ws up --wait waits for." <<<"$out"
+    assert "a running env stays up" grep -qxF "The env of t1 is already up on slot 1." <<<"$out"
+    assert_eq "dropping runs no dockyard up" 2 "$(dockyard_calls "up feat/x --profile portal")"
+    ws down t1 >/dev/null 2>&1
+    ws up t1 >/dev/null 2>&1
+    assert_eq "up after a drop and down passes no profile" 1 "$(dockyard_calls "up feat/x")"
+
+    out=$(ws up --drop omega t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --drop of a service the ticket does not have exits 1" 1 "$rc"
+    assert_eq "it says the ticket has none" "ws: 'omega' is no service, since ~/work/t1/.ws names none" "$out"
+    ws up +omega +gamma t1 >/dev/null 2>&1
+    out=$(ws up --drop zeta t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up --drop <unknown> exits 1" 1 "$rc"
+    assert_eq "it lists the services of the ticket" \
+        "ws: no single service of ~/work/t1/.ws starts with 'zeta'; name one of: omega gamma" "$out"
+    out=$(ws up --drop 2>&1) && rc=0 || rc=$?
+    assert_eq "--drop needs a name" 1 "$rc"
+
+    ws up --drop omega t1 >/dev/null 2>&1
+    ws down t1 >/dev/null 2>&1
+    WS_UP_PROFILES=beta:worker ws up t1 >"$FX/up.out" 2>&1 && rc=0 || rc=$?
+    assert_eq "up of a ticket whose service WS_UP_PROFILES lost exits 0" 0 "$rc"
+    assert "it says the service starts nothing and how to drop it" grep -qxF \
+        "ws: WS_UP_PROFILES has no service gamma, so ws up starts nothing for it; ws up --drop gamma drops it" "$FX/up.out"
+    ws down t1 >/dev/null 2>&1
+    WS_UP_PROFILES=beta:worker ws up --drop gamma t1 >/dev/null 2>&1
+    assert_eq "a lost service can be dropped" "" "$(ws_value t1 WS_SERVICES)"
+}
+
+test_up_adds_a_service_to_a_running_env() {
+    local out rc real
+    new_fixture_no_ticket
+    add_repo gamma
+    services_config
+    ws new t1 feat/x +beta >/dev/null 2>&1
+    real=$(realpath -e "$WS_ROOT/t1")
+    ws up t1 >/dev/null 2>&1
+    out=$(ws up +omicron t1 2>&1) && rc=0 || rc=$?
+    assert_eq "up +<service> of a running env exits 0" 0 "$rc"
+    refute "it does not call the env already up" grep -qF "already up" <<<"$out"
+    assert_eq "it runs dockyard up again with every profile" \
+        "$real"$'\tup feat/x --profile worker\n'"$real"$'\tup feat/x --profile worker,shop' "$(cat "$FX/dockyard.log")"
+    assert "dockyard restarts the stack" grep -qF "Stack already registered (slot 1)" <<<"$out"
+    assert "it records the URL of the new service" grep -qF "shop-ui=http://localhost:5102" <<<"$(ws_value t1 WS_URLS)"
+    assert "and the URLs it had" grep -qF "web-ui=http://localhost:4100" <<<"$(ws_value t1 WS_URLS)"
+    assert "CLAUDE.md lists the new URL" grep -qxF -- "- shop-ui: http://localhost:5102" "$WS_ROOT/t1/CLAUDE.md"
+    assert_eq "the slot stays" 1 "$(ws_value t1 WS_SLOT)"
+
+    out=$(ws up +omicron t1 2>&1) && rc=0 || rc=$?
+    assert "up +<service the ticket has> of a running env says it is already up" \
+        grep -qxF "The env of t1 is already up on slot 1." <<<"$out"
+    out=$(ws up +beta t1 2>&1) && rc=0 || rc=$?
+    assert "up +<service whose profile already runs> says it is already up" \
+        grep -qxF "The env of t1 is already up on slot 1." <<<"$out"
+    assert_eq ".ws keeps that service too" '"omicron beta"' "$(ws_value t1 WS_SERVICES)"
+    assert_eq "neither runs dockyard up" 2 "$(grep -c . "$FX/dockyard.log")"
+
+    touch "$FX/dockyard.build"
+    out=$(ws up +omega t1 2>&1) && rc=0 || rc=$?
+    assert_eq "a failed up +<service> of a running env exits 1" 1 "$rc"
+    assert_eq ".ws keeps the service" '"omicron beta omega"' "$(ws_value t1 WS_SERVICES)"
+    rm "$FX/dockyard.build"
+    out=$(ws up t1 2>&1) && rc=0 || rc=$?
+    assert_eq "the next up exits 0" 0 "$rc"
+    assert_eq "it runs dockyard up with the profile of the service again" 2 "$(dockyard_calls "up feat/x --profile worker,shop,portal")"
+}
+
+test_up_says_where_a_service_runs_from() {
+    local out
+    new_fixture_no_ticket
+    add_repo gamma
+    services_config
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    out=$(ws up +gamma +omega t1 2>&1)
+    assert_eq "up says once that a repo service of no worktree of the ticket runs from the projects folder" \
+        "gamma runs from ~/projects/gamma, not a ticket worktree" "$(grep -F "runs from" <<<"$out")"
+    ws down t1 >/dev/null 2>&1
+    out=$(ws up t1 2>&1)
+    assert "it says so on each up that runs dockyard" grep -qxF "gamma runs from ~/projects/gamma, not a ticket worktree" <<<"$out"
+    out=$(ws up t1 2>&1)
+    refute "an up that finds the env up says nothing about it" grep -qF "runs from" <<<"$out"
+
+    ws new t2 feat/y +gamma >/dev/null 2>&1
+    out=$(ws up +gamma t2 2>&1)
+    refute "a service that is a repo of the ticket runs from its worktree, so up says nothing" grep -qF "runs from" <<<"$out"
+}
+
+test_up_help_documents_services() {
+    local help
+    new_fixture_no_ticket
+    help=$(ws up --help | tr '\n' ' ' | tr -s ' ')
+    assert "help gives +<service> and --drop" grep -qF "ws up [--wait] [--migrate] [+<service>...] [--drop <service>] [<id>]" <<<"$help"
+    assert "help says a start of the name is enough" grep -qF "The start of a name is enough" <<<"$help"
+    assert "help says .ws keeps the services" grep -qF "WS_SERVICES" <<<"$help"
+    assert "help says a running env gets the new service" grep -qF "also when the env is up" <<<"$help"
+    assert "help says what dockyard keeps of a dropped service" grep -qF "so dockyard still prints its URL, which --wait waits for" <<<"$help"
+    assert "help says where a repo service of no worktree runs from" grep -qF "runs from \$WS_PROJECTS/<name>" <<<"$help"
+    assert "help gives a service that is no repo in the example" grep -qF 'WS_UP_PROFILES="gamma:worker omega:portal"' <<<"$help"
+    assert "help says a service may come from the image of another repo" grep -qF "from the image of another repo" <<<"$help"
 }
 
 exec_calls() {
@@ -357,7 +529,7 @@ test_up_help_documents_migrate() {
     local help
     new_fixture_no_ticket
     help=$(ws up --help | tr '\n' ' ' | tr -s ' ')
-    assert "help gives the --migrate flag" grep -qF "ws up [--wait] [--migrate] [<id>]" <<<"$help"
+    assert "help gives the --migrate flag" grep -qF "ws up [--wait] [--migrate] [+<service>...]" <<<"$help"
     assert "help gives the WS_UP_MIGRATE format" grep -qF 'WS_UP_MIGRATE="alpha=npx prisma migrate deploy; gamma=bin/migrate"' <<<"$help"
     assert "help gives the quoting rule" grep -qF "runs the words with no shell" <<<"$help"
     assert "help says every stack shares the database" grep -qF "Every stack shares one database" <<<"$help"
@@ -1107,6 +1279,11 @@ run_test test_up
 run_test test_up_passes_the_profiles_of_the_ticket_repos
 run_test test_up_names_the_repos_without_a_service
 run_test test_up_refuses_a_bad_profile_pair
+run_test test_up_adds_a_service
+run_test test_up_keeps_the_services
+run_test test_up_adds_a_service_to_a_running_env
+run_test test_up_says_where_a_service_runs_from
+run_test test_up_help_documents_services
 run_test test_up_migrate
 run_test test_up_migrate_stops_at_the_first_failure
 run_test test_up_migrate_without_commands

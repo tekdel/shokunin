@@ -26,7 +26,7 @@ WS_BRANCH_RE='^[A-Za-z0-9][A-Za-z0-9._/+@-]*$'
 WS_KEY_RE='^[A-Za-z][A-Za-z0-9]*-[0-9]+$'
 WS_ID_MAX=48
 WS_ID_FILLER=" a an and at by for from in of on the to with "
-WS_KEYS="WS_ID WS_TICKET WS_BRANCH WS_REPOS WS_TOPIC WS_STAGE WS_SCENARIOS_SHA256 WS_SLOT WS_URLS WS_CREATED"
+WS_KEYS="WS_ID WS_TICKET WS_BRANCH WS_REPOS WS_SERVICES WS_TOPIC WS_STAGE WS_SCENARIOS_SHA256 WS_SLOT WS_URLS WS_CREATED"
 WS_STAGES="spec planned building verifying qa review merged"
 WS_OPERATOR_STAGES="planned qa review"
 WS_BUILDING_LIMIT=5
@@ -47,15 +47,15 @@ declare -gA WS_COMMANDS=(
     [scenarios]="write the holdout scenarios of a ticket from its Jira issue or a file"
     [stage]="set the stage of a ticket"
     [status]="refresh the status cache, or print how many sessions wait on you"
-    [up]="start the dockyard env of a ticket and record its slot and URLs"
+    [up]="start the dockyard env of a ticket, with any +<service>, and record its slot and URLs"
     [verify]="run the holdout scenarios of a ticket against its env in a background Claude session"
 )
-declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_BAD=() P_STATES=() WS_FETCHED=()
+declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_BAD=() P_STATES=() WS_FETCHED=() UP_PROFILES=()
 declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=() R_PATH=() R_TEXT=()
 declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
 declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=() WS_CWD_PIDS=()
-declare -ga TICKET_OLD=() TICKET_REPOS=() TICKET_ADD=()
+declare -ga TICKET_OLD=() TICKET_REPOS=() TICKET_ADD=() UP_NAMES=()
 TICKET_KEY=
 WS_ENGINE_ERR="ws did not ask the container engines"
 WS_ENGINES_OK=
@@ -2508,7 +2508,7 @@ usage: ws new [--only] <key|name> [<words>|<branch>] [+<repo>...]
        ws pick [--print]
        ws stage [<id>] <stage>
        ws status [--refresh | --waiting]
-       ws up [--wait] [--migrate] [<id>]
+       ws up [--wait] [--migrate] [+<service>...] [--drop <service>] [<id>]
        ws down [<id>]
        ws rm [--purge] <id>
        ws scenarios [<id>] [--from <file>] [--replace]
@@ -2580,19 +2580,32 @@ command that takes an <id> also takes the Jira key of the ticket.
           the env lines of CLAUDE.md, and tail the container logs in the
           env pane. When WS_UP_PROFILES maps repos of the ticket to
           compose profiles, up adds --profile with each of those
-          profiles once. When WS_DEFAULT_REPOS or WS_UP_PROFILES is set,
-          up names each repo of the ticket that is in neither, since
-          dockyard starts no service for it. up replaces the env pane
-          only when it shows the logs of an earlier up or an idle shell;
-          else it prints the command that tails them. A session made by
-          an older ws has an env window instead, and up uses it the same
-          way. When the session has neither, up splits the shell window
-          to make the env pane, and makes the shell window when it is
-          missing. When .ws has URLs and a container of the stack runs,
-          up says the env is already up and skips dockyard, so a repo
-          added since starts after ws down and ws up. A failed dockyard
-          up makes ws up exit with its status. --wait then asks each URL
-          until it answers with an HTTP status below 500, for at most
+          profiles once. +<service> adds a service, a name of
+          WS_UP_PROFILES that need not be a repo of the ticket. The
+          start of a name is enough, and a name that fits no service or
+          more than one fails before up starts anything. .ws keeps the
+          services as WS_SERVICES, so every later up, also after ws
+          down, adds their profiles after those of the repos. --drop
+          <service> takes one out, and a running one stops at the next
+          ws down. dockyard keeps its profile in the record of the stack
+          until ws rm --purge, so dockyard still prints its URL, which
+          --wait waits for. When a new service brings a profile, up runs
+          dockyard up again with every profile, also when the env is up.
+          A service that is a repo in $WS_PROJECTS but not of the ticket
+          runs from $WS_PROJECTS/<name>, and up says so. When
+          WS_DEFAULT_REPOS or WS_UP_PROFILES is set, up names each repo
+          of the ticket that is in neither, since dockyard starts no
+          service for it. up replaces the env pane only when it shows
+          the logs of an earlier up or an idle shell; else it prints the
+          command that tails them. A session made by an older ws has an
+          env window instead, and up uses it the same way. When the
+          session has neither, up splits the shell window to make the
+          env pane, and makes the shell window when it is missing. When
+          .ws has URLs and a container of the stack runs, up says the
+          env is already up and skips dockyard, so a repo added since
+          starts after ws down and ws up. A failed dockyard up makes ws
+          up exit with its status. --wait then asks each URL until it
+          answers with an HTTP status below 500, for at most
           WS_UP_TIMEOUT seconds, 300 by default. --migrate then runs the
           command that WS_UP_MIGRATE gives each repo of the ticket, in
           repo order, also when the env was already up, with docker
@@ -2660,14 +2673,18 @@ ${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines and
 # comments that ws parses and never runs:
 
   WS_DEFAULT_REPOS="alpha beta"
-  WS_UP_PROFILES="gamma:portal"
+  WS_UP_PROFILES="gamma:worker omega:portal"
   WS_UP_MIGRATE="alpha=npx prisma migrate deploy; gamma=bin/migrate"
 
 WS_DEFAULT_REPOS lists the default repos of ws new, the repos whose
 services dockyard starts without a profile. An empty WS_DEFAULT_REPOS
 in the environment turns the defaults off. Without defaults, ws new
-needs at least one +<repo>. WS_UP_PROFILES holds <repo>:<profile> pairs
-for ws up.
+needs at least one +<repo>. WS_UP_PROFILES holds <name>:<profile>
+pairs for ws up. A name that is a repo of the ticket gives up its
+profile on every run. Any name is a service for ws up +<name>, also one
+that is no repo, such as omega above, which dockyard builds from the
+image of another repo. ws new refuses a +<name> that is a service and
+no repo, and says to run ws up +<name>.
 
 WS_UP_MIGRATE holds <repo>=<command> entries for ws up --migrate,
 separated by semicolons. ws splits each command at spaces and runs the
@@ -3575,6 +3592,18 @@ ticket_find_branch() {
     return 1
 }
 
+# Only ws up starts a service, so ws new refuses a +<name> that is a service and no repo.
+ticket_not_a_service() {
+    local from
+    ticket_up_profiles || return 1
+    from=$REPLY
+    if ! ticket_service "$2" "$from" "${UP_NAMES[@]}" 2>/dev/null || ticket_repo_ok "$REPLY"; then
+        return 0
+    fi
+    echo "ws: $REPLY is a service of $from, not a repo in $(ws_shown "$WS_PROJECTS"); leave it out of ws new and run ws up $1 +$REPLY" >&2
+    return 1
+}
+
 ws_new() {
     local only=0 unknown=0 id key branch="" arg
     local -a args=() plus=() repos=() old=() extra=() cmd=(ws new)
@@ -3619,6 +3648,9 @@ ws_new() {
         echo "ws: --only takes at least one repo" >&2
         return 1
     fi
+    for arg in "${plus[@]}"; do
+        ticket_repo_ok "$arg" || ticket_not_a_service "${args[0]}" "$arg" || return 1
+    done
     ticket_lookup "${args[0]}" || return 1
     id=$REPLY key=$TICKET_KEY
     if [[ -n $id && (-e $WS_ROOT/$id/.ws || -L $WS_ROOT/$id/.ws) ]]; then
@@ -4142,36 +4174,85 @@ ws_stage() {
     fi
 }
 
-ticket_up_args() {
-    local repo pair profile list from
-    local -a repos=() defaults=() pairs=() profiles=()
-    local -A mapped=() known=() seen=()
-    local -n tua=$2
-    tua=()
-    ws_setting WS_DEFAULT_REPOS defaults && ws_setting WS_UP_PROFILES pairs || return 1
-    from=$REPLY
+# UP_PROFILES gets the profiles of each name of WS_UP_PROFILES, a repo or a service, and UP_NAMES the names in order.
+ticket_up_profiles() {
+    local pair from
+    local -a pairs=()
+    UP_PROFILES=() UP_NAMES=()
+    ws_setting WS_UP_PROFILES pairs || return 1
+    from=${REPLY:-WS_UP_PROFILES}
     for pair in "${pairs[@]}"; do
         if [[ ! $pair =~ ^([A-Za-z0-9][A-Za-z0-9._-]*):([A-Za-z0-9][A-Za-z0-9._-]*)$ ]]; then
-            echo "ws: $from holds '$pair', which is not <repo>:<profile>" >&2
+            echo "ws: $from holds '$pair', which is not <name>:<profile>" >&2
             return 1
         fi
-        mapped[${BASH_REMATCH[1]}]+=" ${BASH_REMATCH[2]}"
+        [[ -n ${UP_PROFILES[${BASH_REMATCH[1]}]+set} ]] || UP_NAMES+=("${BASH_REMATCH[1]}")
+        UP_PROFILES[${BASH_REMATCH[1]}]+=" ${BASH_REMATCH[2]}"
     done
-    for repo in "${defaults[@]}"; do
-        known[$repo]=1
+    REPLY=$from
+}
+
+# REPLY is the UP_PROFILES of the repos in $1 and then of the services in $2, each once, joined by commas.
+ticket_profiles() {
+    local name profile
+    local -a names=()
+    local -A seen=()
+    REPLY=
+    read -r -a names <<<"$1 $2"
+    for name in "${names[@]}"; do
+        for profile in ${UP_PROFILES[$name]-}; do
+            [[ -z ${seen[$profile]+set} ]] || continue
+            seen[$profile]=1
+            REPLY+=${REPLY:+,}$profile
+        done
+    done
+}
+
+# REPLY is the name in $3... that is $1, else the one that starts with $1.
+ticket_service() {
+    local want=$1 from=$2 name
+    local -a hits=()
+    shift 2
+    for name; do
+        if [[ $name == "$want" ]]; then
+            REPLY=$name
+            return 0
+        fi
+        [[ -z $want || $name != "$want"* ]] || hits+=("$name")
+    done
+    if ((${#hits[@]} == 1)); then
+        REPLY=${hits[0]}
+        return 0
+    elif (($#)); then
+        echo "ws: no single service of $from starts with '$want'; name one of: $*" >&2
+    else
+        echo "ws: '$want' is no service, since $from names none" >&2
+    fi
+    return 1
+}
+
+ticket_up_notes() {
+    local name
+    local -a defaults=() repos=() services=()
+    local -A known=()
+    ws_setting WS_DEFAULT_REPOS defaults || return 1
+    for name in "${defaults[@]}"; do
+        known[$name]=1
     done
     read -r -a repos <<<"$1"
-    for repo in "${repos[@]}"; do
-        for profile in ${mapped[$repo]-}; do
-            [[ -n ${seen[$profile]+set} ]] || profiles+=("$profile")
-            seen[$profile]=1
-        done
-        if ((${#defaults[@]} + ${#pairs[@]})) && [[ -z ${known[$repo]+set} && -z ${mapped[$repo]+set} ]]; then
-            echo "$repo has no dockyard service, so ws up does not start it"
+    read -r -a services <<<"$2"
+    for name in "${repos[@]}"; do
+        if ((${#defaults[@]} + ${#UP_NAMES[@]})) && [[ -z ${known[$name]+set} && -z ${UP_PROFILES[$name]+set} ]]; then
+            echo "$name has no dockyard service, so ws up does not start it"
         fi
     done
-    list=${profiles[*]}
-    [[ -z $list ]] || tua+=(--profile "${list// /,}")
+    for name in "${services[@]}"; do
+        if [[ -z ${UP_PROFILES[$name]+set} ]]; then
+            echo "ws: WS_UP_PROFILES has no service $name, so ws up starts nothing for it; ws up --drop $name drops it" >&2
+        elif [[ " ${repos[*]} " != *" $name "* ]] && ticket_repo_ok "$name"; then
+            echo "$name runs from $(ws_shown "$WS_PROJECTS/$name"), not a ticket worktree"
+        fi
+    done
 }
 
 ticket_migrations() {
@@ -4234,13 +4315,21 @@ ticket_migrate() {
 }
 
 ws_up() {
-    local wait=0 migrate=0 dir real id branch out rc=0 urls pair why=""
-    local -a pairs=() ids=() up_args=() migrations=()
+    local wait=0 migrate=0 dir real id branch out rc=0 urls pair why="" name from list before after profile
+    local -a pairs=() ids=() up_args=() migrations=() plus=() drop=() old=() services=() clear=()
     local -A kv=() env=() said=()
     while (($#)); do
         case $1 in
         --wait) wait=1 ;;
         --migrate) migrate=1 ;;
+        --drop)
+            if (($# < 2)); then
+                ticket_usage >&2
+                return 1
+            fi
+            drop+=("$2")
+            shift
+            ;;
         -h | --help)
             ticket_usage
             return 0
@@ -4249,6 +4338,7 @@ ws_up() {
             ticket_usage >&2
             return 1
             ;;
+        +*) plus+=("${1#+}") ;;
         *) ids+=("$1") ;;
         esac
         shift
@@ -4281,11 +4371,43 @@ ws_up() {
         echo "ws: $(ws_shown "$dir/.ws") has no WS_BRANCH" >&2
         return 1
     fi
+    ticket_up_profiles || return 1
+    from=$REPLY
+    read -r -a old <<<"${kv[WS_SERVICES]-}"
+    list=" ${old[*]} "
+    for name in "${plus[@]}"; do
+        ticket_service "$name" "$from" "${UP_NAMES[@]}" || return 1
+        [[ $list == *" $REPLY "* ]] || list+="$REPLY "
+    done
+    for name in "${drop[@]}"; do
+        ticket_service "$name" "$(ws_shown "$dir/.ws")" "${old[@]}" || return 1
+        list=${list/" $REPLY "/ }
+    done
+    read -r -a services <<<"$list"
+    ticket_profiles "${kv[WS_REPOS]-}" "${old[*]}"
+    before=$REPLY
+    ticket_profiles "${kv[WS_REPOS]-}" "${services[*]}"
+    after=$REPLY
     real=$(realpath -e -- "$dir") || return 1
     ticket_env env "$real" "$branch" || return 1
     if [[ -n ${env[other]} ]]; then
         echo "ws: dockyard stack ${env[stack]} is registered with ${env[other]}, so ws up starts nothing" >&2
         return 1
+    fi
+    if [[ ${services[*]} != "${old[*]}" ]]; then
+        # Without the URLs, ws up runs dockyard up again even while the env runs, also after a crash.
+        for profile in ${after//,/ }; do
+            [[ ,$before, == *,"$profile",* ]] || clear=(WS_URLS "")
+        done
+        ticket_update "$dir" set WS_SERVICES "${services[*]}" "${clear[@]}" || return 1
+        ((${#clear[@]} == 0)) || kv[WS_URLS]=
+        for name in "${services[@]}"; do
+            [[ " ${old[*]} " == *" $name "* ]] || echo "Added $name to $id; every ws up starts it until ws up --drop $name."
+        done
+        for name in "${old[@]}"; do
+            [[ " ${services[*]} " == *" $name "* ]] ||
+                echo "Dropped $name from $id. ws up no longer adds its profile, and a running $name stops at the next ws down. dockyard keeps the profile in its record of the stack until ws rm --purge, so it still prints its URL, which ws up --wait waits for."
+        done
     fi
     if [[ -n ${kv[WS_URLS]-} && -n ${env[slot]} && ${kv[WS_SLOT]-} == "${env[slot]}" ]] &&
         ticket_env_running "${env[project]}"; then
@@ -4296,7 +4418,8 @@ ws_up() {
             echo "  ${pair%%=*} ${pair#*=}"
         done
     else
-        ticket_up_args "${kv[WS_REPOS]-}" up_args || return 1
+        ticket_up_notes "${kv[WS_REPOS]-}" "${services[*]}" || return 1
+        [[ -z $after ]] || up_args=(--profile "$after")
         out=$(mktemp) || return 1
         # dockyard handles Ctrl-C itself, so ws waits for it and then records what is left.
         trap : INT
