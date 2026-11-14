@@ -74,7 +74,10 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        ~/.dockyard/slots.json as dockyard does, start
                        and stop containers in docker.json that mount
                        each repo of DOCKYARD_WORKSPACE, and print the
-                       URL lines of dockyard up
+                       URL lines of dockyard up; up adds the profiles
+                       of --profile to the record, which only grows,
+                       and prints a <Profile> UI URL for each profile
+                       of the record
   dockyard.log         one line per dockyard call: DOCKYARD_WORKSPACE,
                        a tab, and the arguments; nuke adds a line that
                        says whether the workspace still exists
@@ -470,8 +473,9 @@ save() {
 containers() {
     jq "$@" "$root/docker.json" >"$root/docker.json.tmp" && mv "$root/docker.json.tmp" "$root/docker.json"
 }
-cmd=${1-} branch=${2-}
+cmd=${1-} branch=${2-} profiles=""
 [[ -n $branch ]] || die "Usage: dockyard $cmd <branch>"
+[[ ${3-} != --profile ]] || profiles=${4-}
 slug=$(slugify "$branch")
 [[ -n $slug ]] || die "Branch '$branch' gives an empty stack name."
 project=dockyard-$slug
@@ -511,6 +515,7 @@ up)
         log "Allocated slot $slot — web-ui:$((4000 + slot * 100)) gateway:$((8000 + slot * 100))"
         created=1
     fi
+    save --arg s "$slug" --arg p "$profiles" '.[$s].profiles |= . + (($p | split(",")) - .)'
     if [[ -f $root/dockyard.build ]]; then
         echo -e "\033[0;31m[dockyard]\033[0m Build failed. Last 30 lines:" >&2
         [[ -z $created ]] ||
@@ -538,6 +543,11 @@ up)
     echo -e "  \033[0;34mWeb UI:\033[0m           $web"
     echo -e "  \033[0;34mAPI Gateway:\033[0m      http://localhost:$((8000 + slot * 100))"
     echo -e "  \033[0;34mPortal:\033[0m           (internal, routed via gateway)"
+    port=$((5000 + slot * 100))
+    for profile in $(jq -r --arg s "$slug" '.[$s].profiles[]' "$slots"); do
+        port=$((port + 1))
+        echo -e "  \033[0;34m${profile^} UI:\033[0m        http://localhost:$port"
+    done
     ;;
 down)
     [[ -n $record ]] || die "No stack found for '$branch' (slug: $slug)"

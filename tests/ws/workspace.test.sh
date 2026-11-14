@@ -110,7 +110,7 @@ test_new() {
     assert_eq "a new branch starts at origin's default branch" "$main" "$(head_of "$WS_ROOT/t1/alpha")"
     refute "a new branch has no upstream" git -C "$WS_ROOT/t1/alpha" rev-parse -q --verify '@{upstream}'
     assert_eq ".ws holds every key of the ticket layout in order" \
-        "$(printf '%s\n' WS_ID=t1 WS_TICKET= WS_BRANCH=feat/x 'WS_REPOS="alpha beta"' WS_TOPIC=t1 WS_STAGE=spec \
+        "$(printf '%s\n' WS_ID=t1 WS_TICKET= WS_BRANCH=feat/x 'WS_REPOS="alpha beta"' WS_SERVICES= WS_TOPIC=t1 WS_STAGE=spec \
             WS_SCENARIOS_SHA256= WS_SLOT= WS_URLS= "WS_CREATED=$(date +%F)")" "$(cat "$WS_ROOT/t1/.ws")"
     assert_eq "a shell that sources .ws reads the same values" "t1|feat/x|alpha beta|spec" \
         "$(env -i bash -c 'source "$1" && echo "$WS_ID|$WS_BRANCH|$WS_REPOS|$WS_STAGE"' _ "$WS_ROOT/t1/.ws")"
@@ -1422,6 +1422,33 @@ test_new_takes_repos_with_a_plus() {
         <<<"$(ws -h)"
 }
 
+test_new_points_a_service_to_up() {
+    local out rc
+    new_fixture_no_ticket
+    add_repo gamma
+    ws_config 'WS_UP_PROFILES="gamma:admin omega:portal"'
+    out=$(ws new t1 feat/x +alpha +omega 2>&1) && rc=0 || rc=$?
+    assert_eq "new +<service that is no repo> exits 1" 1 "$rc"
+    assert_eq "it says to start the service with ws up" \
+        "ws: omega is a service of WS_UP_PROFILES in ~/.config/ws/config, not a repo in ~/projects; leave it out of ws new and run ws up t1 +omega" "$out"
+    refute "it makes no ticket dir" compgen -G "$WS_ROOT/*"
+    out=$(ws new ABC-12 +ome 2>&1) && rc=0 || rc=$?
+    assert_eq "the start of a service name and a key get the hint with the full name and the key" \
+        "1 ws: omega is a service of WS_UP_PROFILES in ~/.config/ws/config, not a repo in ~/projects; leave it out of ws new and run ws up ABC-12 +omega" \
+        "$rc $out"
+    out=$(ws new t1 feat/x +gam 2>&1) && rc=0 || rc=$?
+    assert_eq "the start of a repo that is also a service is no service hint" "1 ws: ~/projects/gam is not a git checkout" "$rc $out"
+    out=$(ws new t1 feat/x +zeta 2>&1) && rc=0 || rc=$?
+    assert_eq "a name that is neither keeps the checkout error" "1 ws: ~/projects/zeta is not a git checkout" "$rc $out"
+    out=$(ws new t1 feat/x +gamma 2>&1) && rc=0 || rc=$?
+    assert_eq "new takes a service that is a repo as a repo" 0 "$rc"
+    assert "it makes its worktree" is_worktree "$WS_ROOT/t1/gamma"
+    out=$(ws new t1 +omega 2>&1) && rc=0 || rc=$?
+    assert_eq "a rerun gets the hint too" \
+        "1 ws: omega is a service of WS_UP_PROFILES in ~/.config/ws/config, not a repo in ~/projects; leave it out of ws new and run ws up t1 +omega" \
+        "$rc $out"
+}
+
 test_new_rerun_by_key() {
     local out rc
     new_fixture_no_ticket
@@ -1751,6 +1778,7 @@ run_test test_new_by_key_refuses_no_branch
 run_test test_new_words_and_names
 run_test test_new_derives_readable_ids
 run_test test_new_takes_repos_with_a_plus
+run_test test_new_points_a_service_to_up
 run_test test_new_rerun_by_key
 run_test test_commands_take_a_key
 run_test test_adopt_by_key
