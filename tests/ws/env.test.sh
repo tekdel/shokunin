@@ -536,6 +536,119 @@ test_up_help_documents_migrate() {
     assert "help recommends a command that never resets" grep -qF "never resets the database, such as prisma migrate deploy" <<<"$help"
 }
 
+set_created() {
+    { jq --arg s "$1" --arg c "$2" 'map(if .Labels["com.docker.compose.service"] == $s then .Created = $c else . end)' \
+        "$FX/docker.json" >"$FX/docker.json.new" && mv "$FX/docker.json.new" "$FX/docker.json"; } ||
+        abort "cannot set the creation time of the $1 container"
+}
+
+test_exec() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    ws up t1 >/dev/null 2>&1
+    : >"$FX/docker.log"
+    out=$(ws exec t1 alpha npx jest -w 4 2>&1) && rc=0 || rc=$?
+    assert_eq "exec <id> <repo> <command> exits 0 when the command does" 0 "$rc"
+    assert_eq "it runs the command in the container of the repo with docker compose exec -T" \
+        "compose -p dockyard-feat-x exec -T alpha npx jest -w 4" "$(exec_calls)"
+    assert "it prints what the command prints" grep -qxF "alpha | [npx] [jest] [-w] [4]" <<<"$out"
+
+    : >"$FX/docker.log"
+    out=$(cd "$WS_ROOT/t1/beta" && ws exec alpha sh -c 'echo "a b" | wc -w' 2>&1) && rc=0 || rc=$?
+    assert_eq "inside the ticket the id is optional" 0 "$rc"
+    assert "it passes each word as one argument and runs no shell of its own" \
+        grep -qxF 'alpha | [sh] [-c] [echo "a b" | wc -w]' <<<"$out"
+
+    out=$(ws exec t1 redis redis-cli ping 2>&1) && rc=0 || rc=$?
+    assert "it runs in any service of the stack, also one that is no repo" grep -qxF "redis | [redis-cli] [ping]" <<<"$out"
+
+    echo "beta 5" >"$FX/docker.exec-exit"
+    out=$(ws exec t1 beta npx tsc --noEmit 2>&1) && rc=0 || rc=$?
+    assert_eq "it exits with the status of a command that fails" 5 "$rc"
+
+    out=$(cd "$HOME" && ws exec alpha true 2>&1) && rc=0 || rc=$?
+    assert_eq "outside a ticket, exec without an id exits 1" 1 "$rc"
+    assert "it says to name the ticket" grep -qF "run ws exec <id> <repo> <command>" <<<"$out"
+    out=$(ws exec t1 2>&1) && rc=0 || rc=$?
+    assert_eq "exec without a command exits 1" 1 "$rc"
+}
+
+test_exec_takes_a_key() {
+    local out rc
+    new_fixture_no_ticket
+    ws new ABC-12 sync +alpha >/dev/null 2>&1
+    ws up abc12-sync >/dev/null 2>&1
+    : >"$FX/docker.log"
+    out=$(cd "$HOME" && ws exec ABC-12 alpha npm ci 2>&1) && rc=0 || rc=$?
+    assert_eq "exec takes the Jira key of the ticket" 0 "$rc"
+    assert_eq "it runs in the stack of that ticket" "compose -p dockyard-feat-abc-12-sync exec -T alpha npm ci" "$(exec_calls)"
+    out=$(cd "$HOME" && ws exec XYZ-9 alpha true 2>&1) && rc=0 || rc=$?
+    assert_eq "a key that no ticket has exits 1" 1 "$rc"
+    assert "it says so" grep -qxF "ws: no ticket has the key XYZ-9" <<<"$out"
+}
+
+test_exec_needs_the_container() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    out=$(ws exec t1 alpha npx jest -w 4 2>&1) && rc=0 || rc=$?
+    assert_eq "exec before ws up exits 1" 1 "$rc"
+    assert_eq "it says to run ws up first" "ws: the env of t1 is down; run ws up first" "$out"
+    ws up t1 >/dev/null 2>&1
+    ws down t1 >/dev/null 2>&1
+    out=$(ws exec t1 alpha true 2>&1) && rc=0 || rc=$?
+    assert_eq "exec after ws down exits 1 and says to run ws up first" "1 ws: the env of t1 is down; run ws up first" "$rc $out"
+
+    ws up t1 >/dev/null 2>&1
+    out=$(ws exec t1 gamma true 2>&1) && rc=0 || rc=$?
+    assert_eq "exec of a name that is no service of the stack exits 1" 1 "$rc"
+    assert_eq "it names the services" "ws: gamma is not a service of dockyard-feat-x, whose services are: alpha redis" "$out"
+
+    { jq 'map(if .Labels["com.docker.compose.service"] == "alpha" then .State = "exited" else . end)' "$FX/docker.json" \
+        >"$FX/docker.json.new" && mv "$FX/docker.json.new" "$FX/docker.json"; } || abort "cannot stop the alpha container"
+    : >"$FX/docker.log"
+    out=$(ws exec t1 alpha true 2>&1) && rc=0 || rc=$?
+    assert_eq "exec when the container of the service is not running exits 1" 1 "$rc"
+    assert_eq "it says so" "ws: the alpha container of dockyard-feat-x is not running; ws up starts it" "$out"
+    refute "it runs nothing" exec_calls
+}
+
+test_exec_warns_about_a_stale_lockfile() {
+    local out rc
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    ws up t1 >/dev/null 2>&1
+    touch "$WS_ROOT/t1/alpha/package-lock.json" "$WS_ROOT/t1/beta/yarn.lock"
+    out=$(ws exec t1 alpha true 2>&1) && rc=0 || rc=$?
+    assert_eq "exec says nothing more when the container has no creation time" "alpha | [true]" "$out"
+
+    set_created alpha "$(date -u -d '-1 hour' +%FT%T.%NZ)"
+    set_created beta "$(date -u -d '-1 hour' +%FT%T.%NZ)"
+    out=$(ws exec t1 alpha true 2>&1) && rc=0 || rc=$?
+    assert_eq "exec still runs the command when a lockfile changed after the container was made" 0 "$rc"
+    assert "it warns that node_modules may be stale and says how to update it" grep -qxF \
+        "ws: ~/work/t1/alpha/package-lock.json changed after the alpha container was made, so its node_modules may be stale; ws exec alpha npm install updates them" \
+        <<<"$out"
+    assert "the command still prints" grep -qxF "alpha | [true]" <<<"$out"
+    out=$(ws exec t1 beta true 2>&1)
+    assert "it names the install command of the lockfile" grep -qF "yarn.lock changed after the beta container was made, so its node_modules may be stale; ws exec beta yarn install updates them" <<<"$out"
+
+    set_created alpha "$(date -u -d '+1 hour' +%FT%T.%NZ)"
+    out=$(ws exec t1 alpha true 2>&1)
+    assert_eq "it says nothing when the container is newer than the lockfile" "alpha | [true]" "$out"
+}
+
+test_exec_help() {
+    local help
+    new_fixture_no_ticket
+    help=$(ws exec --help)
+    assert "exec --help gives the usage line" grep -qxF "       ws exec [<id>] <repo> <command>..." <<<"$help"
+    assert "it says ws runs no shell" grep -qF "runs no shell, so write sh -c '<text>' for" <<<"$help"
+    help=$(ws -h)
+    assert "ws -h lists exec" grep -qE '^  exec +run a command in the container of a ticket repo, with no shell$' <<<"$help"
+}
+
 test_up_twice() {
     local out rc pane envp
     new_fixture_no_ticket
@@ -1291,6 +1404,11 @@ run_test test_up_migrate_needs_the_containers
 run_test test_up_migrate_refuses_a_bad_setting
 run_test test_up_migrate_after_wait
 run_test test_up_help_documents_migrate
+run_test test_exec
+run_test test_exec_takes_a_key
+run_test test_exec_needs_the_container
+run_test test_exec_warns_about_a_stale_lockfile
+run_test test_exec_help
 run_test test_help_names_the_split_shell_window
 run_test test_up_twice
 run_test test_down

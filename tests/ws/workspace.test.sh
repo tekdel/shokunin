@@ -1617,6 +1617,38 @@ test_claude_md_of_an_older_ws_updates() {
     refute "it adds no repo to it" grep -qF '`beta/`' "$WS_ROOT/t5/CLAUDE.md"
 }
 
+test_claude_md_names_ws_exec() {
+    local f exec_line link_line
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    f=$WS_ROOT/t1/CLAUDE.md
+    # shellcheck disable=SC2016
+    exec_line='- Run tests and typechecks in the ticket'"'"'s container with `ws exec <repo> <command>`, and give jest `-w 4`, as in `ws exec <repo> npx jest -w 4`. A hook denies them on the host.'
+    # shellcheck disable=SC2016
+    link_line='- Never link `node_modules` or `prisma-client` from `~/projects` into this ticket. The container has its own.'
+    assert "CLAUDE.md says to run tests and typechecks with ws exec and jest at -w 4" grep -qxF -- "$exec_line" "$f"
+    assert "it says never to link node_modules or prisma-client from ~/projects" grep -qxF -- "$link_line" "$f"
+
+    grep -vxF -e "$exec_line" -e "$link_line" "$f" >"$FX/t1.md"
+    cp "$FX/t1.md" "$f"
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    assert "a rerun adds both lines to a CLAUDE.md that ws 2.0.99 wrote" grep -qxF -- "$exec_line" "$f"
+    assert "and still updates the rest of it" grep -qF '`beta/` belongs to `~/projects/beta`' "$f"
+
+    ws new t2 feat/y +alpha >/dev/null 2>&1
+    { grep -vxF -e "$exec_line" -e "$link_line" "$WS_ROOT/t2/CLAUDE.md" && echo "my notes"; } >"$FX/t2.md"
+    cp "$FX/t2.md" "$WS_ROOT/t2/CLAUDE.md"
+    ws new t2 feat/y +alpha +beta >/dev/null 2>&1
+    assert_eq "a rerun leaves a CLAUDE.md of ws 2.0.99 that someone edited as it was" "$(cat "$FX/t2.md")" \
+        "$(cat "$WS_ROOT/t2/CLAUDE.md")"
+
+    claude_md_of_2_0_66 t4 feat/t4 alpha >"$FX/t4.md"
+    ws new t4 feat/t4 +alpha >/dev/null 2>&1
+    cp "$FX/t4.md" "$WS_ROOT/t4/CLAUDE.md"
+    ws new t4 feat/t4 +alpha >/dev/null 2>&1
+    assert "a rerun adds the lines to a CLAUDE.md that ws 2.0.66 wrote" grep -qxF -- "$link_line" "$WS_ROOT/t4/CLAUDE.md"
+}
+
 zsh_launch() {
     local zd=$FX/zdot
     mkdir -p "$zd"
@@ -1786,6 +1818,7 @@ run_test test_status_retries_a_gh_failure_soon
 run_test test_gh_calls_run_eight_at_a_time
 run_test test_claude_md_keeps_edits
 run_test test_claude_md_of_an_older_ws_updates
+run_test test_claude_md_names_ws_exec
 run_test test_zsh_launch_line
 run_test test_alacritty_opens_a_shell_when_tmux_fails
 finish

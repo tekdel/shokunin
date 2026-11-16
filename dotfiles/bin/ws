@@ -39,6 +39,8 @@ declare -gA WS_COMMANDS=(
     [adopt]="move existing worktrees of one branch into a ticket"
     [done]="set a ticket to merged, run vault-consolidate, and offer ws rm"
     [down]="stop the dockyard env of a ticket and keep its slot"
+    [exec]="run a command in the container of a ticket repo, with no shell"
+    [hook]="the Claude Code hook that sends the test runs of a ticket to ws exec"
     [ls]="list the tickets"
     [new]="make or repair the ticket of a Jira key or a name, with its worktrees and tmux session"
     [pick]="pick a ticket, the projects folder, a project, or the vault and switch to its tmux session"
@@ -2510,6 +2512,8 @@ usage: ws new [--only] <key|name> [<words>|<branch>] [+<repo>...]
        ws status [--refresh | --waiting]
        ws up [--wait] [--migrate] [+<service>...] [--drop <service>] [<id>]
        ws down [<id>]
+       ws exec [<id>] <repo> <command>...
+       ws hook bash
        ws rm [--purge] <id>
        ws scenarios [<id>] [--from <file>] [--replace]
        ws verify [<id>]
@@ -2517,8 +2521,9 @@ usage: ws new [--only] <key|name> [<words>|<branch>] [+<repo>...]
 
 A ticket is the directory $WS_ROOT/<id>. It holds .ws, the ticket state
 that only ws writes, a CLAUDE.md that ws writes, a .claude/settings.json
-that denies Claude edits of the ticket's scenarios, .ws, and evidence,
-and one git worktree of $WS_PROJECTS/<repo> per repo, all on one branch.
+that denies Claude edits of the ticket's scenarios, .ws, and evidence
+and runs ws hook bash before each Bash call, and one git worktree of
+$WS_PROJECTS/<repo> per repo, all on one branch.
 Its tmux session is named <id> and has the windows claude and shell. The
 shell window has an interactive shell on top and the env pane below,
 about 40% of its height, where ws up tails the container logs. An id
@@ -2544,8 +2549,9 @@ command that takes an <id> also takes the Jira key of the ticket.
           +<repo>. A rerun finds the ticket by its id or key, repairs
           it, adds only the +<repo>s, never the defaults, and keeps the
           branch and the stage. It writes CLAUDE.md again only while
-          nobody has edited it, and adds the deny rules to a
-          settings.json that someone edited.
+          nobody has edited it, and adds the deny rules and the hook to
+          a settings.json that someone edited, so a rerun gives an
+          older ticket the hook.
   adopt   move linked worktrees of one branch into the ticket with git
           worktree move, then do what new does with exactly those
           repos. A key takes its id from their branch, as new does.
@@ -2615,6 +2621,37 @@ command that takes an <id> also takes the Jira key of the ticket.
           not running, it runs none and exits 1.
   down    run dockyard down <branch>, which stops the containers and
           keeps the slot and the volumes, and clear WS_URLS.
+  exec    run <command> in the running container of <repo> with docker
+          compose -p dockyard-<stack> exec -T <repo> <command>. <repo>
+          may also be any other service of the stack, such as one that
+          dockyard builds from the image of a repo. ws passes the words
+          as they are and runs no shell, so write sh -c '<text>' for
+          one. A first argument that is the id or the key of a ticket,
+          with two more after it, names the ticket. exec exits 1 when
+          the env is down, when the stack has no such service, or when
+          its container is not running, and else with the status of the
+          command. It warns, and still runs the command, when a lockfile
+          of a worktree that the container mounts changed after the
+          container was made, since its node_modules may be stale.
+  hook    ws hook bash is the Claude Code PreToolUse hook of the Bash
+          tool that ws new and ws adopt write to the ticket's
+          .claude/settings.json. It reads the hook's JSON on stdin and
+          denies, with a reason that names the ws exec command to run
+          instead:
+          - jest, vitest, tsc, npm test, npm run test*, nx test, or nx
+            run-many on the host in a ticket worktree, which the
+            directory of the session, a cd, a -C, --prefix, --cwd, or
+            --dir, or tsc -p names, also through npx, node, env,
+            timeout, systemd-run, sh -c, and the package.json scripts
+            of npm, yarn, and pnpm;
+          - a symlink named node_modules or prisma-client in a ticket;
+          - jest with no -w, --maxWorkers, --runInBand, or -i, also in
+            ws exec or docker exec, where it would start one worker per
+            CPU.
+          It allows every other command, also one that only names these
+          words, such as grep jest or a commit message. It is a speed
+          bump, not a sandbox: it reads the command text, so a script, an
+          alias, a variable, or eval gets past it.
   rm      refuse inside the directory or the tmux session of the
           ticket, which rm moves and kills, and say where to run it.
           Else run ws down, then refuse when a worktree has a KEEP
@@ -3040,7 +3077,13 @@ ticket_claude_text() {
         echo "  - \`$repo/\` belongs to \`$(ws_shown "$WS_PROJECTS/$repo")\`."
     done
     echo "$WS_CLAUDE_STAGE"
+    ticket_claude_exec
     echo "- Log progress with \`$(ws_shown "$WS_VAULT/bin/vault-log") $id \"<what changed>\"\`."
+}
+
+ticket_claude_exec() {
+    echo "- Run tests and typechecks in the ticket's container with \`ws exec <repo> <command>\`, and give jest \`-w 4\`, as in \`ws exec <repo> npx jest -w 4\`. A hook denies them on the host."
+    echo "- Never link \`node_modules\` or \`prisma-client\` from \`$(ws_shown "$WS_PROJECTS")\` into this ticket. The container has its own."
 }
 
 ticket_claude_env() {
@@ -3087,7 +3130,7 @@ ticket_claude_md() {
 }
 
 ticket_claude_rewrite() {
-    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header text env note note_2_0_66 n tmp edited=0
+    local dir=$1 id=$2 branch=$3 file=$1/CLAUDE.md header text exec t env note note_2_0_66 n tmp edited=0
     local -a old=()
     read -r -a old <<<"$4"
     shift 4
@@ -3096,14 +3139,18 @@ ticket_claude_rewrite() {
     if [[ -e $file || -L $file ]]; then
         [[ -f $file && -r $file && ! -L $file ]] || return 0
         note_2_0_66="ws wrote this file and writes it again on each \`ws new $id\`. It imports no other file."
+        exec=$(ticket_claude_exec)
         edited=1
         for n in "$note" "$note_2_0_66"; do
             header=$(ticket_claude_text "$id" "$branch" "$n" "${old[@]}")
             for text in "$header" "${header/"$WS_CLAUDE_STAGE"/"$WS_CLAUDE_STAGE_2_0_80"}"; do
-                if printf '%s\n' "$text" | cmp -s -- "$file" - ||
-                    ticket_claude_block "$text" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
-                    edited=0
-                fi
+                # ws before 2.0.101 wrote no ws exec lines.
+                for t in "$text" "${text/$'\n'"$exec"/}"; do
+                    if printf '%s\n' "$t" | cmp -s -- "$file" - ||
+                        ticket_claude_block "$t" "" | cmp -s - <(ticket_claude_swap "$file" ""); then
+                        edited=0
+                    fi
+                done
             done
         done
     fi
@@ -3170,11 +3217,15 @@ ticket_env() {
     fi
 }
 
-ticket_env_running() {
-    local ids
+ticket_env_ids() {
     local -a filters=(--filter "label=com.docker.compose.project=$1" --filter status=running)
     [[ -z ${2-} ]] || filters+=(--filter "label=com.docker.compose.service=$2")
-    ids=$(docker ps -q "${filters[@]}" 2>/dev/null) && [[ -n $ids ]]
+    docker ps -q "${filters[@]}" 2>/dev/null
+}
+
+ticket_env_running() {
+    local ids
+    ids=$(ticket_env_ids "$@") && [[ -n $ids ]]
 }
 
 ticket_dockyard_out() {
@@ -3432,27 +3483,45 @@ edit_deny_rules() {
     done
 }
 
-ticket_deny() {
-    local dir=$1/.claude file=$1/.claude/settings.json src=/dev/null tmp n
-    shift
+# Runs the jq filter $4 over the ticket's .claude/settings.json, or over {} when it is missing. $2 names
+# what ws adds, and $3 the shape of settings that the filter needs.
+ticket_settings() {
+    local dir=$1/.claude file=$1/.claude/settings.json what=$2 shape=$3 filter=$4 src=/dev/null tmp n
+    shift 4
     if [[ -L $dir || -L $file || (-e $file && ! -f $file) ]]; then
-        echo "ws: $(ws_shown "$file") is not a plain file, so ws adds no deny rules to it" >&2
+        echo "ws: $(ws_shown "$file") is not a plain file, so ws adds no $what to it" >&2
         return 1
     fi
     [[ ! -e $file ]] || src=$file
     if n=$(jq -s length "$src" 2>/dev/null) && ((n > 1)); then
-        echo "ws: $(ws_shown "$file") holds $n JSON documents, so ws adds no deny rules to it" >&2
+        echo "ws: $(ws_shown "$file") holds $n JSON documents, so ws adds no $what to it" >&2
         return 1
     fi
     mkdir -p -- "$dir" || return 1
     tmp=$(mktemp -- "$dir/.settings.json.XXXXXX") || return 1
-    jq -s 'if length == 0 then {} else .[0] end | .permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' \
-        "$src" --args "$@" >"$tmp" 2>/dev/null || {
+    jq -s "if length == 0 then {} else .[0] end | $filter" "$src" "$@" >"$tmp" 2>/dev/null || {
         rm -f -- "$tmp"
-        echo "ws: $(ws_shown "$file") does not hold a settings object with a permissions.deny list, so ws adds no deny rules to it" >&2
+        echo "ws: $(ws_shown "$file") does not hold a settings object with $shape, so ws adds no $what to it" >&2
         return 1
     }
     ws_write_in_place "$file" "$tmp"
+}
+
+ticket_deny() {
+    local dir=$1
+    shift
+    # shellcheck disable=SC2016
+    ticket_settings "$dir" "deny rules" "a permissions.deny list" \
+        '.permissions.deny |= ((. // []) | . + ($ARGS.positional - .))' --args "$@"
+}
+
+# Adds the PreToolUse hook of the Bash tool that runs ws hook bash, unless some hook already runs it.
+ticket_hook() {
+    # shellcheck disable=SC2016
+    ticket_settings "$1" "hook" "a hooks.PreToolUse list" \
+        '.hooks.PreToolUse |= ((. // []) | if any(.[]; any(.hooks[]?; .command == $c)) then .
+            else . + [{matcher: "Bash", hooks: [{type: "command", command: $c, timeout: 10}]}] end)' \
+        --arg c "ws hook bash"
 }
 
 ticket_deny_edits() {
@@ -3476,7 +3545,7 @@ ticket_make() {
         ticket_wt_add "$dir" "$repo" "$branch" || fail=1
     done
     ticket_claude_md "$dir" "$id" "$branch" "${TICKET_OLD[*]}" "${TICKET_REPOS[@]}" || fail=1
-    if ! ticket_read "$dir" kv || ! ticket_deny_edits "$dir" kv; then
+    if ! ticket_read "$dir" kv || ! ticket_deny_edits "$dir" kv || ! ticket_locked "$dir" ticket_hook "$dir"; then
         fail=1
     fi
     ticket_session "$id" "$dir" || return 1
@@ -4493,6 +4562,1050 @@ ws_down() {
     else
         echo "$id has no env."
     fi
+}
+
+# The status is 0 when the first of the ws exec arguments names the ticket: the id of one, or a key, with two more after it.
+exec_ticket_arg() {
+    (($# >= 3)) || return 1
+    if ticket_name_ok "$1" && [[ -e $WS_ROOT/$1/.ws || -L $WS_ROOT/$1/.ws ]]; then
+        return 0
+    fi
+    ticket_is_key "$1"
+}
+
+exec_stale_note() {
+    local real=$1 svc=$2 info created src lock tool
+    local -a lines=()
+    info=$(docker inspect "$3" 2>/dev/null | jq -r '.[0] | ((.Created // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // ""),
+        ((.Mounts // [])[] | select(.Type == "bind") | .Source)' 2>/dev/null) || return 0
+    mapfile -t lines <<<"$info"
+    created=${lines[0]-}
+    [[ $created =~ ^[0-9]+$ ]] || return 0
+    for src in "${lines[@]:1}"; do
+        [[ $src == "$real"/* ]] || continue
+        for lock in package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb; do
+            if [[ ! -f $src/$lock ]] || (($(stat -c %Y -- "$src/$lock") <= created)); then
+                continue
+            fi
+            case $lock in
+            yarn.lock) tool=yarn ;;
+            pnpm-lock.yaml) tool=pnpm ;;
+            bun.*) tool=bun ;;
+            *) tool=npm ;;
+            esac
+            echo "ws: $(ws_shown "$src/$lock") changed after the $svc container was made, so its node_modules may be stale; ws exec $svc $tool install updates them" >&2
+        done
+    done
+}
+
+ws_exec() {
+    local dir id branch real svc project ctr
+    local -a services=()
+    local -A kv=() env=()
+    case ${1-} in
+    -h | --help)
+        ticket_usage
+        return 0
+        ;;
+    esac
+    if (($# < 2)); then
+        ticket_usage >&2
+        return 1
+    fi
+    if exec_ticket_arg "$@"; then
+        ticket_target "ws exec <id> <repo> <command>" "$1" || return 1
+        shift
+    else
+        ticket_target "ws exec <id> <repo> <command>" || return 1
+    fi
+    dir=$REPLY svc=$1
+    shift
+    if ! ticket_read "$dir" kv; then
+        echo "ws: $REPLY" >&2
+        return 1
+    fi
+    id=${kv[WS_ID]} branch=${kv[WS_BRANCH]-}
+    if [[ -z $branch ]]; then
+        echo "ws: $(ws_shown "$dir/.ws") has no WS_BRANCH" >&2
+        return 1
+    fi
+    real=$(realpath -e -- "$dir") || return 1
+    ticket_env env "$real" "$branch" || return 1
+    project=${env[project]}
+    if [[ -n ${env[other]} ]]; then
+        echo "ws: dockyard stack ${env[stack]} is registered with ${env[other]}, so ws exec runs nothing" >&2
+        return 1
+    elif [[ -z ${env[slot]} ]] || ! ticket_env_running "$project"; then
+        echo "ws: the env of $id is down; run ws up first" >&2
+        return 1
+    fi
+    mapfile -t services < <(docker ps -a --filter "label=com.docker.compose.project=$project" \
+        --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null | sort -u)
+    if [[ " ${services[*]} " != *" $svc "* ]]; then
+        echo "ws: $svc is not a service of $project, whose services are: ${services[*]}" >&2
+        return 1
+    fi
+    ctr=$(ticket_env_ids "$project" "$svc") || ctr=
+    if [[ -z $ctr ]]; then
+        echo "ws: the $svc container of $project is not running; ws up starts it" >&2
+        return 1
+    fi
+    exec_stale_note "$real" "$svc" "${ctr%%$'\n'*}"
+    docker compose -p "$project" exec -T "$svc" "$@"
+}
+
+# ws hook bash reads a Claude Code PreToolUse event and denies the Bash commands that ws hook -h lists.
+# It splits the command text into simple commands. hook_scan and its helpers share their state through
+# bash's dynamic scope: HS, HP, and HN hold the text, the position, and the length; H_CWD the directory of
+# the next command, empty when unknown; H_WHERE host, or container:<worktree> inside ws exec or docker
+# exec; and word, inword, redir, and words the command so far. A word holds WS_HOOK_DYN where it has an
+# expansion that the hook cannot know.
+WS_HOOK_DYN=$'\x01'
+WS_HOOK_PLAIN=$'^[^ \t\n;|&()<>`\'"\\$]+'
+WS_HOOK_DQ_PLAIN=$'^[^"\\$`]+'
+WS_HOOK_LIMIT_RE='^(-w.*|-i|--maxWorkers(=.*)?|--max-workers(=.*)?|--runInBand|--run-in-band)$'
+declare -gA WS_HOOK_WRAPPERS=(
+    [builtin]="" [command]="" [exec]="-a" [nohup]="" [time]="" [nice]="-n --adjustment" [dotenv]="-e -c -v -p"
+    [timeout]="-s --signal -k --kill-after +" [stdbuf]="-i -o -e --input --output --error"
+    [sudo]="-u --user -g --group -h --host -p --prompt -C --close-from -D --chdir -r --role -t --type -U --other-user"
+    ["systemd-run"]="-p --property -u --unit -E --setenv --slice --description -M --machine --uid --gid --nice -H --host --working-directory"
+)
+
+ws_hook() {
+    local input
+    local -a fields=()
+    case "$#:${1-}" in
+    1:-h | 1:--help)
+        ticket_usage
+        return 0
+        ;;
+    1:bash) ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+    input=$(cat)
+    mapfile -d '' fields < <(jq -j '[.tool_name, .cwd, .tool_input.command] | map((. // "") | tostring + "\u0000") | add' \
+        <<<"$input" 2>/dev/null)
+    ((${#fields[@]} == 3)) && [[ ${fields[0]} == Bash ]] || return 0
+    if hook_check "${fields[1]}" "${fields[2]}"; then
+        jq -n --arg r "$REPLY" \
+            '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+    fi
+}
+
+# REPLY is why the command text $2, run in the directory $1, may not run. The status is 1 when it may.
+hook_check() {
+    local H_CWD=$1 H_WHERE=host H_SHOWN="" H_DEPTH=0 H_PM="" H_REPO="" H_ROOT LC_ALL=C
+    local host_repo="" host_dir="" host_what="" jest_what="" jest_fix="" link="" link_repo=""
+    [[ $2 =~ (^|[^A-Za-z0-9_-])(jest|vitest|tsc|nx|npm|pnpm|yarn|ln)([^A-Za-z0-9_-]|$) ]] || return 1
+    if [[ $H_CWD == /* ]]; then
+        H_CWD=$(realpath -m -- "$H_CWD") || H_CWD=
+    else
+        H_CWD=
+    fi
+    H_ROOT=$(realpath -m -- "$WS_ROOT")
+    hook_text "$2" "$H_CWD"
+    REPLY=
+    if [[ -n $host_repo ]]; then
+        REPLY="ws hook: $host_what runs tests or a typecheck on the host, in $(ws_shown "$host_dir"). Run it in the ticket's container instead: ws exec $host_repo $host_what"
+        if [[ $jest_what == "$host_what" ]]; then
+            REPLY+="$jest_fix (jest needs -w 4, or it starts one worker per CPU)"
+            jest_what=
+        fi
+    fi
+    if [[ -n $jest_what ]]; then
+        REPLY+="${REPLY:+ }ws hook: jest needs a worker limit, or it starts one worker per CPU. Run this instead: $jest_what$jest_fix"
+    fi
+    if [[ -n $link ]]; then
+        REPLY+="${REPLY:+ }ws hook: this makes a symlink named ${link##*/} in a ticket, at $(ws_shown "$link"). Never link node_modules or prisma-client from $(ws_shown "$WS_PROJECTS") into a ticket. The container has its own, so run the command there: ws exec ${link_repo:-<repo>} <command>"
+    fi
+    [[ -n $REPLY ]]
+}
+
+hook_text() {
+    local HS=$1 HP=0 HN=${#1} HB=0 HW=${1:0:1024} H_CWD=$2
+    local -a H_DOCS=()
+    hook_scan ""
+}
+
+# Bash measures the whole string on each ${var:offset:length}, so reads near HP go to HW, the 1024 bytes of
+# the text from HB, which holds at least 512 bytes past HP.
+hook_win() {
+    ((HP >= HB && HP - HB < 512)) || {
+        HB=$HP
+        HW=${HS:HP:1024}
+    }
+}
+
+# Moves HP past the next $1 and sets REPLY to the text before it. At the end of the text REPLY holds the
+# rest, and the status is 1.
+hook_until() {
+    local chunk n=1024 keep=$((${#1} - 1))
+    REPLY=
+    while ((HP < HN)); do
+        chunk=${HS:HP:n}
+        if [[ $chunk == *"$1"* ]]; then
+            chunk=${chunk%%"$1"*}
+            REPLY+=$chunk
+            HP=$((HP + ${#chunk} + ${#1}))
+            return 0
+        fi
+        if ((HP + ${#chunk} >= HN)); then
+            REPLY+=$chunk
+            HP=$HN
+            return 1
+        fi
+        chunk=${chunk:0:${#chunk}-keep}
+        REPLY+=$chunk
+        HP=$((HP + ${#chunk}))
+        n=$((n * 2))
+    done
+    return 1
+}
+
+# Scans until the end of the text, or until the character $1 that closes a $( ), a ( ), or a backtick.
+# cases counts the case statements open here, and pattern is 1 while words are case patterns, which run
+# nothing and end at ). cond is 1 inside [[ ]], where ( ) | & < > belong to the words.
+hook_scan() {
+    local end=$1 c word="" inword=0 redir=0 H_CWD=$H_CWD cases=0 pattern=0 cond=0 lead=0 H_NEST=$((${H_NEST-0} + 1))
+    local -a words=()
+    # Bash runs out of stack on a few thousand nested $( ), so the hook reads no deeper than 100.
+    if ((H_NEST > 100)); then
+        HP=$HN
+        return 0
+    fi
+    while ((HP < HN)); do
+        hook_win
+        c=${HW:HP-HB:1}
+        if ((cond)) && [[ $c == [\(\)\|\&\<\>] ]]; then
+            word+=$c inword=1
+            HP=$((HP + 1))
+            continue
+        fi
+        if ((pattern)) && [[ $c == [$'\n'\|\(\)] ]]; then
+            hook_word
+            HP=$((HP + 1))
+            [[ $c != ')' || $pattern == 1 ]] || pattern=0
+            continue
+        fi
+        case $c in
+        ' ' | $'\t')
+            hook_word
+            HP=$((HP + 1))
+            ;;
+        $'\n')
+            hook_end
+            HP=$((HP + 1))
+            hook_heredocs
+            ;;
+        ';')
+            hook_end
+            HP=$((HP + 1))
+            if ((cases)) && [[ ${HW:HP-HB:1} == [\;\&] ]]; then
+                pattern=2
+                HP=$((HP + 1))
+                [[ ${HW:HP-HB:1} != '&' ]] || HP=$((HP + 1))
+            fi
+            ;;
+        '|')
+            hook_end
+            HP=$((HP + 1))
+            ;;
+        '&')
+            if [[ ${HW:HP-HB+1:1} == '>' ]]; then
+                hook_word
+                hook_redirect
+            else
+                hook_end
+                HP=$((HP + 1))
+            fi
+            ;;
+        '(')
+            HP=$((HP + 1))
+            if ((inword)) && [[ $word == *= || $word == *[?*+@!] ]]; then
+                hook_array
+                word+=$WS_HOOK_DYN
+            else
+                hook_word
+                hook_scan ")"
+            fi
+            ;;
+        ')')
+            hook_end
+            HP=$((HP + 1))
+            [[ $end != ")" ]] || return 0
+            ;;
+        '`')
+            HP=$((HP + 1))
+            if [[ $end == '`' ]]; then
+                hook_end
+                return 0
+            fi
+            hook_scan '`'
+            word+=$WS_HOOK_DYN inword=1
+            ;;
+        '<' | '>')
+            if ((inword)) && [[ $word =~ ^[0-9]+$ ]]; then
+                word="" inword=0
+            else
+                hook_word
+            fi
+            hook_redirect
+            ;;
+        '#')
+            if ((inword)); then
+                word+=$c
+                HP=$((HP + 1))
+            elif hook_until $'\n'; then
+                HP=$((HP - 1))
+            fi
+            ;;
+        *) hook_wordchars ;;
+        esac
+    done
+    hook_end
+}
+
+hook_word() {
+    ((inword)) || return 0
+    if [[ $redir == 0 && $word == '[[' && $lead == 0 ]]; then
+        cond=1
+    elif [[ $redir == 0 && $word == ']]' ]]; then
+        cond=0
+    fi
+    case $redir:$pattern:$lead:$word in
+    0:1:*:in) pattern=2 words=() lead=0 ;;
+    0:2:*:esac) ((cases == 0)) || cases=$((cases - 1)) pattern=0 ;;
+    0:[12]:*) ;;
+    0:0:0:case)
+        cases=$((cases + 1)) pattern=1 lead=1
+        words+=("$word")
+        ;;
+    0:0:0:esac) ((cases == 0)) || cases=$((cases - 1)) ;;
+    0:*)
+        words+=("$word")
+        case $word in
+        if | then | elif | else | do | while | until | '!' | '{' | time) ;;
+        *) lead=1 ;;
+        esac
+        ;;
+    [23]:*)
+        word=${word//$WS_HOOK_DYN/}
+        # In $((1 << 3)) the << shifts, so a delimiter that is a number starts no here-document.
+        [[ $word =~ ^[0-9]+$ ]] || H_DOCS+=("$redir$word")
+        ;;
+    esac
+    word="" inword=0 redir=0
+}
+
+hook_end() {
+    hook_word
+    redir=0 cond=0 lead=0
+    ((${#words[@]})) || return 0
+    [[ -n ${H_MUTE-} ]] || hook_command "${words[@]}"
+    words=()
+}
+
+# The words of an array assignment, such as cmd=(npx jest), or of an extglob, such as !(jest), run nothing.
+hook_array() {
+    local H_MUTE=1
+    hook_scan ")"
+}
+
+hook_wordchars() {
+    local c=${HW:HP-HB:1}
+    case $c in
+    \\)
+        HP=$((HP + 2))
+        # A line continuation joins the lines; it starts no word.
+        [[ ${HW:HP-HB-1:1} != $'\n' ]] || return 0
+        word+=${HW:HP-HB-1:1}
+        ;;
+    \')
+        HP=$((HP + 1))
+        hook_until "'"
+        word+=$REPLY
+        ;;
+    \")
+        HP=$((HP + 1))
+        hook_dquote
+        ;;
+    \$) hook_dollar ;;
+    \~)
+        if ((inword == 0)) && [[ $((HP + 1)) -ge $HN || ${HW:HP-HB+1:1} == [/\ $'\t\n;|&)'] ]]; then
+            word+=$HOME
+        else
+            word+='~'
+        fi
+        HP=$((HP + 1))
+        ;;
+    *)
+        if [[ ${HW:HP-HB:256} =~ $WS_HOOK_PLAIN ]]; then
+            word+=${BASH_REMATCH[0]}
+            HP=$((HP + ${#BASH_REMATCH[0]}))
+        else
+            word+=$c
+            HP=$((HP + 1))
+        fi
+        ;;
+    esac
+    inword=1
+}
+
+hook_dquote() {
+    local c
+    while ((HP < HN)); do
+        hook_win
+        c=${HW:HP-HB:1}
+        case $c in
+        \")
+            HP=$((HP + 1))
+            return 0
+            ;;
+        \\)
+            c=${HW:HP-HB+1:1}
+            if [[ $c == [\$\`\"\\] ]]; then
+                word+=$c
+            elif [[ $c != $'\n' ]]; then
+                word+=\\$c
+            fi
+            HP=$((HP + 2))
+            ;;
+        \$) hook_dollar ;;
+        \`)
+            HP=$((HP + 1))
+            hook_scan '`'
+            word+=$WS_HOOK_DYN
+            ;;
+        *)
+            if [[ ${HW:HP-HB:256} =~ $WS_HOOK_DQ_PLAIN ]]; then
+                word+=${BASH_REMATCH[0]}
+                HP=$((HP + ${#BASH_REMATCH[0]}))
+            else
+                word+=$c
+                HP=$((HP + 1))
+            fi
+            ;;
+        esac
+    done
+}
+
+hook_dollar() {
+    local nc=${HW:HP-HB+1:1} depth=0 name="" c
+    case $nc in
+    \()
+        HP=$((HP + 2))
+        hook_scan ")"
+        word+="$WS_HOOK_DYN\$(...)"
+        ;;
+    \{)
+        HP=$((HP + 1))
+        while ((HP < HN)); do
+            hook_win
+            c=${HW:HP-HB:1}
+            case $c in
+            \{) depth=$((depth + 1)) ;;
+            \}) depth=$((depth - 1)) ;;
+            esac
+            name+=$c
+            HP=$((HP + 1))
+            ((depth)) || break
+        done
+        if [[ $name == "{HOME}" ]]; then
+            word+=$HOME
+        else
+            word+=$WS_HOOK_DYN\$$name
+        fi
+        ;;
+    \')
+        HP=$((HP + 2))
+        while ((HP < HN)); do
+            hook_win
+            c=${HW:HP-HB:1}
+            [[ $c != \' ]] || break
+            if [[ $c == \\ ]]; then
+                c=${HW:HP-HB+1:1}
+                HP=$((HP + 1))
+            fi
+            word+=$c
+            HP=$((HP + 1))
+        done
+        HP=$((HP + 1))
+        ;;
+    [A-Za-z_])
+        [[ ${HW:HP-HB+1:128} =~ ^[A-Za-z_][A-Za-z0-9_]* ]]
+        name=${BASH_REMATCH[0]}
+        HP=$((HP + 1 + ${#name}))
+        if [[ $name == HOME ]]; then
+            word+=$HOME
+        elif [[ $name == PWD && -n $H_CWD ]]; then
+            word+=$H_CWD
+        else
+            word+=$WS_HOOK_DYN\$$name
+        fi
+        ;;
+    [0-9?#\$!@*-])
+        HP=$((HP + 2))
+        word+=$WS_HOOK_DYN\$$nc
+        ;;
+    *)
+        word+='$'
+        HP=$((HP + 1))
+        ;;
+    esac
+}
+
+# Reads a redirection operator. The word after it is its target, or the delimiter of a here-document,
+# whose body hook_heredocs skips after the next newline.
+hook_redirect() {
+    local op=${HW:HP-HB:1}
+    HP=$((HP + 1))
+    if [[ $op == '&' ]]; then
+        op+=${HW:HP-HB:1}
+        HP=$((HP + 1))
+    fi
+    while [[ ${HW:HP-HB:1} == [\<\>] && ${#op} -lt 3 ]]; do
+        op+=${HW:HP-HB:1}
+        HP=$((HP + 1))
+    done
+    if [[ $op == [\<\>] && ${HW:HP-HB:1} == '(' ]]; then
+        HP=$((HP + 1))
+        hook_scan ")"
+        word+=$WS_HOOK_DYN inword=1
+        return 0
+    fi
+    if [[ ${HW:HP-HB:1} == [\&\|-] ]]; then
+        op+=${HW:HP-HB:1}
+        HP=$((HP + 1))
+    fi
+    case $op in
+    '<<-') redir=3 ;;
+    '<<') redir=2 ;;
+    *) redir=1 ;;
+    esac
+}
+
+hook_heredocs() {
+    local doc delim line
+    for doc in "${H_DOCS[@]}"; do
+        delim=${doc:1}
+        if [[ $doc == 2* ]]; then
+            hook_win
+            line=${HW:HP-HB:${#delim}+1}
+            if [[ $line == "$delim"$'\n' || ($line == "$delim" && $((HP + ${#delim})) -ge $HN) ]]; then
+                HP=$((HP + ${#delim} + 1))
+            else
+                hook_until $'\n'"$delim"$'\n' || true
+            fi
+            continue
+        fi
+        while ((HP < HN)); do
+            hook_until $'\n' || true
+            line=$REPLY
+            while [[ $line == $'\t'* ]]; do
+                line=${line:1}
+            done
+            [[ $line != "$delim" ]] || break
+        done
+    done
+    H_DOCS=()
+}
+
+hook_command() {
+    local -a w=("$@")
+    local i=0
+    ((H_DEPTH)) || H_SHOWN=
+    while ((i < ${#w[@]})); do
+        if [[ ${w[i]} =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then
+            i=$((i + 1))
+            continue
+        fi
+        case ${w[i]} in
+        '!' | '{' | '}' | if | then | elif | else | fi | do | done | while | until) i=$((i + 1)) ;;
+        *) break ;;
+        esac
+    done
+    ((i < ${#w[@]})) || return 0
+    hook_words "${w[@]:i}"
+}
+
+hook_words() {
+    local base=${1##*/}
+    [[ -n $base && $1 != *$WS_HOOK_DYN* ]] || return 0
+    case $base in
+    cd | pushd)
+        hook_cd "${@:2}"
+        return 0
+        ;;
+    popd)
+        H_CWD=
+        return 0
+        ;;
+    env | cross-env)
+        hook_env "${@:2}"
+        return 0
+        ;;
+    sh | bash | zsh | dash | ksh)
+        hook_shell "${@:2}"
+        return 0
+        ;;
+    esac
+    if [[ -n ${WS_HOOK_WRAPPERS[$base]+set} ]]; then
+        hook_opts "${WS_HOOK_WRAPPERS[$base]}" "${@:2}"
+        # command -v and command -V look a name up and run nothing.
+        [[ $base != command || " ${*:2:REPLY} " != *[vV]* ]] || return 0
+        shift $((REPLY + 1))
+        [[ " ${WS_HOOK_WRAPPERS[$base]} " != *" + "* ]] || shift
+        (($# == 0)) || hook_words "$@"
+        return 0
+    fi
+    [[ -n $H_SHOWN ]] || hook_shown "$@"
+    case $base in
+    ws) [[ ${2-} != exec ]] || hook_ws_exec "${@:3}" ;;
+    docker | podman) hook_docker "${@:2}" ;;
+    docker-compose | podman-compose) hook_compose "${@:2}" ;;
+    ln) hook_ln "${@:2}" ;;
+    npx | pnpx | bunx) hook_npx "${@:2}" ;;
+    node | nodejs) hook_node "${@:2}" ;;
+    jest | vitest | tsc) hook_run "$base" "${@:2}" ;;
+    nx) hook_nx "${@:2}" ;;
+    npm | pnpm | yarn) hook_pm "$base" "${@:2}" ;;
+    esac
+    return 0
+}
+
+# REPLY is how many of the words after $1 are options, given the options in $1 that take a value.
+hook_opts() {
+    local vals=" $1 " n=0
+    shift
+    while (($#)); do
+        case $1 in
+        --)
+            n=$((n + 1))
+            break
+            ;;
+        -?*)
+            if [[ $vals == *" $1 "* ]] && (($# >= 2)); then
+                n=$((n + 2))
+                shift 2
+            else
+                n=$((n + 1))
+                shift
+            fi
+            ;;
+        *) break ;;
+        esac
+    done
+    REPLY=$n
+}
+
+hook_shown() {
+    local w q=""
+    for w; do
+        w=${w//$WS_HOOK_DYN/}
+        if [[ $w =~ ^[A-Za-z0-9_./:=@%+,-]+$ ]]; then
+            q+=" $w"
+        else
+            q+=" '${w//\'/\'\\\'\'}'"
+        fi
+    done
+    H_SHOWN=${q# }
+}
+
+# REPLY is the absolute path of $1 from the directory H_CWD. The status is 1 when the hook cannot know it.
+hook_path() {
+    local p=$1
+    [[ -n $p && $p != *$WS_HOOK_DYN* ]] || return 1
+    if [[ $p != /* ]]; then
+        [[ -n $H_CWD ]] || return 1
+        p=$H_CWD/$p
+    fi
+    REPLY=$(realpath -m -- "$p") && [[ -n $REPLY ]]
+}
+
+# REPLY is the ticket worktree that holds the path $1, and H_REPO its repo.
+hook_worktree() {
+    local rel id
+    [[ $1 == "$H_ROOT"/*/* ]] || return 1
+    rel=${1#"$H_ROOT"/}
+    id=${rel%%/*} rel=${rel#*/}
+    H_REPO=${rel%%/*}
+    [[ -e $H_ROOT/$id/.ws && -e $H_ROOT/$id/$H_REPO/.git ]] || return 1
+    REPLY=$H_ROOT/$id/$H_REPO
+}
+
+hook_cd() {
+    [[ ${1-} != -- ]] || shift
+    while [[ ${1-} == -[LPe@] ]]; do
+        shift
+    done
+    if (($# == 0)); then
+        H_CWD=$HOME
+    elif [[ $1 != - ]] && hook_path "$1"; then
+        H_CWD=$REPLY
+    else
+        H_CWD=
+    fi
+}
+
+hook_env() {
+    local H_CWD=$H_CWD
+    while (($#)); do
+        case $1 in
+        -C | --chdir)
+            if hook_path "${2-}"; then H_CWD=$REPLY; else H_CWD=; fi
+            shift 2 || shift
+            ;;
+        --chdir=*)
+            if hook_path "${1#*=}"; then H_CWD=$REPLY; else H_CWD=; fi
+            shift
+            ;;
+        -u | --unset | -S | --split-string) shift 2 || shift ;;
+        -?*) shift ;;
+        *)
+            [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || break
+            shift
+            ;;
+        esac
+    done
+    (($# == 0)) || hook_words "$@"
+}
+
+hook_shell() {
+    while (($#)); do
+        case $1 in
+        -c* | -[!-]*c*)
+            (($# < 2)) || hook_text "$2" "$H_CWD"
+            return 0
+            ;;
+        -o | +o | -O | +O | --rcfile | --init-file) shift 2 || shift ;;
+        [-+]*) shift ;;
+        *) return 0 ;;
+        esac
+    done
+}
+
+# ws exec, docker exec, and docker compose exec run the rest in a container, where only the jest worker
+# limit applies. H_WHERE names the worktree whose package.json the container's npm scripts come from.
+hook_ws_exec() {
+    local H_WHERE dir="" id
+    if exec_ticket_arg "$@"; then
+        ! ticket_lookup "$1" 2>/dev/null || dir=${REPLY:+$WS_ROOT/$REPLY}
+        shift
+    elif [[ -n $H_CWD ]] && id=$(ticket_of_path "$H_CWD"); then
+        dir=$WS_ROOT/$id
+    elif [[ -n ${CLAUDE_PROJECT_DIR-} ]] && id=$(ticket_of_path "$(realpath -m -- "$CLAUDE_PROJECT_DIR")"); then
+        dir=$WS_ROOT/$id
+    fi
+    (($# >= 2)) || return 0
+    H_WHERE=container:${dir:+$dir/$1}
+    hook_words "${@:2}"
+}
+
+hook_docker() {
+    local H_WHERE=container:
+    hook_opts "-c --context -H --host --config -l --log-level" "$@"
+    shift "$REPLY"
+    case ${1-} in
+    exec)
+        hook_opts "-e --env --env-file -u --user -w --workdir --detach-keys" "${@:2}"
+        shift $((REPLY + 1))
+        (($# < 2)) || hook_words "${@:2}"
+        ;;
+    compose) hook_compose "${@:2}" ;;
+    esac
+    return 0
+}
+
+hook_compose() {
+    local H_WHERE=container: id opts
+    hook_opts "-f --file -p --project-name --project-directory --profile --env-file --ansi --progress --parallel" "$@"
+    shift "$REPLY"
+    case ${1-} in
+    exec) opts="-e --env -u --user -w --workdir --index" ;;
+    run) opts="-e --env --env-from-file -u --user -w --workdir -v --volume -p --publish -l --label --name --entrypoint --cap-add --cap-drop --pull" ;;
+    *) return 0 ;;
+    esac
+    hook_opts "$opts" "${@:2}"
+    shift $((REPLY + 1))
+    (($# >= 2)) || return 0
+    if [[ -n $H_CWD ]] && id=$(ticket_of_path "$H_CWD") && [[ -d $WS_ROOT/$id/$1 ]]; then
+        H_WHERE=container:$WS_ROOT/$id/$1
+    fi
+    hook_words "${@:2}"
+}
+
+hook_ln() {
+    local sym=0 into="" plain=0 nodir=0 flags c t raw name dir
+    local -a args=() names=() links=()
+    while (($#)); do
+        case $1 in
+        --)
+            args+=("${@:2}")
+            break
+            ;;
+        --symbolic) sym=1 ;;
+        --target-directory=*) into=${1#*=} ;;
+        --target-directory)
+            into=${2-}
+            shift
+            ;;
+        --no-target-directory) plain=1 ;;
+        --no-dereference) nodir=1 ;;
+        --suffix) shift ;;
+        --*) ;;
+        -?*)
+            flags=${1#-}
+            while [[ -n $flags ]]; do
+                c=${flags:0:1} flags=${flags:1}
+                case $c in
+                s) sym=1 ;;
+                T) plain=1 ;;
+                n) nodir=1 ;;
+                t | S)
+                    [[ $c == S ]] || into=${flags:-${2-}}
+                    [[ -n $flags ]] || shift
+                    flags=
+                    ;;
+                esac
+            done
+            ;;
+        *) args+=("$1") ;;
+        esac
+        shift
+    done
+    ((sym && ${#args[@]})) || return 0
+    for t in "${args[@]}"; do
+        while [[ $t == ?*/ ]]; do
+            t=${t%/}
+        done
+        names+=("${t##*/}")
+    done
+    if [[ -n $into ]]; then
+        links=("${names[@]/#/$into/}")
+    elif ((${#args[@]} == 1)); then
+        links=("${names[0]}")
+    else
+        raw=${args[-1]}
+        [[ $raw == /* || -z $H_CWD ]] || raw=$H_CWD/$raw
+        # ln puts the links into a last argument that is a directory, or a symlink to one unless -n.
+        if ((plain == 0)) && [[ $raw == /* && $raw != *$WS_HOOK_DYN* && -d $raw ]] && ! [[ $nodir == 1 && -L $raw ]]; then
+            links=("${names[@]:0:${#names[@]}-1}")
+            links=("${links[@]/#/${args[-1]}/}")
+        else
+            links=("${args[-1]}")
+        fi
+    fi
+    for t in "${links[@]}"; do
+        while [[ $t == ?*/ ]]; do
+            t=${t%/}
+        done
+        name=${t##*/}
+        [[ -z $link && ($name == node_modules || $name == prisma-client) ]] || continue
+        dir=.
+        [[ $t != */* ]] || dir=${t%/*}
+        hook_path "${dir:-/}" || continue
+        t=$REPLY/$name
+        [[ $t == "$H_ROOT"/*/* ]] || continue
+        dir=${t#"$H_ROOT"/}
+        [[ -e $H_ROOT/${dir%%/*}/.ws ]] || continue
+        link=$t link_repo=
+        ! hook_worktree "$t" || link_repo=$H_REPO
+    done
+}
+
+hook_npx() {
+    local first
+    hook_opts "-p --package -c --call" "$@"
+    shift "$REPLY"
+    (($#)) || return 0
+    first=$1
+    [[ $first != ?*@* ]] || first=${first%@*}
+    hook_words "$first" "${@:2}"
+}
+
+hook_node() {
+    local script
+    while (($#)); do
+        case $1 in
+        -e | --eval | -p | --print | -) return 0 ;;
+        -r | --require | --import | --loader | --experimental-loader | -C | --conditions | --title | --input-type) shift 2 || shift ;;
+        --)
+            shift
+            break
+            ;;
+        -?*) shift ;;
+        *) break ;;
+        esac
+    done
+    (($#)) || return 0
+    script=$1
+    shift
+    case $script in
+    jest | */.bin/jest | */jest/bin/jest.js | */jest-cli/bin/jest.js) hook_run jest "$@" ;;
+    tsc | */.bin/tsc | */typescript/bin/tsc) hook_run tsc "$@" ;;
+    vitest | */.bin/vitest | */vitest/vitest.mjs) hook_run vitest "$@" ;;
+    nx | */.bin/nx | */nx/bin/nx.js) hook_nx "$@" ;;
+    esac
+    return 0
+}
+
+hook_nx() {
+    hook_opts "" "$@"
+    shift "$REPLY"
+    case ${1-} in
+    test) hook_run "nx test" "${@:2}" ;;
+    run-many) hook_run "nx run-many" "${@:2}" ;;
+    esac
+    return 0
+}
+
+hook_pm() {
+    local pm=$1 H_CWD=$H_CWD sub moved=0
+    local -a kept=() rest=()
+    shift
+    while (($#)); do
+        case $1 in
+        -C | --dir | --prefix | --cwd)
+            if hook_path "${2-}"; then H_CWD=$REPLY; else H_CWD=; fi
+            moved=1
+            shift 2 || shift
+            ;;
+        --dir=* | --prefix=* | --cwd=*)
+            if hook_path "${1#*=}"; then H_CWD=$REPLY; else H_CWD=; fi
+            moved=1
+            shift
+            ;;
+        -w | --workspace | -F | --filter | --cache | --registry | --userconfig | --loglevel)
+            kept+=("$1" "${2-}")
+            shift 2 || shift
+            ;;
+        -?*)
+            kept+=("$1")
+            shift
+            ;;
+        *) break ;;
+        esac
+    done
+    (($#)) || return 0
+    sub=$1
+    shift
+    # npm also reads its options after the command, up to --.
+    while [[ $pm == npm ]] && (($#)); do
+        case $1 in
+        --)
+            rest+=("$@")
+            break
+            ;;
+        -C | --prefix)
+            if hook_path "${2-}"; then H_CWD=$REPLY; else H_CWD=; fi
+            moved=1
+            shift
+            ;;
+        --prefix=*)
+            if hook_path "${1#*=}"; then H_CWD=$REPLY; else H_CWD=; fi
+            moved=1
+            ;;
+        *) rest+=("$1") ;;
+        esac
+        shift || break
+    done
+    [[ $pm != npm ]] || set -- "${rest[@]}"
+    # A host directory means nothing in the container, so the ws exec that the reason gives leaves it out.
+    ((moved == 0)) || [[ $H_WHERE != host ]] || hook_shown "$pm" "${kept[@]}" "$sub" "$@"
+    case $pm:$sub in
+    *:test | *:t | npm:tst) hook_script "$pm" test "$@" ;;
+    *:run | npm:run-script | npm:rum | npm:urn)
+        hook_opts "-w --workspace -F --filter" "$@"
+        shift "$REPLY"
+        (($# == 0)) || hook_script "$pm" "$@"
+        ;;
+    *:exec | npm:x | *:dlx)
+        hook_opts "-p --package -c --call" "$@"
+        shift "$REPLY"
+        (($# == 0)) || hook_words "$@"
+        ;;
+    npm:*) ;;
+    *:jest | *:tsc | *:vitest | *:nx) hook_words "$sub" "$@" ;;
+    *) hook_script "$pm" "$sub" "$@" ;;
+    esac
+    return 0
+}
+
+# Checks the npm, yarn, or pnpm script $2 by its name, and by its text in package.json with the
+# arguments that the package manager passes on.
+hook_script() {
+    local pm=$1 name=$2 dir="" body="" text a pass=0
+    shift 2
+    [[ $name != test* ]] || hook_host "$H_CWD"
+    if [[ $H_WHERE == host ]]; then
+        dir=$H_CWD
+        while [[ -n $dir && ! -f $dir/package.json ]]; do
+            [[ $dir != / ]] || dir=
+            dir=${dir%/*}
+        done
+    elif [[ -f ${H_WHERE#container:}/package.json ]]; then
+        dir=${H_WHERE#container:}
+    fi
+    if [[ -n $dir ]] && ((H_DEPTH < 4)); then
+        body=$(jq -r --arg s "$name" '.scripts[$s] // empty | strings' "$dir/package.json" 2>/dev/null) || body=
+    fi
+    if [[ -z $body ]]; then
+        # yarn run <name> runs the binary <name> when no script has that name.
+        [[ $pm != yarn ]] || hook_words "$name" "$@"
+        return 0
+    fi
+    # npm passes the script the words after --, and yarn and pnpm pass every word, without a leading --.
+    text=$body
+    for a; do
+        if ((pass == 0)) && [[ $a == -- ]]; then
+            pass=1
+            continue
+        fi
+        [[ $pm != npm ]] || ((pass)) || continue
+        pass=1
+        text+=" '${a//\'/\'\\\'\'}'"
+    done
+    local H_DEPTH=$((H_DEPTH + 1)) H_PM=$pm
+    if [[ $H_WHERE == host ]]; then
+        hook_text "$text" "$dir"
+    else
+        hook_text "$text" "$H_CWD"
+    fi
+}
+
+hook_host() {
+    [[ $H_WHERE == host && -z $host_repo && -n ${1-} ]] || return 0
+    hook_worktree "$1" || return 0
+    host_repo=$H_REPO host_dir=$REPLY host_what=$H_SHOWN
+}
+
+hook_run() {
+    local kind=$1 a dir=$H_CWD prev=""
+    shift
+    for a; do
+        case $a in
+        --version | -v | --help | -h | --listTests | --showConfig | --init | --clearCache) return 0 ;;
+        esac
+    done
+    if [[ $kind == tsc ]]; then
+        for a; do
+            case $prev:$a in
+            -p:* | --project:*) ! hook_path "$a" || dir=$REPLY ;;
+            *:--project=*) ! hook_path "${a#*=}" || dir=$REPLY ;;
+            esac
+            prev=$a
+        done
+    fi
+    hook_host "$dir"
+    [[ $kind == jest && -z $jest_what ]] || return 0
+    for a; do
+        [[ ! $a =~ $WS_HOOK_LIMIT_RE ]] || return 0
+    done
+    jest_what=$H_SHOWN jest_fix=" -w 4"
+    [[ $H_PM != npm || " $H_SHOWN " == *" -- "* ]] || jest_fix=" -- -w 4"
 }
 
 ticket_claude_rows() {
