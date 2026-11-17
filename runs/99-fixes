@@ -58,6 +58,27 @@ if command -v docker &>/dev/null && ! groups | grep -q docker; then
     echo "✓ Added $USER to docker group (log out and back in to apply)"
 fi
 
+# Keep systemd-oomd watching memory: it kills the worst cgroup of a user session that stays
+# above 60% memory pressure, and the worst cgroup once swap runs out, before the machine freezes
+OOMD_USER_CONF=/etc/systemd/system/user@.service.d/oomd.conf
+OOMD_SLICE_CONF=/etc/systemd/system/-.slice.d/oomd.conf
+OOMD_USER_TEXT=$'[Service]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=60%'
+OOMD_SLICE_TEXT=$'[Slice]\nManagedOOMSwap=kill'
+if [ "$(cat "$OOMD_USER_CONF" 2>/dev/null)" != "$OOMD_USER_TEXT" ] ||
+    [ "$(cat "$OOMD_SLICE_CONF" 2>/dev/null)" != "$OOMD_SLICE_TEXT" ]; then
+    echo "Writing the systemd-oomd drop-ins..."
+    sudo mkdir -p "${OOMD_USER_CONF%/*}" "${OOMD_SLICE_CONF%/*}"
+    printf '%s\n' "$OOMD_USER_TEXT" | sudo tee "$OOMD_USER_CONF" >/dev/null
+    printf '%s\n' "$OOMD_SLICE_TEXT" | sudo tee "$OOMD_SLICE_CONF" >/dev/null
+    sudo systemctl daemon-reload
+    echo "✓ systemd-oomd drop-ins written"
+fi
+if ! systemctl is-enabled --quiet systemd-oomd || ! systemctl is-active --quiet systemd-oomd; then
+    echo "Enabling systemd-oomd..."
+    sudo systemctl enable --now systemd-oomd
+    echo "✓ systemd-oomd enabled"
+fi
+
 # Fix DNS configuration for systemd-resolved
 # /etc/resolv.conf should be a symlink to systemd-resolved's stub resolver
 if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
