@@ -76,6 +76,61 @@ test_new_writes_the_deny_rules() {
     assert_eq "it leaves that file as it was" '{"permissions": "ask"}' "$(cat "$WS_ROOT/t3/.claude/settings.json")"
 }
 
+test_new_writes_the_hook() {
+    local settings hook out rc entry
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    settings=$WS_ROOT/t1/.claude/settings.json
+    hook='{"matcher":"Bash","hooks":[{"type":"command","command":"ws hook bash","timeout":10}]}'
+    assert_eq "new writes the PreToolUse hook of the Bash tool that runs ws hook bash" "[$hook]" \
+        "$(jq -c .hooks.PreToolUse "$settings")"
+    assert_eq "next to the three deny rules" 3 "$(jq '.permissions.deny | length' "$settings")"
+
+    printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$WS_TESTS/../../dotfiles/bin/ws" >"$FX/bin/ws"
+    chmod +x "$FX/bin/ws"
+    ws_guard
+    out=$(jq -n --arg cwd "$WS_ROOT/t1/alpha" '{cwd: $cwd, hook_event_name: "PreToolUse", tool_name: "Bash",
+        tool_input: {command: "npx tsc --noEmit"}}' | sh -c "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$settings")")
+    assert_eq "the command it writes, run by sh -c as Claude Code runs it, denies a host typecheck in a worktree" deny \
+        "$(jq -r .hookSpecificOutput.permissionDecision <<<"$out" 2>/dev/null)"
+
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    assert_eq "a rerun keeps one hook" "[$hook]" "$(jq -c .hooks.PreToolUse "$settings")"
+
+    jq 'del(.hooks)' "$settings" >"$FX/s.json" && cp "$FX/s.json" "$settings"
+    ws new t1 >/dev/null 2>&1
+    assert_eq "a rerun adds the hook to a ticket that an older ws made" "[$hook]" "$(jq -c .hooks.PreToolUse "$settings")"
+
+    entry='{"matcher":"Edit","hooks":[{"type":"command","command":"my-check"}]}'
+    jq --argjson e "$entry" '.hooks.PreToolUse = [$e] | .hooks.Stop = [] | .model = "opus"' "$settings" >"$FX/s.json" &&
+        cp "$FX/s.json" "$settings"
+    ws new t1 >/dev/null 2>&1
+    assert_eq "it keeps the hooks and settings that someone added, and adds its own after them" "[$entry,$hook] [] opus" \
+        "$(jq -c '"\(.hooks.PreToolUse | tojson) \(.hooks.Stop | tojson) \(.model)"' -r "$settings")"
+
+    jq '.hooks.PreToolUse[1].matcher = "Bash|Write" | .hooks.PreToolUse[1].hooks[0].timeout = 30' "$settings" >"$FX/s.json" &&
+        cp "$FX/s.json" "$settings"
+    cp "$settings" "$FX/edited.json"
+    ws new t1 >/dev/null 2>&1
+    assert_eq "it leaves a ws hook bash hook that someone changed as it is" "$(cat "$FX/edited.json")" "$(cat "$settings")"
+
+    mkdir -p "$WS_ROOT/t3/.claude"
+    echo '{"hooks": "off"}' >"$WS_ROOT/t3/.claude/settings.json"
+    out=$(ws new t3 feat/z +alpha 2>&1) && rc=0 || rc=$?
+    assert_eq "new exits 1 when settings.json has no hooks object it can extend" 1 "$rc"
+    assert "it says why" grep -qxF \
+        "ws: ~/work/t3/.claude/settings.json does not hold a settings object with a hooks.PreToolUse list, so ws adds no hook to it" \
+        <<<"$out"
+}
+
+test_adopt_writes_the_hook() {
+    new_fixture_no_ticket
+    add_worktree alpha "$WS_PROJECTS/alpha-t2" feat/t2
+    ws adopt t2 "$WS_PROJECTS/alpha-t2" >/dev/null 2>&1
+    assert_eq "adopt writes the hook too" "ws hook bash" \
+        "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$WS_ROOT/t2/.claude/settings.json" 2>/dev/null)"
+}
+
 test_new_takes_odd_settings_files() {
     local out rc file
     new_fixture_no_ticket
@@ -628,6 +683,8 @@ test_done_help() {
 }
 
 run_test test_new_writes_the_deny_rules
+run_test test_new_writes_the_hook
+run_test test_adopt_writes_the_hook
 run_test test_new_takes_odd_settings_files
 run_test test_new_refuses_a_vault_path_that_a_shell_expands
 run_test test_scenarios_adds_the_deny_rules_first

@@ -67,9 +67,12 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        after its line
   docker.exec-exit     lines of <service> <status>: compose exec of that
                        service exits with that status after its line
-  <engine>.json        the running containers, [] at first: objects with
-                       Id, Name, Mounts of Type and Source, and Labels
-                       of the compose project and service
+  <engine>.json        the containers, [] at first: objects with Id, Name,
+                       Mounts of Type and Source, Labels of the compose
+                       project and service, and State, which is running
+                       when it is missing; ps without -a lists only the
+                       running ones, and ps -a --format with the compose
+                       service label prints the services of a project
   bin/dockyard         dockyard shim: up, down, and nuke keep
                        ~/.dockyard/slots.json as dockyard does, start
                        and stop containers in docker.json that mount
@@ -304,21 +307,28 @@ if [[ -f $root/$engine.err ]]; then
 fi
 case "$*" in
 "ps -q --no-trunc")
-    jq -r '.[].Id' "$root/$engine.json"
+    jq -r '.[] | select((.State // "running") == "running") | .Id' "$root/$engine.json"
     [[ ! -f $root/$engine.gone ]] || cat "$root/$engine.gone"
     ;;
 "ps -q --filter label=com.docker.compose.project="*" --filter status=running")
     jq -r --arg p "${4#label=com.docker.compose.project=}" \
-        '.[] | select(.Labels["com.docker.compose.project"] == $p) | .Id' "$root/$engine.json"
+        '.[] | select(.Labels["com.docker.compose.project"] == $p and (.State // "running") == "running") | .Id' \
+        "$root/$engine.json"
+    ;;
+"ps -a --filter label=com.docker.compose.project="*' --format {{.Label "com.docker.compose.service"}}')
+    jq -r --arg p "${4#label=com.docker.compose.project=}" \
+        '.[] | select(.Labels["com.docker.compose.project"] == $p) | .Labels["com.docker.compose.service"]' \
+        "$root/$engine.json"
     ;;
 "ps -q --filter label=com.docker.compose.project="*" --filter status=running --filter label=com.docker.compose.service="*)
     jq -r --arg p "${4#label=com.docker.compose.project=}" --arg s "${8#label=com.docker.compose.service=}" \
-        '.[] | select(.Labels["com.docker.compose.project"] == $p and .Labels["com.docker.compose.service"] == $s) | .Id' \
-        "$root/$engine.json"
+        '.[] | select(.Labels["com.docker.compose.project"] == $p and .Labels["com.docker.compose.service"] == $s
+            and (.State // "running") == "running") | .Id' "$root/$engine.json"
     ;;
 "compose -p "*" exec -T "*)
     if ! jq -e --arg p "$3" --arg s "$6" \
-        'any(.[]; .Labels["com.docker.compose.project"] == $p and .Labels["com.docker.compose.service"] == $s)' \
+        'any(.[]; .Labels["com.docker.compose.project"] == $p and .Labels["com.docker.compose.service"] == $s
+            and (.State // "running") == "running")' \
         "$root/$engine.json" >/dev/null; then
         echo "service \"$6\" is not running" >&2
         exit 1
