@@ -19,6 +19,10 @@ export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_CACHE_HOME="$HOME/.cache"
 
+# mise shims, for programs started without an interactive shell, such as Claude Code in a
+# tmux window and the MCP servers it runs (npx, uvx). Interactive shells still run mise activate.
+export PATH="$HOME/.local/share/mise/shims:$PATH"
+
 # Add local bin to PATH
 export PATH="$HOME/.local/bin:$PATH"
 

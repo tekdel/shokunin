@@ -53,6 +53,7 @@ mise install node@lts -y
 mise install python@3.12 -y
 mise use --global node@lts
 mise use --global python@3.12
+mise use --global uv@latest
 
 # Activate mise for current shell so npm is available
 eval "$(mise activate bash)"
