@@ -94,6 +94,12 @@ test_help() {
     done
     assert "help names the trash" grep -q WS_TRASH <<<"$help"
     assert "help names the regenerable table" grep -q WS_REGENERABLE <<<"$help"
+    assert "help gives out-tsc and .nx as defaults" grep -qF 'target __pycache__ .cache out-tsc .nx"' <<<"$help"
+    assert "help names WS_REGENERABLE_EXTRA at ignored-unique" grep -q WS_REGENERABLE_EXTRA \
+        <<<"$(sed -n '/^  ignored-unique /,/^  in-use /p' <<<"$help")"
+    assert "help says WS_REGENERABLE_EXTRA adds to the list and lives in the config too" grep -qF \
+        'adds to WS_REGENERABLE, such as "tmp .angular"; ws reads it from the environment, or else from ${XDG_CONFIG_HOME:-~/.config}/ws/config' \
+        <<<"$(tr '\n' ' ' <<<"$help" | tr -s ' ')"
     assert "help names the processes the in-use check cannot see" grep -q "other users" <<<"$help"
     assert "help says the in-use check asks docker and podman" grep -q "docker and podman" <<<"$help"
     assert "help names what the container check cannot see" grep -q "named volumes" <<<"$help"
@@ -423,7 +429,7 @@ test_ignored_dirs() {
     chmod 755 "$u/pgdata/base" "$ur/node_modules/pkg"
     assert_eq "a unique file in a wholly ignored dir is KEEP ignored-unique" "KEEP ignored-unique" \
         "$(action_of "$out" "$m")"
-    assert_eq "the table names that file" ".claude/settings.local.json" "$(detail_of "$out" "$m")"
+    assert_eq "the table names the ignored folder of that file" ".claude" "$(detail_of "$out" "$m")"
     assert "that file survives apply" grep -q only-copy "$m/.claude/settings.local.json"
 
     assert_eq "unique files in regenerable dirs are REMOVE" REMOVE "$(action_of "$out" "$c")"
@@ -437,7 +443,7 @@ test_ignored_dirs() {
     assert "the only real copy survives" grep -q only-copy "$s/.env"
     assert_eq "a main-checkout dir symlink into the worktree is not a copy" "KEEP ignored-unique" \
         "$(action_of "$out" "$sd")"
-    assert_eq "the table names the file behind the dir symlink" "conf/local.env" "$(detail_of "$out" "$sd")"
+    assert_eq "the table names the folder behind the dir symlink" "conf" "$(detail_of "$out" "$sd")"
 
     assert_eq "a .hg repo inside an ignored dir is KEEP nested-repo" "KEEP nested-repo" "$(action_of "$out" "$hg")"
     assert_eq "an unreadable ignored dir is KEEP unreadable" "KEEP unreadable" "$(action_of "$out" "$u")"
@@ -1816,7 +1822,7 @@ test_regenerable_only_at_the_top() {
     out=$(ws prune 2>/dev/null)
     assert_eq "a unique file under a regenerable name inside an ignored dir is KEEP ignored-unique" \
         "KEEP ignored-unique" "$(action_of "$out" "$m")"
-    assert_eq "the table names that file" ".claude/build/settings.local.json" "$(detail_of "$out" "$m")"
+    assert_eq "the table names the top ignored folder of that file" ".claude" "$(detail_of "$out" "$m")"
     rm -r "$m/.claude"
     for mark in .svn .bzr _darcs .sl .pijul .fslckout _FOSSIL_; do
         mkdir -p "$m/node_modules/pkg"
@@ -1829,6 +1835,101 @@ test_regenerable_only_at_the_top() {
             "$(action_of "$out" "$m")"
         rm -r "$m/node_modules"
     done
+}
+
+regen_rows() {
+    local out o t e
+    out=$("$@" 2>/dev/null)
+    o=$(action_of "$out" "$WS_PROJECTS/alpha-outtsc")
+    t=$(action_of "$out" "$WS_PROJECTS/alpha-tmp")
+    e=$(action_of "$out" "$WS_PROJECTS/alpha-env")
+    echo "out-tsc=$o tmp=$t env=$e"
+}
+
+test_regenerable_extra() {
+    new_fixture
+    local o=$WS_PROJECTS/alpha-outtsc t=$WS_PROJECTS/alpha-tmp e=$WS_PROJECTS/alpha-env out rc
+    printf 'out-tsc/\n.nx/\ntmp/\n.env\n' >>"$WS_PROJECTS/alpha/.git/info/exclude"
+    mkdir -p "$WS_PROJECTS/alpha/apps/web" "$WS_PROJECTS/alpha/packages/lib"
+    commit_file "$WS_PROJECTS/alpha" apps/web/README web
+    commit_file "$WS_PROJECTS/alpha" packages/lib/README lib
+    git -C "$WS_PROJECTS/alpha" push -q origin HEAD || abort "cannot push alpha"
+    merged_worktree "$o" feat/outtsc 140
+    mkdir -p "$o/apps/web/out-tsc/src" "$o/packages/lib/out-tsc" "$o/.nx/cache"
+    echo built >"$o/apps/web/out-tsc/src/main.js"
+    echo built >"$o/packages/lib/out-tsc/index.js"
+    echo cache >"$o/.nx/cache/run.json"
+    merged_worktree "$t" feat/tmp 141
+    mkdir -p "$t/apps/web/tmp" "$t/tmp/nx"
+    echo scratch >"$t/apps/web/tmp/a.txt"
+    echo scratch >"$t/apps/web/tmp/b.txt"
+    echo scratch >"$t/tmp/nx/c.txt"
+    merged_worktree "$e" feat/env 142
+    echo SECRET=only-copy >"$e/.env"
+
+    out=$(ws prune 2>/dev/null)
+    assert_eq "out-tsc and .nx are regenerable by default" REMOVE "$(action_of "$out" "$o")"
+    assert_eq "tmp is not regenerable by default" "KEEP ignored-unique" "$(action_of "$out" "$t")"
+    assert_eq "the row names each top ignored folder once" "apps/web/tmp, tmp" "$(detail_of "$out" "$t")"
+    assert_eq "an ignored file outside an ignored folder is named itself" ".env" "$(detail_of "$out" "$e")"
+
+    ws_config '# scratch dirs' 'WS_REGENERABLE_EXTRA="tmp"'
+    assert_eq "WS_REGENERABLE_EXTRA in the config adds tmp and keeps the defaults" \
+        "out-tsc=REMOVE tmp=REMOVE env=KEEP ignored-unique" "$(regen_rows ws prune)"
+    assert_eq "an empty WS_REGENERABLE_EXTRA in the environment wins over the config" \
+        "out-tsc=REMOVE tmp=KEEP ignored-unique env=KEEP ignored-unique" \
+        "$(regen_rows env WS_REGENERABLE_EXTRA= bash "$WS_BIN" prune)"
+    rm "$XDG_CONFIG_HOME/ws/config"
+    assert_eq "WS_REGENERABLE_EXTRA in the environment takes globs" \
+        "out-tsc=REMOVE tmp=REMOVE env=KEEP ignored-unique" \
+        "$(regen_rows env 'WS_REGENERABLE_EXTRA=t?p .angular' bash "$WS_BIN" prune)"
+    assert_eq "WS_REGENERABLE in the environment replaces the defaults and the extra adds to it" \
+        "out-tsc=KEEP ignored-unique tmp=REMOVE env=KEEP ignored-unique" \
+        "$(regen_rows env WS_REGENERABLE=dist WS_REGENERABLE_EXTRA=tmp bash "$WS_BIN" prune)"
+    assert_eq "a * extra still compares an ignored file" \
+        "out-tsc=REMOVE tmp=REMOVE env=KEEP ignored-unique" \
+        "$(regen_rows env 'WS_REGENERABLE_EXTRA=* .env' bash "$WS_BIN" prune)"
+
+    out=$(WS_REGENERABLE_EXTRA=apps/web/tmp ws prune 2>&1) && rc=0 || rc=$?
+    assert_eq "an extra with a slash exits 1" 1 "$rc"
+    assert_eq "it names the setting and the folder name to give" \
+        "ws: WS_REGENERABLE_EXTRA in the environment holds 'apps/web/tmp', but it takes folder names or globs with no slash, such as tmp" \
+        "$out"
+    ws_config 'WS_REGENERABLE_EXTRA=tmp/'
+    out=$(ws prune --apply <<<y 2>&1) && rc=0 || rc=$?
+    assert_eq "an extra with a slash in the config exits 1" 1 "$rc"
+    assert "it names the config" grep -qF "ws: WS_REGENERABLE_EXTRA in ~/.config/ws/config holds 'tmp/'" <<<"$out"
+    ws_config 'WS_REGENERABLE_EXTRA tmp'
+    out=$(ws prune 2>&1) && rc=0 || rc=$?
+    assert_eq "a config ws cannot parse exits 1" 1 "$rc"
+    assert_eq "it names the line" "ws: line 1 of ~/.config/ws/config is not KEY=value" "$out"
+    assert "neither moves a worktree" is_worktree "$t"
+
+    ws_config 'WS_REGENERABLE_EXTRA=tmp'
+    ws prune --apply <<<y >/dev/null 2>&1
+    assert "apply moves the tmp worktree" in_trash "$t"
+    assert "apply moves the out-tsc worktree" in_trash "$o"
+    assert "apply keeps the .env worktree" is_worktree "$e"
+    assert "the only copy of .env survives" grep -q only-copy "$e/.env"
+}
+
+test_in_use_skips_regenerable_dirs() {
+    new_fixture
+    local c=$WS_PROJECTS/alpha-closed out
+    printf 'out-tsc/\ntmp/\n' >>"$WS_PROJECTS/alpha/.git/info/exclude"
+    mkdir -p "$c/out-tsc/a/b" "$c/tmp/a/b"
+    ln -s "$c" "$FX/container-view"
+    fake_proc 101 1 "$FX/container-view/out-tsc/a/b" "mnt:[2]"
+    out=$(ws prune 2>/dev/null)
+    assert_eq "a process in another mount namespace inside out-tsc does not make it in-use" REMOVE \
+        "$(action_of "$out" "$c")"
+    rm -r "$WS_PROC/101"
+    fake_proc 102 1 "$FX/container-view/tmp/a/b" "mnt:[2]"
+    out=$(ws prune 2>/dev/null)
+    assert_eq "one inside tmp makes it in-use" "KEEP in-use" "$(action_of "$out" "$c")"
+    ws_config 'WS_REGENERABLE_EXTRA=tmp'
+    out=$(ws prune 2>/dev/null)
+    assert_eq "with tmp in WS_REGENERABLE_EXTRA it does not" REMOVE "$(action_of "$out" "$c")"
 }
 
 test_odd_worktree_path() {
@@ -3881,6 +3982,8 @@ run_test test_hidden_flags
 run_test test_ignored_files
 run_test test_ignored_dirs
 run_test test_regenerable_only_at_the_top
+run_test test_regenerable_extra
+run_test test_in_use_skips_regenerable_dirs
 run_test test_odd_worktree_path
 run_test test_bare_common
 run_test test_records_cannot_be_forged

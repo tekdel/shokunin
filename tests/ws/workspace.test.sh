@@ -592,6 +592,40 @@ test_rm() {
     assert_eq "restore brings .ws back" feat/x "$(ws_value t1 WS_BRANCH)"
 }
 
+test_rm_regenerable_extra() {
+    local out rc help
+    new_fixture_no_ticket
+    agents '[]'
+    printf 'out-tsc/\ntmp/\n.env\n' >>"$WS_PROJECTS/alpha/.git/info/exclude"
+    echo out-tsc/ >>"$WS_PROJECTS/beta/.git/info/exclude"
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    mkdir -p "$WS_ROOT/t1/alpha/tmp/nx" "$WS_ROOT/t1/beta/out-tsc"
+    echo scratch >"$WS_ROOT/t1/alpha/tmp/nx/run.json"
+    echo built >"$WS_ROOT/t1/beta/out-tsc/index.js"
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    assert_eq "rm keeps a ticket whose worktree has a unique file in tmp" 1 "$rc"
+    assert "it names the tmp folder" grep -qx "ws: ~/work/t1/alpha: ignored-unique (tmp)" <<<"$out"
+    refute "it names no reason for the out-tsc worktree" grep -q "t1/beta:" <<<"$out"
+    assert "the tmp file stays" test -f "$WS_ROOT/t1/alpha/tmp/nx/run.json"
+
+    ws_config 'WS_REGENERABLE_EXTRA=tmp'
+    out=$(ws rm t1 2>&1) && rc=0 || rc=$?
+    assert_eq "with tmp in WS_REGENERABLE_EXTRA in the config rm exits 0" 0 "$rc"
+    refute "it removes the ticket" test -e "$WS_ROOT/t1"
+
+    ws new t2 feat/y +alpha >/dev/null 2>&1
+    echo SECRET=only-copy >"$WS_ROOT/t2/alpha/.env"
+    out=$(WS_REGENERABLE_EXTRA='* .env' ws rm t2 2>&1) && rc=0 || rc=$?
+    assert_eq "rm keeps a unique .env whatever WS_REGENERABLE_EXTRA holds" 1 "$rc"
+    assert "it names .env" grep -qx "ws: ~/work/t2/alpha: ignored-unique (.env)" <<<"$out"
+    assert "the .env stays" grep -q only-copy "$WS_ROOT/t2/alpha/.env"
+
+    help=$(ws new --help | tr '\n' ' ' | tr -s ' ')
+    assert "help lists WS_REGENERABLE_EXTRA with the settings" grep -qF 'WS_REGENERABLE_EXTRA="tmp .angular"' <<<"$help"
+    assert "help says it adds to WS_REGENERABLE and never replaces it" \
+        grep -qF "WS_REGENERABLE_EXTRA holds folder names or glob patterns that ws adds to WS_REGENERABLE" <<<"$help"
+}
+
 test_pick_lists_what_the_sessionizer_listed() {
     local head row missing=0
     new_fixture
@@ -1781,6 +1815,7 @@ run_test test_stage_limit
 run_test test_rm_refuses
 run_test test_rm_refuses_inside_its_session
 run_test test_rm
+run_test test_rm_regenerable_extra
 run_test test_pick_lists_what_the_sessionizer_listed
 run_test test_pick_order
 run_test test_status
