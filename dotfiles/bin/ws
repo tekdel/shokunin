@@ -5,7 +5,7 @@ WS_ROOT=${WS_ROOT:-$HOME/work}
 WS_GH_TIMEOUT=${WS_GH_TIMEOUT:-60}
 WS_PROC=${WS_PROC:-/proc}
 WS_TRASH=${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}
-WS_REGENERABLE=${WS_REGENERABLE-node_modules dist dist-test build coverage prisma-client .next .turbo target __pycache__ .cache}
+WS_REGENERABLE=${WS_REGENERABLE-node_modules dist dist-test build coverage prisma-client .next .turbo target __pycache__ .cache out-tsc .nx}
 WS_VAULT=${WS_VAULT:-$HOME/claude-knowledge-vault}
 WS_CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/ws
 WS_PR_TTL=${WS_PR_TTL:-300}
@@ -58,6 +58,8 @@ declare -gA WS_TICKET_TRASH=()
 declare -ga WS_MOUNT_NAMES=() WS_MOUNT_SOURCES=()
 declare -ga WS_WT_REPOS=() WS_WT_PATHS=() WS_WT_UNREAD=() WS_HITS=() WS_SCANNED_REPOS=() WS_CWD_PIDS=()
 declare -ga TICKET_OLD=() TICKET_REPOS=() TICKET_ADD=() UP_NAMES=()
+# Empty until ws_env_ok reads the settings, so a scan before it compares every ignored file.
+declare -ga WS_REGEN_PATTERNS=()
 TICKET_KEY=
 WS_ENGINE_ERR="ws did not ask the container engines"
 WS_ENGINES_OK=
@@ -127,8 +129,13 @@ KEEP reasons:
   nested-repo     a .git, .hg, .jj, .svn, .bzr, _darcs, .sl, .pijul,
                   .fslckout, _FOSSIL_, or bare repository sits inside it
   ignored-unique  an ignored file has no byte-identical copy in the main
-                  checkout; files under a top-most ignored directory
-                  whose name matches WS_REGENERABLE are not compared
+                  checkout; the row names the top-most ignored folder
+                  of each such file, or the file when it is not in an
+                  ignored folder. Files under a top-most ignored folder
+                  whose name matches WS_REGENERABLE or
+                  WS_REGENERABLE_EXTRA are not compared, so add the name
+                  of a folder that a build or tool writes, such as tmp,
+                  to WS_REGENERABLE_EXTRA
   in-use          a process has its working directory inside it
   unpushed        no remote has a commit of HEAD, refs/worktree/*, or
                   refs/bisect/*, and HEAD is not the merged PR's head
@@ -142,27 +149,27 @@ worktree, and again before --purge deletes an entry.
 
 A process in another mount namespace counts when its directory is the
 worktree or a directory up to three levels below it, outside
-WS_REGENERABLE directories. A process of yours whose directory or status
-file ws cannot read, because it turned off core dumps or holds extra
-capabilities, makes every worktree KEEP unreadable while it runs. A
-zombie process of yours counts by the directories of its threads that
-still run, and makes every worktree KEEP unreadable when ws cannot read
-those either; the row names the zombie's parent. A process that has
-exited holds no directory, so the check skips it before its parent reaps
-it. The check skips a hidden process when its parent belongs to another
-user, as for SSH logins, when its parent is a process of yours whose own
-parent is init, as for user services and daemons such as a tmux server,
-and when it runs below a containerd-shim in docker's containerd
-namespace, moby, while docker answered, or below a conmon while podman
-answered, since the container check covers it. So a command that turns
-off core dumps and runs directly in a tmux pane is not seen.
-The check does not see processes of other users either. It does not look
-at open files. A process whose directory is elsewhere can hold an ignored
-file in a worktree open, and a write it makes in the about 45 ms between
-the last check of --purge and the removal is lost. --purge asks the
-engines about 85 ms before the removal, so a container that starts in
-that window is not seen. Both windows grow when --purge saves a bundle
-first.
+WS_REGENERABLE and WS_REGENERABLE_EXTRA directories. A process of yours
+whose directory or status file ws cannot read, because it turned off
+core dumps or holds extra capabilities, makes every worktree KEEP
+unreadable while it runs. A zombie process of yours counts by the
+directories of its threads that still run, and makes every worktree KEEP
+unreadable when ws cannot read those either; the row names the zombie's
+parent. A process that has exited holds no directory, so the check skips
+it before its parent reaps it. The check skips a hidden process when its
+parent belongs to another user, as for SSH logins, when its parent is a
+process of yours whose own parent is init, as for user services and
+daemons such as a tmux server, and when it runs below a containerd-shim
+in docker's containerd namespace, moby, while docker answered, or below
+a conmon while podman answered, since the container check covers it. So
+a command that turns off core dumps and runs directly in a tmux pane is
+not seen. The check does not see processes of other users either. It
+does not look at open files. A process whose directory is elsewhere can
+hold an ignored file in a worktree open, and a write it makes in the
+about 45 ms between the last check of --purge and the removal is lost.
+--purge asks the engines about 85 ms before the removal, so a container
+that starts in that window is not seen. Both windows grow when --purge
+saves a bundle first.
 
 A worktree that is the source of a container's bind mount, holds one, or
 lies inside one is KEEP in-use, and the row names the container. ws
@@ -228,7 +235,13 @@ Environment:
   WS_REGENERABLE  names or glob patterns of ignored directories whose
                   files are not compared, default "node_modules dist
                   dist-test build coverage prisma-client .next .turbo
-                  target __pycache__ .cache"
+                  target __pycache__ .cache out-tsc .nx"; a value
+                  replaces the default
+  WS_REGENERABLE_EXTRA
+                  more names or glob patterns that ws adds to
+                  WS_REGENERABLE, such as "tmp .angular"; ws reads it
+                  from the environment, or else from
+                  ${XDG_CONFIG_HOME:-~/.config}/ws/config
   WS_GH_TIMEOUT   seconds before a gh call fails, 60 by default
 EOF
 }
@@ -454,9 +467,8 @@ ws_name_args() {
 }
 
 ws_dir_ids() {
-    local -a names=() skip=()
-    read -r -a names <<<"$WS_REGENERABLE"
-    mapfile -d '' skip < <(ws_name_args "${names[@]}")
+    local -a skip=()
+    mapfile -d '' skip < <(ws_name_args "${WS_REGEN_PATTERNS[@]}")
     stat -c '%d:%i' -- "$1"
     ((${#skip[@]} == 0)) || skip=(-type d \( "${skip[@]:1}" \) -prune -o)
     find "$1" -mindepth 1 -maxdepth 3 "${skip[@]}" -type d -printf '%D:%i\n' 2>/dev/null
@@ -703,11 +715,25 @@ ws_container_facts() {
     done
 }
 
+ws_regen_load() {
+    local word name
+    local -a extra=()
+    ws_setting WS_REGENERABLE_EXTRA extra || return 1
+    for word in "${extra[@]}"; do
+        if [[ $word == */* ]]; then
+            name=${word%/}
+            name=${name##*/}
+            echo "ws: $REPLY holds '$word', but it takes folder names or globs with no slash${name:+, such as $name}" >&2
+            return 1
+        fi
+    done
+    read -r -a WS_REGEN_PATTERNS <<<"$WS_REGENERABLE"
+    WS_REGEN_PATTERNS+=("${extra[@]}")
+}
+
 ws_regenerable() {
     local name
-    local -a names=()
-    read -r -a names <<<"$WS_REGENERABLE"
-    for name in "${names[@]}"; do
+    for name in "${WS_REGEN_PATTERNS[@]}"; do
         # shellcheck disable=SC2053
         [[ $1 != $name ]] || return 0
     done
@@ -734,7 +760,7 @@ ws_ignored_copy() {
 }
 
 ws_content_facts() {
-    local dir=$1 main=$2 realdir entry rel mark name rc
+    local dir=$1 main=$2 realdir entry rel mark name named="" rc
     local -a entries=() marks=() files=() repo=()
     local -A checked=()
     realdir=$(realpath -e -- "$dir") || {
@@ -793,7 +819,10 @@ ws_content_facts() {
             ws_ignored_copy "$dir" "$realdir" "$main" "$rel" && rc=0 || rc=$?
             case $rc in
             0) ;;
-            1) ws_record ignored-unique "$rel" ;;
+            1)
+                [[ $named == "$name" ]] || ws_record ignored-unique "$name"
+                named=$name
+                ;;
             *) ws_record unreadable "cannot read $rel" ;;
             esac
         done
@@ -1206,6 +1235,7 @@ ws_env_ok() {
             return 1
         fi
     done
+    ws_regen_load
 }
 
 ws_free_path() {
@@ -2705,13 +2735,14 @@ while its record in ~/.dockyard/slots.json names the ticket directory as
 its workspace. A stack that another ticket or a plain dockyard up made
 stays as it is.
 
-ws reads three settings from the environment, or else from
+ws reads four settings from the environment, or else from
 ${XDG_CONFIG_HOME:-~/.config}/ws/config, a file of KEY=value lines and
 # comments that ws parses and never runs:
 
   WS_DEFAULT_REPOS="alpha beta"
   WS_UP_PROFILES="gamma:worker omega:portal"
   WS_UP_MIGRATE="alpha=npx prisma migrate deploy; gamma=bin/migrate"
+  WS_REGENERABLE_EXTRA="tmp .angular"
 
 WS_DEFAULT_REPOS lists the default repos of ws new, the repos whose
 services dockyard starts without a profile. An empty WS_DEFAULT_REPOS
@@ -2733,6 +2764,13 @@ environment that dockyard gives that container, and ws passes nothing
 from the host. Every stack shares one database, so a migration changes
 the env of every ticket. Use a command that applies pending migrations
 and never resets the database, such as prisma migrate deploy.
+
+WS_REGENERABLE_EXTRA holds folder names or glob patterns that ws adds
+to WS_REGENERABLE, the ignored folders whose files ws prune and ws rm
+do not compare with the main checkout. It never replaces that list,
+and a name takes no slash. When ws keeps a worktree for
+ignored-unique, the reason names the folders behind it. Add the name
+of one that a build or tool writes. ws prune -h lists the defaults.
 EOF
 }
 
