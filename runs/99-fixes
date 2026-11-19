@@ -79,6 +79,39 @@ if ! systemctl is-enabled --quiet systemd-oomd || ! systemctl is-active --quiet 
     echo "✓ systemd-oomd enabled"
 fi
 
+# Run every Docker container under containers.slice
+CONTAINERS_SLICE=/etc/systemd/system/containers.slice
+CONTAINERS_SLICE_TEXT=$'[Unit]\nDescription=All Docker containers, under one shared memory cap\n\n[Slice]\nMemoryMax=80%'
+DOCKER_DIR=/etc/docker
+DOCKER_CONF=$DOCKER_DIR/daemon.json
+DOCKER_CONF_IN=$DOCKER_CONF
+if [ ! -e "$DOCKER_DIR" ] || { [ -x "$DOCKER_DIR" ] && [ ! -e "$DOCKER_CONF" ]; }; then
+    DOCKER_CONF_IN=/dev/null
+fi
+if [ "$(cat "$CONTAINERS_SLICE" 2>/dev/null)" != "$CONTAINERS_SLICE_TEXT" ]; then
+    echo "Writing containers.slice..."
+    printf '%s\n' "$CONTAINERS_SLICE_TEXT" | sudo tee "$CONTAINERS_SLICE" >/dev/null
+    sudo systemctl daemon-reload
+    echo "✓ containers.slice written"
+fi
+if ! DOCKER_CONF_TEXT=$(jq -s '(.[0] // {}) | select(."cgroup-parent" != "containers.slice")
+    | ."cgroup-parent" = "containers.slice"' "$DOCKER_CONF_IN"); then
+    echo "Warning: could not update $DOCKER_CONF. Add \"cgroup-parent\": \"containers.slice\" to it by hand."
+elif [ -n "$DOCKER_CONF_TEXT" ]; then
+    echo "Setting cgroup-parent in $DOCKER_CONF..."
+    sudo mkdir -p "$DOCKER_DIR"
+    printf '%s\n' "$DOCKER_CONF_TEXT" | sudo tee "$DOCKER_CONF" >/dev/null
+    echo "✓ $DOCKER_CONF sets cgroup-parent to containers.slice"
+    if [ "$(systemctl is-active docker 2>/dev/null)" = active ]; then
+        if DOCKER_RUNNING=$(docker -H unix:///var/run/docker.sock ps -q) && [ -z "$DOCKER_RUNNING" ]; then
+            echo "Restarting Docker..."
+            sudo systemctl restart docker && echo "✓ Docker restarted"
+        else
+            echo "Note: run 'sudo systemctl restart docker' to apply it when the stacks can go down. The restart stops every running container."
+        fi
+    fi
+fi
+
 # Fix DNS configuration for systemd-resolved
 # /etc/resolv.conf should be a symlink to systemd-resolved's stub resolver
 if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
