@@ -57,7 +57,10 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   bin/podman           and inspect from <engine>.json; docker also
                        answers ps -q with a compose project label and
                        status=running filter, and a compose service
-                       label filter after them, compose -p <project>
+                       label filter after them, ps -a --no-trunc
+                       --format, which prints the project, service,
+                       state, and id of every container with the byte
+                       0x1f between them, compose -p <project>
                        logs, which prints one line and sleeps, and
                        compose -p <project> exec -T <service>, which
                        prints its arguments in brackets, or fails as
@@ -106,6 +109,11 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   bin/doppler          doppler shim: logs its arguments to doppler.log
                        and exits 1, so no call reaches Doppler
   <engine>.gone        ids that ps lists and inspect no longer knows
+  <engine>.hang        create it to make ps -a --no-trunc --format sleep
+                       30 seconds before it answers; the shim writes its
+                       pid to <engine>.hang.pid first
+  cgroup/              WS_CGROUP: write <slice>/docker-<id>.scope/
+                       memory.current and containers.slice/memory.max
   <engine>.err         create it to make the engine print its content to
                        stderr and exit 1
   <engine>.inspect.err the same for inspect alone
@@ -114,11 +122,11 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        XDG_DATA_HOME, and XDG_STATE_HOME dirs under
                        <root>, TMPDIR as <root>/.tmp, GIT_CONFIG_GLOBAL,
                        GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
-                       WS_VAULT, PATH, and a short TMUX_TMPDIR under
-                       /tmp, and unsets TMUX, TMUX_PANE, CLAUDECODE,
-                       WS_DEFAULT_REPOS, WS_UP_PROFILES,
-                       WS_UP_MIGRATE, WS_REGENERABLE, and
-                       WS_REGENERABLE_EXTRA; remove
+                       WS_VAULT, WS_CGROUP, PATH, and a short
+                       TMUX_TMPDIR under /tmp, and unsets TMUX,
+                       TMUX_PANE, CLAUDECODE, WS_DEFAULT_REPOS,
+                       WS_UP_PROFILES, WS_UP_MIGRATE, WS_REGENERABLE,
+                       WS_REGENERABLE_EXTRA, and WS_DOCKER_TIMEOUT; remove
                        TMUX_TMPDIR with <root>
 EOF
 }
@@ -141,7 +149,7 @@ root=$(cd "$1" && pwd)
 
 projects=$root/projects
 real_tmux=$(command -v tmux) || real_tmux=
-mkdir -p "$root/origins" "$projects/notes" "$root/work" "$root/vault" "$root/bin" \
+mkdir -p "$root/origins" "$projects/notes" "$root/work" "$root/vault" "$root/bin" "$root/cgroup" \
     "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state" "$root/.tmp"
 : >"$root/.zshrc"
 # A socket path under <root> can pass the 108-byte limit.
@@ -172,11 +180,13 @@ export XDG_STATE_HOME=$(printf %q "$root/.local/state")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
 export TMPDIR=$(printf %q "$root/.tmp")
 unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS WS_UP_PROFILES WS_UP_MIGRATE WS_REGENERABLE WS_REGENERABLE_EXTRA
+unset WS_DOCKER_TIMEOUT
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
 export WS_ROOT=$(printf %q "$root/work")
 export WS_PROJECTS=$(printf %q "$projects")
 export WS_VAULT=$(printf %q "$root/vault")
+export WS_CGROUP=$(printf %q "$root/cgroup")
 export PATH=$(printf %q "$root/bin"):\$PATH
 EOF
 # shellcheck source=/dev/null
@@ -310,6 +320,14 @@ case "$*" in
 "ps -q --no-trunc")
     jq -r '.[] | select((.State // "running") == "running") | .Id' "$root/$engine.json"
     [[ ! -f $root/$engine.gone ]] || cat "$root/$engine.gone"
+    ;;
+"ps -a --no-trunc --format "*)
+    if [[ -f $root/$engine.hang ]]; then
+        echo "$$" >"$root/$engine.hang.pid"
+        exec sleep 30
+    fi
+    jq -r '.[] | [.Labels["com.docker.compose.project"] // "", .Labels["com.docker.compose.service"] // "",
+        .State // "running", .Id] | join("\u001f")' "$root/$engine.json"
     ;;
 "ps -q --filter label=com.docker.compose.project="*" --filter status=running")
     jq -r --arg p "${4#label=com.docker.compose.project=}" \

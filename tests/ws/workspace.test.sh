@@ -85,6 +85,7 @@ ticket_rows() {
 fake_fzf() {
     cat >"$FX/bin/fzf" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\0' "$@" >"$(dirname "$0")/../fzf.args"
 awk -F '\t' -v want="$WS_FZF_PICK" '$1 == want { print; found = 1; exit } END { exit !found }'
 EOF
     chmod +x "$FX/bin/fzf"
@@ -702,10 +703,13 @@ test_status() {
     assert_eq "--waiting prints nothing when claude agents gives no list" "" "$(ws status --waiting)"
     wait_refresh
 
+    touch "$FX/docker.err"
     sed -i 's/^WS_SLOT=$/WS_SLOT=3/' "$WS_ROOT/t1/.ws"
-    assert "ls shows env:down when only WS_SLOT is set" grep -qE ' env:down +feat/x$' <<<"$(ws ls)"
+    assert "without docker, ls shows env:down? when only WS_SLOT is set" grep -qE ' env:down\? +feat/x$' <<<"$(ws ls)"
     sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#' "$WS_ROOT/t1/.ws"
-    assert "ls shows env:up when WS_URLS is set" grep -qE ' env:up +feat/x$' <<<"$(ws ls)"
+    assert "without docker, ls shows env:up? when WS_URLS is set" grep -qE ' env:up\? +feat/x$' <<<"$(ws ls)"
+    rm "$FX/docker.err"
+    refute "with docker, ls shows no env for a stack without containers" grep -qF 'env:' <<<"$(ws ls)"
     printf 'garbage' >"$WS_ROOT/t1/.ws"
     assert "ls marks a malformed .ws" grep -qE '^t1 +malformed .ws: line 1 of ~/work/t1/.ws is not KEY=value$' <<<"$(ws ls)"
 }
@@ -763,7 +767,7 @@ test_pick_projects_folder() {
     assert_eq "its children follow it" "$WS_PROJECTS/alpha" "$(sed -n 3p <<<"$rows" | cut -f1)"
     assert "a waiting session in a child counts on the child" grep -qxF "$WS_PROJECTS/beta"$'\t''~/projects/beta  1 waiting' <<<"$rows"
     assert_eq "the projects folder prints once" 1 "$(cut -f1 <<<"$rows" | grep -cxF "$WS_PROJECTS")"
-    assert_eq "ls lists only the ticket" 1 "$(ws ls | wc -l)"
+    assert_eq "ls lists the memory line and only the ticket" 2 "$(ws ls | wc -l)"
     rows=$(WS_PROJECTS=$HOME/none WS_VAULT=$HOME/novault ws pick --print)
     refute "pick lists no projects folder that does not exist" grep -qF "$HOME/none" <<<"$rows"
     refute "pick lists no vault that does not exist" grep -qF "$HOME/novault" <<<"$rows"
@@ -853,6 +857,230 @@ test_pick_help() {
         grep -qF 'list the tickets, then $WS_PROJECTS itself, then the other directories in $WS_ROOT' <<<"$help"
     assert "help says two directories never share a session" \
         grep -qF 'or the name is a ticket id, pick takes <name>-2, <name>-3, and so on, so two directories never share a session' <<<"$help"
+}
+
+GIB=1073741824
+MIB=1048576
+
+live_container() {
+    local project=$1 service=$2 state=$3 id=$4 bytes=${5-} slice=${6:-containers.slice}
+    {
+        jq --arg p "$project" --arg s "$service" --arg st "$state" --arg id "$id" \
+            '. + [{Id: $id, Name: "/\($id)", Mounts: [], State: $st,
+                Labels: (if $p == "" then {} else {"com.docker.compose.project": $p, "com.docker.compose.service": $s} end)}]' \
+            "$FX/docker.json" >"$FX/docker.json.new" && mv "$FX/docker.json.new" "$FX/docker.json" &&
+            if [[ -n $bytes ]]; then
+                mkdir -p "$WS_CGROUP/$slice/docker-$id.scope" &&
+                    echo "$bytes" >"$WS_CGROUP/$slice/docker-$id.scope/memory.current"
+            fi
+    } || abort "cannot add container $id"
+}
+
+machine_memory() {
+    {
+        mkdir -p "$WS_CGROUP/containers.slice" && echo "$1" >"$WS_CGROUP/containers.slice/memory.max" &&
+            printf 'MemTotal:       16777216 kB\nMemAvailable:   %s kB\n' "$2" >"$WS_PROC/meminfo"
+    } || abort "cannot write the memory files"
+}
+
+test_pick_live_env() {
+    local out
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    ws new t3 feat/z +alpha >/dev/null 2>&1
+    ws new t4 feat/w +beta >/dev/null 2>&1
+    sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#; s/^WS_SLOT=$/WS_SLOT=4/' "$WS_ROOT/t4/.ws"
+    sed -i 's/^WS_SLOT=$/WS_SLOT=1/' "$WS_ROOT/t1/.ws"
+    live_container dockyard-feat-x alpha running x1 "$GIB" containers.slice
+    live_container dockyard-feat-x redis running x2 $((512 * MIB)) system.slice
+    live_container dockyard-feat-y s1 running y1 $((256 * MIB))
+    live_container dockyard-feat-y s2 running y2 $((256 * MIB))
+    live_container dockyard-feat-y s3 running y3 $((256 * MIB))
+    live_container dockyard-feat-y s4 exited y4
+    live_container dockyard-feat-y s5 created y5
+    live_container dockyard-feat-z alpha exited z1
+    live_container dockyard-other web running o1 $((384 * MIB))
+    live_container "" "" running loose1 $((128 * MIB))
+    machine_memory $((8 * GIB)) 4194304
+
+    out=$(ws ls)
+    assert_eq "ls starts with the memory of all containers against the cap, MemAvailable, and the stacks of no ticket" \
+        "containers 2.8G of 8.0G cap, 4.0G available, 2 other stacks 512M" "$(head -n 1 <<<"$out")"
+    assert "a stack whose containers all run is up, with the memory found under either slice" \
+        grep -qE '^t1 +spec +env:up +1\.5G feat/x$' <<<"$out"
+    assert "a stack where some containers run is part running/all" grep -qE '^t2 +spec +env:part 3/5 +768M feat/y$' <<<"$out"
+    assert "a stack where no container runs is down, with no memory" grep -qE '^t3 +spec +env:down +feat/z$' <<<"$out"
+    assert "a stack with no container shows no env, whatever .ws records" grep -qE '^t4 +spec +feat/w$' <<<"$out"
+    assert "pick shows the same live rows" grep -qE $'\t''t2 +spec +env:part 3/5 +768M feat/y$' <<<"$(ws pick --print)"
+    assert_eq "pick --print prints no memory line" "$WS_ROOT/t1" "$(ws pick --print | head -n 1 | cut -f1)"
+
+    echo max >"$WS_CGROUP/containers.slice/memory.max"
+    assert_eq "a slice with no cap leaves the cap out" "containers 2.8G, 4.0G available, 2 other stacks 512M" \
+        "$(ws ls | head -n 1)"
+    echo '[]' >"$FX/docker.json"
+    rm "$WS_PROC/meminfo"
+    assert_eq "with no container and no meminfo the line says so" "containers 0M, 0 other stacks" "$(ws ls | head -n 1)"
+}
+
+test_pick_env_falls_back_to_ws() {
+    local out start elapsed dir cmd f
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#; s/^WS_SLOT=$/WS_SLOT=3/' "$WS_ROOT/t1/.ws"
+    sed -i 's/^WS_SLOT=$/WS_SLOT=4/' "$WS_ROOT/t2/.ws"
+    live_container dockyard-feat-y beta running y1 "$GIB"
+    machine_memory $((8 * GIB)) 4194304
+
+    touch "$FX/docker.hang"
+    start=$(date +%s%N)
+    out=$(WS_DOCKER_TIMEOUT=1 ws ls)
+    elapsed=$((($(date +%s%N) - start) / 1000000))
+    assert "ls stops waiting on a docker that does not answer within WS_DOCKER_TIMEOUT" test "$elapsed" -lt 4000
+    refute "the docker that hung is gone" kill -0 "$(cat "$FX/docker.hang.pid")" 2>/dev/null
+    assert_eq "the memory line says the env comes from .ws, and why" \
+        "env from .ws (docker did not answer in 1s), 4.0G available" "$(head -n 1 <<<"$out")"
+    assert_eq "a WS_DOCKER_TIMEOUT of 0 still stops waiting, after the default 2 seconds" \
+        "env from .ws (docker did not answer in 2s), 4.0G available" "$(WS_DOCKER_TIMEOUT=0 ws ls | head -n 1)"
+    assert "URLs in .ws give env:up? instead of the live state" grep -qE '^t1 +spec +env:up\? +feat/x$' <<<"$out"
+    assert "a slot alone in .ws gives env:down?, with no memory" grep -qE '^t2 +spec +env:down\? +feat/y$' <<<"$out"
+    rm "$FX/docker.hang"
+
+    touch "$FX/docker.err"
+    assert_eq "a docker that fails gives the env of .ws too" "env from .ws (docker ps failed), 4.0G available" \
+        "$(ws ls | head -n 1)"
+    rm "$FX/docker.err"
+
+    dir=$FX/nodocker
+    mkdir "$dir" || abort "cannot make $dir"
+    for f in "$FX"/bin/*; do
+        [[ ${f##*/} == docker ]] || ln -s "$f" "$dir/" || abort "cannot link $f"
+    done
+    for cmd in bash cat cut find jq realpath sort timeout; do
+        ln -s "$(PATH=$_base_path type -P "$cmd")" "$dir/$cmd" || abort "cannot link $cmd"
+    done
+    out=$(PATH=$dir ws ls)
+    assert_eq "without docker on PATH the env comes from .ws" "env from .ws (docker is not installed), 4.0G available" \
+        "$(head -n 1 <<<"$out")"
+    assert "and the row says what .ws records" grep -qE '^t2 +spec +env:down\? +feat/y$' <<<"$out"
+}
+
+test_pick_preview() {
+    local out before
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
+    add_pr beta feat/x CLOSED 3 "$(head_of "$WS_ROOT/t1/beta")"
+    add_pr beta feat/x MERGED 4 "$(head_of "$WS_ROOT/t1/beta")"
+    ws status --refresh
+    assert_eq "the cache keeps the states where an older ws reads them" '["open","merged"]' \
+        "$(jq -c '.prs.tickets.t1' "$XDG_CACHE_HOME/ws/status.json")"
+    live_container dockyard-feat-x alpha running x1 "$GIB"
+    live_container dockyard-feat-x beta exited x2
+    live_container dockyard-feat-x redis running x3 $((512 * MIB)) system.slice
+    {
+        mkdir -p "$WS_VAULT/handoffs" "$WS_VAULT/projects/work/t1/progress" &&
+            printf 'summary: older handoff\n' >"$WS_VAULT/handoffs/2026-01-02T09-00-t1.yaml" &&
+            printf 'timestamp: x\nsummary: >\n  Stopped after the\n  migration test.\nnext:\n  - ship\n' \
+                >"$WS_VAULT/handoffs/2026-01-03T10-30-t1+cleanup.yaml" &&
+            printf 'summary: handoff of another ticket\n' >"$WS_VAULT/handoffs/2026-01-04T08-00-t10.yaml" &&
+            for n in 1 2 3 4 5 6 7; do echo "- 2026-01-0${n}T10:00:00Z step $n"; done \
+                >"$WS_VAULT/projects/work/t1/progress/t1.md"
+    } || abort "cannot write the vault files"
+
+    before=$(gh_calls)
+    out=$(ws pick --preview "$WS_ROOT/t1")
+    assert_eq "the preview asks gh nothing" "$before" "$(gh_calls)"
+    assert_eq "the preview starts with the id, stage, and branch" $'t1\nstage     spec\nbranch    feat/x' \
+        "$(head -n 3 <<<"$out")"
+    assert "it gives the live env state and memory" grep -qxE 'env +part 2/3  1\.5G' <<<"$out"
+    assert "it gives the state and memory of a running container" grep -qxE '  alpha +running +1\.0G' <<<"$out"
+    assert "it gives the state of a stopped container" grep -qxE '  beta +exited' <<<"$out"
+    assert "it counts the PRs by state" grep -qxE 'PRs +1 open, 1 merged' <<<"$out"
+    assert "it lists the open PR with its repo and number" grep -qxE '  alpha +#12 +open' <<<"$out"
+    assert "it lists the merged PR too" grep -qxE '  beta +#4 +merged' <<<"$out"
+    assert "it names the newest handoff of the ticket" grep -qxE 'handoff +2026-01-03T10-30-t1\+cleanup\.yaml' <<<"$out"
+    assert_eq "it prints the handoff summary under its name" $'  Stopped after the\n  migration test.' \
+        "$(sed -n '/^handoff/{n;p;n;p}' <<<"$out")"
+    refute "it leaves out the rest of the handoff" grep -qF 'ship' <<<"$out"
+    assert "it prints the last progress line" grep -qxF '  - 2026-01-07T10:00:00Z step 7' <<<"$out"
+    assert "it prints five progress lines" grep -qxF '  - 2026-01-03T10:00:00Z step 3' <<<"$out"
+    refute "it leaves out older progress lines" grep -qF 'step 2' <<<"$out"
+
+    touch "$FX/docker.err"
+    sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#' "$WS_ROOT/t1/.ws"
+    assert "without docker the preview gives the env of .ws, and why" \
+        grep -qxE 'env +up from \.ws \(docker ps failed\)' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+    rm "$FX/docker.err"
+    echo '[]' >"$FX/docker.json"
+    sed -i 's/^WS_SLOT=$/WS_SLOT=2/' "$WS_ROOT/t1/.ws"
+    assert "a stack with no container says so and names the slot" \
+        grep -qxE 'env +no containers, slot 2 kept' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+    chmod 000 "$WS_VAULT/handoffs/2026-01-03T10-30-t1+cleanup.yaml"
+    assert "an unreadable handoff still leaves the progress lines" \
+        grep -qxF '  - 2026-01-07T10:00:00Z step 7' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+    chmod 644 "$WS_VAULT/handoffs/2026-01-03T10-30-t1+cleanup.yaml"
+
+    {
+        jq '.prs |= del(.pulls)' "$XDG_CACHE_HOME/ws/status.json" >"$FX/status.new" &&
+            mv "$FX/status.new" "$XDG_CACHE_HOME/ws/status.json"
+    } || abort "cannot write an old cache"
+    out=$(ws pick --preview "$WS_ROOT/t1")
+    assert "a cache of an older ws gives the PR states" grep -qxE 'PRs +open, merged' <<<"$out"
+    assert "and says the numbers come with the next refresh" \
+        grep -qxF '  the cache has no PR numbers until the next status refresh' <<<"$out"
+    assert "ls still reads that cache" grep -qE '^t1 +spec +pr:open,merged ' <<<"$(ws ls)"
+    cp "$XDG_CACHE_HOME/ws/status.json" "$FX/status.keep" || abort "cannot keep the cache"
+    jq '.prs.tickets.t1 += ["closed\n"]' "$FX/status.keep" >"$XDG_CACHE_HOME/ws/status.json" || abort "cannot write a bad cache"
+    assert "a state with a newline in the cache is left out" grep -qxE 'PRs +open, merged' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+    cp "$FX/status.keep" "$XDG_CACHE_HOME/ws/status.json" || abort "cannot put the cache back"
+    before=$(gh_calls)
+    ws status --refresh
+    assert "a refresh within WS_PR_TTL asks gh when the cache has no PR numbers" test "$(gh_calls)" -gt "$before"
+    assert "then the preview has the numbers" grep -qxE '  alpha +#12 +open' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    out=$(ws pick --preview "$WS_ROOT/t2")
+    assert "a ticket the cache lacks says so" grep -qxE 'PRs +not in the status cache yet' <<<"$out"
+    sed -i '/^WS_BRANCH=/d' "$WS_ROOT/t2/.ws"
+    assert "a .ws without WS_BRANCH still gets a whole preview" \
+        grep -qxE 'PRs +not in the status cache yet' <<<"$(ws pick --preview "$WS_ROOT/t2")"
+    refute "a ticket with no handoff or progress file shows neither" grep -qE '^(handoff|progress)' <<<"$out"
+
+    out=$(ws pick --preview "$WS_PROJECTS/alpha")
+    assert_eq "the preview of a project gives its path, branch, and last commit" \
+        $'~/projects/alpha\nbranch    main' "$(head -n 2 <<<"$out")"
+    assert "and its last commit" grep -qE '^last +[0-9a-f]+ init alpha \(' <<<"$out"
+    assert_eq "the preview of the projects folder is its path" "~/projects" "$(ws pick --preview "$WS_PROJECTS")"
+    { mkdir "$WS_PROJECTS/broken" && echo "gitdir: $FX/gone" >"$WS_PROJECTS/broken/.git"; } || abort "cannot make a broken repo"
+    assert_eq "a checkout git cannot read shows only its path" "~/projects/broken" "$(ws pick --preview "$WS_PROJECTS/broken")"
+}
+
+test_pick_shows_the_header_and_a_preview() {
+    local header="" preview="" window="" arg cmd
+    local -a args=()
+    new_fixture_no_ticket
+    fake_fzf
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    live_container dockyard-feat-x alpha running x1 "$GIB"
+    machine_memory $((8 * GIB)) 4194304
+    WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
+    wait_refresh
+    mapfile -d '' args <"$FX/fzf.args"
+    for arg in "${args[@]}"; do
+        case $arg in
+        --header=*) header=${arg#--header=} ;;
+        --preview=*) preview=${arg#--preview=} ;;
+        --preview-window=*) window=${arg#--preview-window=} ;;
+        esac
+    done
+    assert_eq "fzf shows the memory line of ls as its header" "$(ws ls | head -n 1)" "$header"
+    assert_eq "the preview sits on the right" right,40%,wrap "$window"
+    cmd=${preview//\{s1\}/$(printf %q "$WS_ROOT/t1")}
+    ws_guard
+    assert_eq "the preview command of fzf prints the preview of the row under the cursor" \
+        "$(ws pick --preview "$WS_ROOT/t1")" "$(bash -c "$cmd")"
 }
 
 commit_in() {
@@ -1823,6 +2051,10 @@ run_test test_pick_opens
 run_test test_pick_projects_folder
 run_test test_pick_never_shares_a_session
 run_test test_pick_help
+run_test test_pick_live_env
+run_test test_pick_env_falls_back_to_ws
+run_test test_pick_preview
+run_test test_pick_shows_the_header_and_a_preview
 run_test test_dotted_id
 run_test test_names_are_ascii
 run_test test_rm_refuses_a_foreign_process
