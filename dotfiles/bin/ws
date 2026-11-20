@@ -47,8 +47,10 @@ declare -gA WS_COMMANDS=(
     [hook]="the Claude Code hook that sends the test runs of a ticket to ws exec"
     [ls]="list the tickets with the live state and memory of their envs"
     [new]="make or repair the ticket of a Jira key or a name, with its worktrees and tmux session"
+    [pause]="record the open ticket sessions and their running stacks for ws restore"
     [pick]="pick a ticket, the projects folder, a project, or the vault, with a preview, and switch to its tmux session"
     [prune]="list worktrees whose PR merged or closed, --apply moves them to the trash"
+    [restore]="make the tmux sessions of the tickets that were open again, with --up also their stacks"
     [rm]="stop a ticket's sessions and env and move its worktrees to the trash"
     [scenarios]="write the holdout scenarios of a ticket from its Jira issue or a file"
     [stage]="set the stage of a ticket"
@@ -67,6 +69,8 @@ declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_SLOT=() T_BAD=
 declare -gA UP_PROFILES=()
 declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=() R_PATH=() R_TEXT=()
 declare -gA E_ALL=() E_RUN=() E_MEM=() E_OWNED=()
+declare -gA O_SERVER=() O_STACK=()
+declare -ga O_IDS=() O_BAD=()
 declare -ga E_STACK=() E_SERVICE=() E_STATE=() E_BYTES=()
 E_SUM=0
 E_WHY=
@@ -2557,6 +2561,8 @@ usage: ws new [--only] <key|name> [<words>|<branch>] [+<repo>...]
        ws pick [--print | --preview <path>]
        ws stage [<id>] <stage>
        ws status [--refresh | --waiting]
+       ws pause
+       ws restore [--up] [--once]
        ws up [--wait] [--migrate] [+<service>...] [--drop <service>] [<id>]
        ws down [<id>]
        ws exec [<id>] <repo> <command>...
@@ -2580,8 +2586,17 @@ command that takes an <id> also takes the Jira key of the ticket.
 
   new     make what is missing of the ticket: the worktrees, .ws,
           CLAUDE.md, .claude/settings.json, and the tmux session, whose
-          claude window runs claude -n <id>. Then switch to the
-          session. A first argument such as ABC-12 is a Jira key, which
+          claude window runs claude -n <id>, or claude -c -n <id> when
+          the ticket directory has a Claude conversation, so a session
+          that ws makes again continues the newest one. Claude Code
+          keeps each conversation as <uuid>.jsonl right in
+          ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<dir>, where <dir> is
+          the path of the ticket with each character but a letter or
+          digit as -; the subagent transcripts in folders below it do
+          not count. When claude -c exits with an error, as when it
+          finds no conversation it may continue, claude -n <id> starts
+          in the window. Then switch to the session. A first argument
+          such as ABC-12 is a Jira key, which
           .ws keeps as WS_TICKET. With only the key, the branch is the
           one branch that holds the key in the ticket's repos, local or
           on origin. Words make the branch feat/ABC-12-<words>, and an
@@ -2648,8 +2663,9 @@ command that takes an <id> also takes the Jira key of the ticket.
           $WS_PROJECTS, then the vault, in fzf. Tickets with waiting
           sessions come first, then tickets at planned, qa, or review.
           Enter switches to the tmux session of the pick and makes it
-          when it is missing. The session of a row that is not a
-          ticket is named after its directory, with dots as
+          when it is missing, for a ticket as new does, so its claude
+          window continues its conversation. The session of a row that
+          is not a ticket is named after its directory, with dots as
           underscores. When a session of that name works in another
           directory, or the name is a ticket id, pick takes <name>-2,
           <name>-3, and so on, so two directories never share a
@@ -2684,6 +2700,43 @@ command that takes an <id> also takes the Jira key of the ticket.
           --waiting prints "N waiting" for every Claude session that
           waits on you. pick and --waiting start a refresh in the
           background. Without a flag, status refreshes and runs ls.
+          Every refresh also writes the record of open tickets that
+          restore reads, below.
+  pause   write the record of open tickets, as a refresh does, and mark
+          each ticket in it whose stack has a running container, from
+          one docker ps. When docker fails or does not answer in
+          WS_DOCKER_TIMEOUT seconds, pause records nothing and exits 1.
+          It prints a line per ticket in the record. Run it before the
+          machine stops, so restore --up knows which envs to start.
+  restore make the tmux session of each ticket in the record that has
+          no session, as pick does, so its claude window continues its
+          conversation. A ticket whose directory is gone, or whose
+          session is open, is skipped. --up then runs up for each
+          ticket whose stack the last pause marked, also when its
+          session was open; without --up no env starts. restore prints
+          a line per ticket, <id> restored, skipped (<why>), or failed
+          (<why>), with env up or env failed (<why>) after it for --up,
+          and exits 1 when anything failed or a line of the record is
+          not a ticket. Then it writes the record, as a refresh does, so
+          a session it made and you close before the next refresh does
+          not come back. Two restores at once make each session once,
+          since only the one whose tmux new-session makes it adds its
+          windows. --once runs only when
+          $XDG_RUNTIME_DIR/ws-restore.once does not exist, makes it,
+          and writes its lines to ~/.cache/ws/restore.log, not to the
+          terminal. A boot clears $XDG_RUNTIME_DIR, and the tmux config
+          runs ws restore --once when a tmux server starts, so the
+          first tmux server after a boot makes the sessions again in
+          the background.
+          The record is ~/.cache/ws/open.tsv. Each line holds a ticket
+          id, the tmux server that last saw its session open as
+          <pid>-<start time>, and up when the last pause marked its
+          stack, or -. A ticket whose session is open gets the current
+          server. A line of another server stays, since that server
+          stopped, as at a reboot or a crash, with the session in it.
+          A line goes when its ticket is gone or when its session
+          closed under the current server. ws writes the record to a
+          temp file and renames it, under the lock of the refresh.
   up      run DOCKYARD_WORKSPACE=<ticket dir> dockyard up <branch>,
           write the slot and the URLs that dockyard prints to .ws and to
           the env lines of CLAUDE.md, and tail the container logs in the
@@ -3491,9 +3544,22 @@ ticket_session_foreign() {
     echo "tmux session $1 works in $(ws_shown "$path"), not $(ws_shown "$2")"
 }
 
+# claude -c continues the newest conversation of the directory it starts in. Claude Code keeps each one as
+# <session uuid>.jsonl right in projects/<the path with each character but a letter or digit as ->, and the
+# transcripts of subagents in folders below it, which -c never reads.
+ticket_conversation() {
+    local path f
+    for path in "$1" "$(realpath -m -- "$1")"; do
+        for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${path//[^A-Za-z0-9]/-}"/*.jsonl; do
+            [[ ${f##*/} =~ ^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\.jsonl$ && -s $f && ! -L $f ]] && return 0
+        done
+    done
+    return 1
+}
+
 ticket_session() {
     local id=$1 dir=$2 why
-    local -a have=()
+    local -a have=() claude=(claude -n "$id")
     if why=$(ticket_session_foreign "$id" "$dir"); then
         echo "ws: $why" >&2
         return 1
@@ -3503,7 +3569,11 @@ ticket_session() {
     fi
     mapfile -t have < <(tmux list-windows -t "=$id:" -F '#{window_name}')
     if [[ " ${have[*]} " != *" claude "* ]]; then
-        tmux new-window -d -b -t "=$id:{start}" -n claude -c "$dir" claude -n "$id" || return 1
+        # claude -c exits with an error when Claude Code finds no conversation it may continue, such as one that runs in
+        # the background, and ws cannot see those rules.
+        # shellcheck disable=SC2016
+        ! ticket_conversation "$dir" || claude=(sh -c 'claude -c -n "$1" || exec claude -n "$1"' sh "$id")
+        tmux new-window -d -b -t "=$id:{start}" -n claude -c "$dir" "${claude[@]}" || return 1
         tmux select-window -t "=$id:claude" || true
     fi
     ticket_shell_window "$id" "$dir" || return 1
@@ -4096,6 +4166,7 @@ status_refresh() {
         echo "ws: another status refresh held the lock for 60 seconds" >&2
         return 1
     fi
+    open_record 0 || echo "ws: cannot write $(ws_shown "$WS_CACHE_DIR/open.tsv")" >&2
     printf -v now '%(%s)T' -1
     if out=$(timeout -k 2 10 claude agents --json </dev/null 2>/dev/null); then
         sessions=$(jq -c 'if type == "array" then [.[] | select(type == "object" and (.cwd | type) == "string")
@@ -4160,6 +4231,209 @@ ws_status() {
         return 1
         ;;
     esac
+}
+
+open_read() {
+    local file=$WS_CACHE_DIR/open.tsv line id n=0 LC_ALL=C
+    local re=$'^([A-Za-z0-9][A-Za-z0-9._-]*)\t([0-9]+-[0-9]+)\t(up|-)$'
+    O_IDS=() O_SERVER=() O_STACK=() O_BAD=()
+    [[ -e $file || -L $file ]] || return 0
+    if [[ ! -f $file || ! -r $file ]]; then
+        REPLY="$(ws_shown "$file") is not a readable file"
+        return 1
+    fi
+    while IFS= read -r line || [[ -n $line ]]; do
+        n=$((n + 1))
+        id=
+        [[ ! $line =~ $re ]] || id=${BASH_REMATCH[1]}
+        if [[ -z $id || -n ${O_SERVER[$id]+set} ]]; then
+            O_BAD+=("$n")
+            continue
+        fi
+        O_IDS+=("$id")
+        O_SERVER[$id]=${BASH_REMATCH[2]}
+        O_STACK[$id]=${BASH_REMATCH[3]}
+    done <"$file"
+}
+
+# The caller holds refresh.lock, and with 1 has run env_scan. REPLY is the current tmux server, or empty.
+# tmux prints a control character as _ outside a UTF-8 locale, so its fields are split at spaces, which no
+# ticket id holds.
+open_record() {
+    local pause=$1 current="" server name path id at stack tmp
+    local -a ids=()
+    local -A live=() known=()
+    ticket_scan
+    for id in "${T_IDS[@]}"; do
+        known[$id]=1
+    done
+    open_read || true
+    while read -r server name path; do
+        current=$server
+        if [[ -n $name && -n ${known[$name]+set} && $(realpath -m -- "$path") == "$(realpath -m -- "$WS_ROOT/$name")" ]]; then
+            live[$name]=1
+        fi
+    done < <(tmux list-sessions -F '#{pid}-#{start_time} #{session_name} #{session_path}' 2>/dev/null)
+    REPLY=$current
+    mapfile -t ids < <(printf '%s\n' "${!live[@]}" "${O_IDS[@]}" | LC_ALL=C sort -u)
+    tmp=$(mktemp -- "$WS_CACHE_DIR/.open.XXXXXX") || return 1
+    for id in "${ids[@]}"; do
+        [[ -n $id && -n ${known[$id]+set} ]] || continue
+        if [[ -n ${live[$id]+set} ]]; then
+            at=$current
+        elif [[ ${O_SERVER[$id]} != "$current" ]]; then
+            at=${O_SERVER[$id]}
+        else
+            continue
+        fi
+        stack=${O_STACK[$id]:--}
+        if ((pause)); then
+            stack=dockyard-$(ticket_stack_name "${T_BRANCH[$id]-}")
+            stack=${E_RUN[$stack]:+up}
+        fi
+        printf '%s\t%s\t%s\n' "$id" "$at" "${stack:--}"
+    done >"$tmp" && mv -T -- "$tmp" "$WS_CACHE_DIR/open.tsv" && return 0
+    rm -f -- "$tmp"
+    return 1
+}
+
+ws_pause() {
+    local fd current id line
+    case "$#:${1-}" in
+    0:) ;;
+    1:-h | 1:--help)
+        ticket_usage
+        return 0
+        ;;
+    *)
+        ticket_usage >&2
+        return 1
+        ;;
+    esac
+    if [[ ! -d $HOME ]] || ! mkdir -p -- "$WS_CACHE_DIR"; then
+        return 1
+    fi
+    exec {fd}>>"$WS_CACHE_DIR/refresh.lock" || return 1
+    if ! flock -w 60 "$fd"; then
+        echo "ws: another status refresh held the lock for 60 seconds" >&2
+        return 1
+    fi
+    if ! env_scan; then
+        echo "ws: $REPLY, so ws pause records nothing" >&2
+        return 1
+    fi
+    if ! open_record 1; then
+        echo "ws: cannot write $(ws_shown "$WS_CACHE_DIR/open.tsv")" >&2
+        return 1
+    fi
+    current=$REPLY
+    exec {fd}>&-
+    if ! open_read; then
+        echo "ws: $REPLY" >&2
+        return 1
+    fi
+    ((${#O_IDS[@]})) || echo "No ticket session is open, so ws restore has nothing to make."
+    for id in "${O_IDS[@]}"; do
+        line="$id recorded"
+        [[ ${O_SERVER[$id]} == "$current" ]] || line+=", its session is not open"
+        [[ ${O_STACK[$id]} != up ]] || line+=", its stack runs"
+        echo "$line"
+    done
+}
+
+# REPLY is the last line of $1 that starts with "ws: ", without it, or $2 when no line does.
+ws_why() {
+    local line
+    REPLY=$2
+    while IFS= read -r line; do
+        [[ $line != "ws: "* ]] || REPLY=${line#ws: }
+    done <<<"$1"
+}
+
+ws_restore() {
+    local up=0 once=0 fail=0 id dir line out n fd
+    local -A kv=()
+    while (($#)); do
+        case $1 in
+        --up) up=1 ;;
+        --once) once=1 ;;
+        -h | --help)
+            ticket_usage
+            return 0
+            ;;
+        *)
+            ticket_usage >&2
+            return 1
+            ;;
+        esac
+        shift
+    done
+    if [[ ! -d $HOME ]] || ! mkdir -p -- "$WS_CACHE_DIR"; then
+        return 1
+    fi
+    if ((once)); then
+        exec >>"$WS_CACHE_DIR/restore.log" 2>&1
+        if [[ -z ${XDG_RUNTIME_DIR-} || ! -d $XDG_RUNTIME_DIR ]]; then
+            echo "ws: restore --once needs XDG_RUNTIME_DIR, the directory that a boot clears"
+            return 1
+        fi
+        # noclobber makes the marker with O_EXCL, so of two runs at once only one goes on.
+        if ! (set -C && : >"$XDG_RUNTIME_DIR/ws-restore.once") 2>/dev/null; then
+            [[ ! -e $XDG_RUNTIME_DIR/ws-restore.once ]] || return 0
+            echo "ws: cannot make $XDG_RUNTIME_DIR/ws-restore.once"
+            return 1
+        fi
+        printf '%(%F %T)T ws restore --once\n' -1
+    fi
+    if ! open_read; then
+        echo "ws: $REPLY" >&2
+        return 1
+    fi
+    for n in "${O_BAD[@]}"; do
+        echo "ws: line $n of $(ws_shown "$WS_CACHE_DIR/open.tsv") is not <id> <server> <up or ->, so ws skips it" >&2
+        fail=1
+    done
+    ((${#O_IDS[@]} + fail)) || echo "No ticket was open, so ws restore makes no session."
+    for id in "${O_IDS[@]}"; do
+        dir=$WS_ROOT/$id
+        if [[ ! -e $dir/.ws && ! -L $dir/.ws ]]; then
+            echo "$id skipped (no ticket $(ws_shown "$dir"))"
+            continue
+        fi
+        if ! ticket_read "$dir" kv; then
+            line="$id failed ($REPLY)"
+            fail=1
+        # The run whose new-session makes the session owns it, so two restores at once never both add its windows.
+        elif ! ws_new_session -s "$id" -c "$dir" -n shell 2>/dev/null && ticket_session_path "$id" >/dev/null; then
+            line="$id skipped (its session is open)"
+            if out=$(ticket_session_foreign "$id" "$dir"); then
+                line="$id failed ($out)"
+                fail=1
+            fi
+        elif out=$(ticket_session "$id" "$dir" 2>&1); then
+            line="$id restored"
+        else
+            ws_why "$out" "tmux failed"
+            line="$id failed ($REPLY)"
+            fail=1
+        fi
+        if ((up)) && [[ ${O_STACK[$id]} == up ]]; then
+            if out=$( (ws_up "$id") </dev/null 2>&1); then
+                line+=", env up"
+            else
+                ws_why "$out" "ws up failed"
+                line+=", env failed ($REPLY)"
+                fail=1
+            fi
+        fi
+        echo "$line"
+    done
+    # The record names the current server at once, so a session closed before the next refresh stays closed.
+    if exec {fd}>>"$WS_CACHE_DIR/refresh.lock" && flock -w 60 "$fd"; then
+        open_record 0 || echo "ws: cannot write $(ws_shown "$WS_CACHE_DIR/open.tsv")" >&2
+        exec {fd}>&-
+    fi
+    return "$fail"
 }
 
 # --foreground keeps docker in the process group of ws, so Ctrl-C and fzf,

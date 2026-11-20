@@ -50,19 +50,6 @@ agents() {
     printf '%s\n' "$1" >"$FX/agents.json"
 }
 
-wait_refresh() {
-    flock -w 30 "$XDG_CACHE_HOME/ws/refresh.lock" true || abort "the background refresh did not end"
-}
-
-wait_for_line() {
-    local i
-    for ((i = 0; i < 100; i++)); do
-        grep -qx -- "$2" "$1" 2>/dev/null && return 0
-        sleep 0.05
-    done
-    return 1
-}
-
 claude_calls() {
     grep -c -- "$1" "$FX/claude.log"
 }
@@ -80,21 +67,6 @@ tmux_sessionizer_rows() {
 
 ticket_rows() {
     ws pick --print | cut -f1 | grep "^$WS_ROOT/" | sed "s#^$WS_ROOT/##" | paste -sd ' '
-}
-
-fake_fzf() {
-    cat >"$FX/bin/fzf" <<'EOF'
-#!/usr/bin/env bash
-if [[ $* == --version ]]; then
-    echo "${WS_FZF_VERSION:-0.74.5} (fake)"
-    exit 0
-fi
-printf '%s\0' "$@" >"$(dirname "$0")/../fzf.args"
-rows=$(cat)
-printf '%s\n' "$rows" >"$(dirname "$0")/../fzf.in"
-awk -F '\t' -v want="$WS_FZF_PICK" '$1 == want { print; found = 1; exit } END { exit !found }' <<<"$rows"
-EOF
-    chmod +x "$FX/bin/fzf"
 }
 
 # An older ws took any name as an id, also one shaped like a Jira key.
@@ -1449,6 +1421,8 @@ test_pick_preview_in_color() {
 test_tmux_conf() {
     local conf=$WS_TESTS/../../dotfiles/tmux/.tmux.conf tmux out rc key
     new_fixture_no_ticket
+    # The config runs ws restore --once, which these servers without a session need not wait for.
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>%q\n' "$FX/ws.log" >"$FX/bin/ws"
     tmux=$(PATH=$_base_path type -P tmux)
     out=$(env -u TMUX -u TMUX_PANE "$tmux" -L wsconf -f /dev/null start-server \; source-file "$conf" 2>&1) && rc=0 || rc=$?
     assert_eq "tmux reads the config with no error" "0:" "$rc:$out"

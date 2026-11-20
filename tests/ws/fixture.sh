@@ -29,6 +29,11 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
                        its pid, agents alone prints a banner and waits
                        for a line, -p and --bg act as below, and
                        anything else prints its arguments and sleeps
+  claude.started       the directory and the arguments of every claude
+                       that prints its arguments and sleeps, a tab
+                       between them
+  claude.continue-fail create it to make claude -c exit 1 as when Claude
+                       Code finds no conversation to continue
   agents.json          the sessions claude agents --json lists, [] at
                        first
   claude.result        what claude -p answers as the result of its JSON
@@ -108,6 +113,8 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   volumes.txt          the named volumes of the stacks, one per line
   bin/doppler          doppler shim: logs its arguments to doppler.log
                        and exits 1, so no call reaches Doppler
+  bin/ws               runs the ws of this repo and logs its arguments
+                       to ws.log, so no command reaches an installed ws
   <engine>.gone        ids that ps lists and inspect no longer knows
   <engine>.hang        create it to make ps -a --no-trunc --format sleep
                        30 seconds before it answers; the shim writes its
@@ -119,12 +126,13 @@ Builds a ws sandbox at <root>, which must not exist or be empty.
   <engine>.inspect.err the same for inspect alone
   <engine>.log         one line per engine call
   env.sh               exports HOME, the XDG_CONFIG_HOME, XDG_CACHE_HOME,
-                       XDG_DATA_HOME, and XDG_STATE_HOME dirs under
-                       <root>, TMPDIR as <root>/.tmp, GIT_CONFIG_GLOBAL,
-                       GIT_CONFIG_NOSYSTEM, WS_ROOT, WS_PROJECTS,
-                       WS_VAULT, WS_CGROUP, PATH, and a short
-                       TMUX_TMPDIR under /tmp, and unsets TMUX,
-                       TMUX_PANE, CLAUDECODE, WS_DEFAULT_REPOS,
+                       XDG_DATA_HOME, XDG_STATE_HOME, and XDG_RUNTIME_DIR
+                       dirs under <root>, TMPDIR as <root>/.tmp,
+                       GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM, WS_ROOT,
+                       WS_PROJECTS, WS_VAULT, WS_CGROUP, PATH, and a
+                       short TMUX_TMPDIR under /tmp, and unsets TMUX,
+                       TMUX_PANE, CLAUDECODE, CLAUDE_CONFIG_DIR,
+                       WS_DEFAULT_REPOS,
                        WS_UP_PROFILES, WS_UP_MIGRATE, WS_REGENERABLE,
                        WS_REGENERABLE_EXTRA, and WS_DOCKER_TIMEOUT; remove
                        TMUX_TMPDIR with <root>
@@ -151,6 +159,7 @@ projects=$root/projects
 real_tmux=$(command -v tmux) || real_tmux=
 mkdir -p "$root/origins" "$projects/notes" "$root/work" "$root/vault" "$root/bin" "$root/cgroup" \
     "$root/.cache" "$root/.config" "$root/.local/share" "$root/.local/state" "$root/.tmp"
+mkdir -m 700 "$root/run"
 : >"$root/.zshrc"
 # A socket path under <root> can pass the 108-byte limit.
 tmux_dir=$(mktemp -d /tmp/wsx.XXXXXX)
@@ -177,9 +186,10 @@ export XDG_CONFIG_HOME=$(printf %q "$root/.config")
 export XDG_CACHE_HOME=$(printf %q "$root/.cache")
 export XDG_DATA_HOME=$(printf %q "$root/.local/share")
 export XDG_STATE_HOME=$(printf %q "$root/.local/state")
+export XDG_RUNTIME_DIR=$(printf %q "$root/run")
 export TMUX_TMPDIR=$(printf %q "$tmux_dir")
 export TMPDIR=$(printf %q "$root/.tmp")
-unset TMUX TMUX_PANE CLAUDECODE WS_DEFAULT_REPOS WS_UP_PROFILES WS_UP_MIGRATE WS_REGENERABLE WS_REGENERABLE_EXTRA
+unset TMUX TMUX_PANE CLAUDECODE CLAUDE_CONFIG_DIR WS_DEFAULT_REPOS WS_UP_PROFILES WS_UP_MIGRATE WS_REGENERABLE WS_REGENERABLE_EXTRA
 unset WS_DOCKER_TIMEOUT
 export GIT_CONFIG_GLOBAL=$(printf %q "$root/gitconfig")
 export GIT_CONFIG_NOSYSTEM=1
@@ -471,12 +481,23 @@ stop | kill)
     [[ -z $pid ]] || kill "$pid" 2>/dev/null || true
     ;;
 *)
+    printf '%s\t%s\n' "$(pwd -P)" "$*" >>"$root/claude.started"
+    if [[ ${1-} == -c && -f $root/claude.continue-fail ]]; then
+        echo "No conversation found to continue" >&2
+        exit 1
+    fi
     echo "claude $* (fixture shim)"
     exec sleep infinity
     ;;
 esac
 EOF
 chmod +x "$root/bin/claude"
+
+{
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>%q\n' "$root/ws.log"
+    printf 'exec bash %q "$@"\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../dotfiles/bin" && pwd)/ws"
+} >"$root/bin/ws"
+chmod +x "$root/bin/ws"
 echo '[]' >"$root/agents.json"
 
 cat >"$root/bin/dockyard" <<'EOF'

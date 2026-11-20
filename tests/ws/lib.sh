@@ -117,14 +117,15 @@ ws_guard() {
     [[ -n $_sandbox && -n ${FX-} && $HOME == "$FX" ]] || abort "ws called outside a fixture"
     gh=$(command -v gh) || gh=
     for path in "$HOME" "${WS_ROOT-}" "${WS_PROJECTS-}" "${WS_TRASH:-${XDG_DATA_HOME:-$HOME/.local/share}/ws/trash}" "$gh" \
-        "${WS_VAULT-}" "${WS_VAULT-}/bin/vault-consolidate" "${XDG_CONFIG_HOME:-$HOME/.config}/ws/config" "${WS_CGROUP-}"; do
+        "${WS_VAULT-}" "${WS_VAULT-}/bin/vault-consolidate" "${XDG_CONFIG_HOME:-$HOME/.config}/ws/config" "${WS_CGROUP-}" \
+        "${XDG_CACHE_HOME-}" "${XDG_RUNTIME_DIR-}" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; do
         [[ -n $path && $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: '$path' is outside $_sandbox"
     done
     for cmd in docker podman; do
         path=$(command -v "$cmd") || continue
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
-    for cmd in claude tmux dockyard doppler curl; do
+    for cmd in claude tmux dockyard doppler curl ws; do
         path=$(type -P "$cmd") || abort "ws refused: no $cmd on PATH"
         [[ $(realpath -m -- "$path") == "$_sandbox"/* ]] || abort "ws refused: $cmd '$path' is outside $_sandbox"
     done
@@ -351,6 +352,34 @@ remake_session() {
     for name in "${@:2}"; do
         tmux new-window -d -a -t "=$id:{end}" -n "$name" -c "$WS_ROOT/$id" || abort "cannot add the window $name to $id"
     done
+}
+
+wait_refresh() {
+    flock -w 30 "$XDG_CACHE_HOME/ws/refresh.lock" true || abort "the background refresh did not end"
+}
+
+wait_for_line() {
+    local i
+    for ((i = 0; i < 100; i++)); do
+        grep -qx -- "$2" "$1" 2>/dev/null && return 0
+        sleep 0.05
+    done
+    return 1
+}
+
+fake_fzf() {
+    cat >"$FX/bin/fzf" <<'EOF'
+#!/usr/bin/env bash
+if [[ $* == --version ]]; then
+    echo "${WS_FZF_VERSION:-0.74.5} (fake)"
+    exit 0
+fi
+printf '%s\0' "$@" >"$(dirname "$0")/../fzf.args"
+rows=$(cat)
+printf '%s\n' "$rows" >"$(dirname "$0")/../fzf.in"
+awk -F '\t' -v want="$WS_FZF_PICK" '$1 == want { print; found = 1; exit } END { exit !found }' <<<"$rows"
+EOF
+    chmod +x "$FX/bin/fzf"
 }
 
 finish() {
