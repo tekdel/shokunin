@@ -714,7 +714,8 @@ test_down() {
     assert "down says the slot stays" grep -qxF "The env of t1 is down and keeps slot 1." <<<"$out"
     assert "CLAUDE.md says the env is down" grep -qF "The dockyard env is down and keeps slot 1." "$WS_ROOT/t1/CLAUDE.md"
     refute "CLAUDE.md lists no URL" grep -qF "http://localhost" "$WS_ROOT/t1/CLAUDE.md"
-    refute "ls shows no env, since dockyard down removed the containers" grep -qF "env:" <<<"$(ls_row t1)"
+    assert "ls shows env:down, since dockyard down removed the containers and .ws keeps the slot" \
+        grep -q " env:down " <<<"$(ls_row t1)"
 
     ws up t1 >/dev/null 2>&1
     assert_eq "up after down keeps the slot" 1 "$(ws_value t1 WS_SLOT)"
@@ -767,7 +768,8 @@ test_up_fails() {
     assert_eq "only dockyard's own hint names nuke" 1 "$(grep -c nuke <<<"$out")"
     assert_eq ".ws keeps the slot that dockyard recorded" 1 "$(ws_value t1 WS_SLOT)"
     assert_eq ".ws has no URLs" "" "$(ws_value t1 WS_URLS)"
-    refute "ls shows no env, since the failed up started no container" grep -qF "env:" <<<"$(ls_row t1)"
+    assert "ls shows env:down, since the failed up started no container and kept the slot" \
+        grep -q " env:down " <<<"$(ls_row t1)"
     assert "CLAUDE.md says the env is down" grep -qF "is down and keeps slot 1." "$WS_ROOT/t1/CLAUDE.md"
     rm "$FX/dockyard.build"
 
@@ -900,7 +902,7 @@ test_rm_purge() {
     assert "the trashed .ws keeps the slot" grep -qx "WS_SLOT=2" "$(trash_dir)"/*-t2/.ws
     ws prune --restore t2 >/dev/null 2>&1
     assert_eq "the restored ticket keeps its slot" 2 "$(ws_value t2 WS_SLOT)"
-    refute "ls shows no env for it, since rm stopped its stack" grep -qF "env:" <<<"$(ls_row t2)"
+    assert "ls shows env:down for it, since rm stopped its stack and it keeps the slot" grep -q " env:down " <<<"$(ls_row t2)"
     rm "$FX/dockyard.nuke-fail"
     out=$(ws rm --purge t2 2>&1) && rc=0 || rc=$?
     assert_eq "a second rm --purge exits 0" 0 "$rc"

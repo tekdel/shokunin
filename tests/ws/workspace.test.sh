@@ -85,8 +85,14 @@ ticket_rows() {
 fake_fzf() {
     cat >"$FX/bin/fzf" <<'EOF'
 #!/usr/bin/env bash
+if [[ $* == --version ]]; then
+    echo "${WS_FZF_VERSION:-0.74.5} (fake)"
+    exit 0
+fi
 printf '%s\0' "$@" >"$(dirname "$0")/../fzf.args"
-awk -F '\t' -v want="$WS_FZF_PICK" '$1 == want { print; found = 1; exit } END { exit !found }'
+rows=$(cat)
+printf '%s\n' "$rows" >"$(dirname "$0")/../fzf.in"
+awk -F '\t' -v want="$WS_FZF_PICK" '$1 == want { print; found = 1; exit } END { exit !found }' <<<"$rows"
 EOF
     chmod +x "$FX/bin/fzf"
 }
@@ -664,7 +670,7 @@ test_pick_order() {
     agents '[{"kind":"interactive","cwd":"'"$WS_ROOT"'/c1/alpha","pid":7,"status":"waiting","startedAt":0}]'
     ws status --refresh
     assert_eq "waiting tickets first, then the stages that wait on you, then the rest" "c1 e1 d1 b1 a1" "$(ticket_rows)"
-    rows=$(ws pick --print)
+    rows=$(NO_COLOR=1 ws pick --print)
     assert "the waiting ticket shows the waiting mark" grep -qE "^$WS_ROOT/c1"$'\t'"c1 +spec +1 waiting" <<<"$rows"
 }
 
@@ -684,7 +690,7 @@ test_status() {
     wait_refresh
     out=$(ws ls)
     assert "ls shows the waiting session of the ticket" grep -qE '^t1 +spec +1 waiting +pr:open +feat/x$' <<<"$out"
-    out=$(ws pick --print)
+    out=$(NO_COLOR=1 ws pick --print)
     assert "pick shows the waiting session in a project" grep -qE $'\t''~/projects/beta  1 waiting$' <<<"$out"
 
     before=$(gh_calls)
@@ -709,7 +715,7 @@ test_status() {
     sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#' "$WS_ROOT/t1/.ws"
     assert "without docker, ls shows env:up? when WS_URLS is set" grep -qE ' env:up\? +feat/x$' <<<"$(ws ls)"
     rm "$FX/docker.err"
-    refute "with docker, ls shows no env for a stack without containers" grep -qF 'env:' <<<"$(ws ls)"
+    assert "with docker, a stack without containers is down when .ws keeps a slot" grep -qE ' env:down +feat/x$' <<<"$(ws ls)"
     printf 'garbage' >"$WS_ROOT/t1/.ws"
     assert "ls marks a malformed .ws" grep -qE '^t1 +malformed .ws: line 1 of ~/work/t1/.ws is not KEY=value$' <<<"$(ws ls)"
 }
@@ -761,14 +767,14 @@ test_pick_projects_folder() {
     agents '[{"kind":"interactive","cwd":"'"$WS_PROJECTS"'","pid":7,"status":"waiting","startedAt":0},
         {"kind":"interactive","cwd":"'"$WS_PROJECTS"'/beta","pid":8,"status":"waiting","startedAt":0}]'
     ws status --refresh
-    rows=$(ws pick --print)
+    rows=$(NO_COLOR=1 ws pick --print)
     assert_eq "the projects folder is the row right after the ticket" "$WS_PROJECTS"$'\t''~/projects  1 waiting' \
         "$(sed -n 2p <<<"$rows")"
     assert_eq "its children follow it" "$WS_PROJECTS/alpha" "$(sed -n 3p <<<"$rows" | cut -f1)"
     assert "a waiting session in a child counts on the child" grep -qxF "$WS_PROJECTS/beta"$'\t''~/projects/beta  1 waiting' <<<"$rows"
     assert_eq "the projects folder prints once" 1 "$(cut -f1 <<<"$rows" | grep -cxF "$WS_PROJECTS")"
     assert_eq "ls lists the memory line and only the ticket" 2 "$(ws ls | wc -l)"
-    rows=$(WS_PROJECTS=$HOME/none WS_VAULT=$HOME/novault ws pick --print)
+    rows=$(NO_COLOR=1 WS_PROJECTS=$HOME/none WS_VAULT=$HOME/novault ws pick --print)
     refute "pick lists no projects folder that does not exist" grep -qF "$HOME/none" <<<"$rows"
     refute "pick lists no vault that does not exist" grep -qF "$HOME/novault" <<<"$rows"
 
@@ -857,6 +863,13 @@ test_pick_help() {
         grep -qF 'list the tickets, then $WS_PROJECTS itself, then the other directories in $WS_ROOT' <<<"$help"
     assert "help says two directories never share a session" \
         grep -qF 'or the name is a ticket id, pick takes <name>-2, <name>-3, and so on, so two directories never share a session' <<<"$help"
+    help=$(ws ls --help)
+    for mark in ● … ▲ ◐ ▼ · ○ ✓ ✗; do
+        assert_eq "help explains the symbol $mark once" 1 "$(grep -o "$mark" <<<"$help" | wc -l)"
+    done
+    help=$(tr '\n' ' ' <<<"$help" | tr -s ' ')
+    assert "help says NO_COLOR keeps the plain text" grep -qF 'or NO_COLOR is set to any value, ls prints plain text' <<<"$help"
+    assert "help names the fzf version of the new look" grep -qF 'fzf older than 0.66.0' <<<"$help"
 }
 
 GIB=1073741824
@@ -890,6 +903,7 @@ test_pick_live_env() {
     ws new t2 feat/y +beta >/dev/null 2>&1
     ws new t3 feat/z +alpha >/dev/null 2>&1
     ws new t4 feat/w +beta >/dev/null 2>&1
+    ws new t5 feat/v +alpha >/dev/null 2>&1
     sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#; s/^WS_SLOT=$/WS_SLOT=4/' "$WS_ROOT/t4/.ws"
     sed -i 's/^WS_SLOT=$/WS_SLOT=1/' "$WS_ROOT/t1/.ws"
     live_container dockyard-feat-x alpha running x1 "$GIB" containers.slice
@@ -911,9 +925,10 @@ test_pick_live_env() {
         grep -qE '^t1 +spec +env:up +1\.5G feat/x$' <<<"$out"
     assert "a stack where some containers run is part running/all" grep -qE '^t2 +spec +env:part 3/5 +768M feat/y$' <<<"$out"
     assert "a stack where no container runs is down, with no memory" grep -qE '^t3 +spec +env:down +feat/z$' <<<"$out"
-    assert "a stack with no container shows no env, whatever .ws records" grep -qE '^t4 +spec +feat/w$' <<<"$out"
-    assert "pick shows the same live rows" grep -qE $'\t''t2 +spec +env:part 3/5 +768M feat/y$' <<<"$(ws pick --print)"
-    assert_eq "pick --print prints no memory line" "$WS_ROOT/t1" "$(ws pick --print | head -n 1 | cut -f1)"
+    assert "a stack with no container is down when .ws keeps a slot" grep -qE '^t4 +spec +env:down +feat/w$' <<<"$out"
+    assert "a stack with no container and no slot shows no env" grep -qE '^t5 +spec +feat/v$' <<<"$out"
+    assert "pick shows the same live rows" grep -qE $'\t''t2 +spec +env:part 3/5 +768M feat/y$' <<<"$(NO_COLOR=1 ws pick --print)"
+    assert_eq "pick --print prints no memory line" "$WS_ROOT/t1" "$(NO_COLOR=1 ws pick --print | head -n 1 | cut -f1)"
 
     echo max >"$WS_CGROUP/containers.slice/memory.max"
     assert_eq "a slice with no cap leaves the cap out" "containers 2.8G, 4.0G available, 2 other stacks 512M" \
@@ -990,7 +1005,7 @@ test_pick_preview() {
     } || abort "cannot write the vault files"
 
     before=$(gh_calls)
-    out=$(ws pick --preview "$WS_ROOT/t1")
+    out=$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")
     assert_eq "the preview asks gh nothing" "$before" "$(gh_calls)"
     assert_eq "the preview starts with the id, stage, and branch" $'t1\nstage     spec\nbranch    feat/x' \
         "$(head -n 3 <<<"$out")"
@@ -1011,54 +1026,309 @@ test_pick_preview() {
     touch "$FX/docker.err"
     sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#' "$WS_ROOT/t1/.ws"
     assert "without docker the preview gives the env of .ws, and why" \
-        grep -qxE 'env +up from \.ws \(docker ps failed\)' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+        grep -qxE 'env +up from \.ws \(docker ps failed\)' <<<"$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")"
     rm "$FX/docker.err"
     echo '[]' >"$FX/docker.json"
     sed -i 's/^WS_SLOT=$/WS_SLOT=2/' "$WS_ROOT/t1/.ws"
     assert "a stack with no container says so and names the slot" \
-        grep -qxE 'env +no containers, slot 2 kept' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+        grep -qxE 'env +no containers, slot 2 kept' <<<"$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")"
     chmod 000 "$WS_VAULT/handoffs/2026-01-03T10-30-t1+cleanup.yaml"
     assert "an unreadable handoff still leaves the progress lines" \
-        grep -qxF '  - 2026-01-07T10:00:00Z step 7' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+        grep -qxF '  - 2026-01-07T10:00:00Z step 7' <<<"$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")"
     chmod 644 "$WS_VAULT/handoffs/2026-01-03T10-30-t1+cleanup.yaml"
 
     {
         jq '.prs |= del(.pulls)' "$XDG_CACHE_HOME/ws/status.json" >"$FX/status.new" &&
             mv "$FX/status.new" "$XDG_CACHE_HOME/ws/status.json"
     } || abort "cannot write an old cache"
-    out=$(ws pick --preview "$WS_ROOT/t1")
+    out=$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")
     assert "a cache of an older ws gives the PR states" grep -qxE 'PRs +open, merged' <<<"$out"
     assert "and says the numbers come with the next refresh" \
         grep -qxF '  the cache has no PR numbers until the next status refresh' <<<"$out"
     assert "ls still reads that cache" grep -qE '^t1 +spec +pr:open,merged ' <<<"$(ws ls)"
     cp "$XDG_CACHE_HOME/ws/status.json" "$FX/status.keep" || abort "cannot keep the cache"
     jq '.prs.tickets.t1 += ["closed\n"]' "$FX/status.keep" >"$XDG_CACHE_HOME/ws/status.json" || abort "cannot write a bad cache"
-    assert "a state with a newline in the cache is left out" grep -qxE 'PRs +open, merged' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+    assert "a state with a newline in the cache is left out" grep -qxE 'PRs +open, merged' <<<"$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")"
     cp "$FX/status.keep" "$XDG_CACHE_HOME/ws/status.json" || abort "cannot put the cache back"
     before=$(gh_calls)
     ws status --refresh
     assert "a refresh within WS_PR_TTL asks gh when the cache has no PR numbers" test "$(gh_calls)" -gt "$before"
-    assert "then the preview has the numbers" grep -qxE '  alpha +#12 +open' <<<"$(ws pick --preview "$WS_ROOT/t1")"
+    assert "then the preview has the numbers" grep -qxE '  alpha +#12 +open' <<<"$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")"
 
     ws new t2 feat/y +beta >/dev/null 2>&1
-    out=$(ws pick --preview "$WS_ROOT/t2")
+    out=$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t2")
     assert "a ticket the cache lacks says so" grep -qxE 'PRs +not in the status cache yet' <<<"$out"
     sed -i '/^WS_BRANCH=/d' "$WS_ROOT/t2/.ws"
     assert "a .ws without WS_BRANCH still gets a whole preview" \
-        grep -qxE 'PRs +not in the status cache yet' <<<"$(ws pick --preview "$WS_ROOT/t2")"
+        grep -qxE 'PRs +not in the status cache yet' <<<"$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t2")"
     refute "a ticket with no handoff or progress file shows neither" grep -qE '^(handoff|progress)' <<<"$out"
 
-    out=$(ws pick --preview "$WS_PROJECTS/alpha")
+    out=$(NO_COLOR=1 ws pick --preview "$WS_PROJECTS/alpha")
     assert_eq "the preview of a project gives its path, branch, and last commit" \
         $'~/projects/alpha\nbranch    main' "$(head -n 2 <<<"$out")"
     assert "and its last commit" grep -qE '^last +[0-9a-f]+ init alpha \(' <<<"$out"
-    assert_eq "the preview of the projects folder is its path" "~/projects" "$(ws pick --preview "$WS_PROJECTS")"
+    assert_eq "the preview of the projects folder is its path" "~/projects" "$(NO_COLOR=1 ws pick --preview "$WS_PROJECTS")"
     { mkdir "$WS_PROJECTS/broken" && echo "gitdir: $FX/gone" >"$WS_PROJECTS/broken/.git"; } || abort "cannot make a broken repo"
-    assert_eq "a checkout git cannot read shows only its path" "~/projects/broken" "$(ws pick --preview "$WS_PROJECTS/broken")"
+    assert_eq "a checkout git cannot read shows only its path" "~/projects/broken" "$(NO_COLOR=1 ws pick --preview "$WS_PROJECTS/broken")"
 }
 
-test_pick_shows_the_header_and_a_preview() {
-    local header="" preview="" window="" arg cmd
+declare -gA GRUVBOX=([fg]=ebdbb2 [dim]=665c54 [grey]=928374 [light]=a89984 [red]=fb4934 [yellow]=fabd2f
+    [green]=b8bb26 [aqua]=8ec07c [blue]=83a598 [purple]=d3869b [border]=504945)
+
+strip_colors() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
+
+runs_of() {
+    local seg body color name
+    local -a segs=()
+    IFS=$'\e' read -r -a segs <<<"$1"
+    for seg in "${segs[@]}"; do
+        color=none body=$seg
+        if [[ $seg =~ ^\[38\;2\;([0-9]+)\;([0-9]+)\;([0-9]+)m(.*)$ ]]; then
+            printf -v color '%02x%02x%02x' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+            body=${BASH_REMATCH[4]}
+            for name in "${!GRUVBOX[@]}"; do
+                [[ ${GRUVBOX[$name]} != "$color" ]] || color=$name
+            done
+        elif [[ $seg =~ ^\[0m(.*)$ ]]; then
+            body=${BASH_REMATCH[1]}
+        fi
+        [[ -z $body ]] || printf '%s\t%s\n' "$color" "$body"
+    done
+}
+
+color_of() {
+    runs_of "$1" | awk -F '\t' -v text="$2" 'index($2, text) { print $1; exit }'
+}
+
+line_of() {
+    local line
+    while IFS= read -r line; do
+        if [[ $(strip_colors <<<"$line") == "$1"* ]]; then
+            printf '%s\n' "$line"
+            return 0
+        fi
+    done <<<"$2"
+}
+
+row_of() {
+    grep "^$WS_ROOT/$1"$'\t' <<<"$2" | cut -f2-
+}
+
+tty_ls() {
+    ws_guard
+    SHELL=$(PATH=$_base_path type -P bash) script -qfec "bash $(printf %q "$WS_TESTS/../../dotfiles/bin/ws") ls" /dev/null |
+        tr -d '\r'
+}
+
+fzf_arg() {
+    local arg
+    local -a args=()
+    mapfile -d '' args <"$FX/fzf.args"
+    for arg in "${args[@]}"; do
+        if [[ $arg == "$1"* ]]; then
+            printf '%s\n' "${arg#"$1"}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+test_pick_rows_in_color() {
+    local rows row
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    ws new t3 feat/z +alpha >/dev/null 2>&1
+    ws new t4 feat/w +beta >/dev/null 2>&1
+    ws new t5 feat/v +alpha >/dev/null 2>&1
+    ws new t6 feat/u +beta >/dev/null 2>&1
+    sed -i 's/^WS_STAGE=.*/WS_STAGE=review/' "$WS_ROOT/t1/.ws"
+    sed -i 's/^WS_STAGE=.*/WS_STAGE=building/' "$WS_ROOT/t2/.ws"
+    sed -i 's/^WS_STAGE=.*/WS_STAGE=verifying/' "$WS_ROOT/t3/.ws"
+    sed -i 's/^WS_STAGE=.*/WS_STAGE=merged/; s/^WS_SLOT=$/WS_SLOT=4/' "$WS_ROOT/t4/.ws"
+    sed -i 's/^WS_STAGE=.*/WS_STAGE=qa/' "$WS_ROOT/t5/.ws"
+    add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
+    add_pr beta feat/x OPEN 13 "$(head_of "$WS_ROOT/t1/beta")"
+    add_pr beta feat/y MERGED 4 "$(head_of "$WS_ROOT/t2/beta")"
+    add_pr alpha feat/z CLOSED 5 "$(head_of "$WS_ROOT/t3/alpha")"
+    agents '[{"kind":"interactive","cwd":"'"$WS_ROOT"'/t1/alpha","pid":7,"status":"waiting","startedAt":0},
+        {"kind":"interactive","cwd":"'"$WS_PROJECTS"'/beta","pid":8,"status":"waiting","startedAt":0}]'
+    ws status --refresh
+    live_container dockyard-feat-x alpha running x1 $((3 * GIB / 2))
+    live_container dockyard-feat-x beta running x2
+    live_container dockyard-feat-y s1 running y1 $((5 * GIB))
+    live_container dockyard-feat-y s2 exited y2
+    live_container dockyard-feat-z alpha exited z1
+    live_container dockyard-feat-u beta running u1 $((8 * GIB))
+    { mkdir -p "$WS_ROOT/t7" && printf 'garbage' >"$WS_ROOT/t7/.ws"; } || abort "cannot write a malformed .ws"
+
+    rows=$(ws pick --print)
+    row=$(row_of t1 "$rows")
+    assert_eq "an up ticket shows the waiting mark, id, stage, env, memory, and open PRs" \
+        "● t1  review     ▲ up      1.5G  ○2" "$(strip_colors <<<"$row")"
+    assert_eq "the waiting mark is yellow" yellow "$(color_of "$row" ●)"
+    assert_eq "the id is in the foreground color" fg "$(color_of "$row" t1)"
+    assert_eq "review is purple" purple "$(color_of "$row" review)"
+    assert_eq "an up env is green" green "$(color_of "$row" ▲)"
+    assert_eq "its word is green too" green "$(color_of "$row" up)"
+    assert_eq "memory below 5G is light grey" light "$(color_of "$row" 1.5G)"
+    assert_eq "open PRs are green" green "$(color_of "$row" ○2)"
+
+    row=$(row_of t2 "$rows")
+    assert_eq "a part env shows running/all" "  t2  building   ◐ 1/2     5.0G  ✓1" "$(strip_colors <<<"$row")"
+    assert_eq "building is blue" blue "$(color_of "$row" building)"
+    assert_eq "a part env is yellow" yellow "$(color_of "$row" ◐)"
+    assert_eq "memory from 5G is yellow" yellow "$(color_of "$row" 5.0G)"
+    assert_eq "merged PRs are purple" purple "$(color_of "$row" ✓1)"
+
+    row=$(row_of t3 "$rows")
+    assert_eq "a stack where no container runs is down" "  t3  verifying  ▼ down          ✗1" "$(strip_colors <<<"$row")"
+    assert_eq "verifying is aqua" aqua "$(color_of "$row" verifying)"
+    assert_eq "a down env is red" red "$(color_of "$row" ▼)"
+    assert_eq "closed PRs are red" red "$(color_of "$row" ✗1)"
+
+    row=$(row_of t4 "$rows")
+    assert_eq "a stack with no container is down when .ws keeps a slot" "  t4  merged     ▼ down" "$(strip_colors <<<"$row")"
+    assert_eq "that down is red" red "$(color_of "$row" down)"
+    assert_eq "merged is green" green "$(color_of "$row" merged)"
+
+    row=$(row_of t5 "$rows")
+    assert_eq "a ticket with no env shows a dot" "  t5  qa         ·" "$(strip_colors <<<"$row")"
+    assert_eq "the dot is dim" dim "$(color_of "$row" ·)"
+    assert_eq "a stage with no color of its own is grey" grey "$(color_of "$row" qa)"
+
+    row=$(row_of t6 "$rows")
+    assert_eq "memory from 8G is red" red "$(color_of "$row" 8.0G)"
+    assert_eq "spec is grey" grey "$(color_of "$row" spec)"
+
+    row=$(row_of t7 "$rows")
+    assert_eq "a malformed .ws stays readable" \
+        "  t7  malformed .ws: line 1 of ~/work/t7/.ws is not KEY=value" "$(strip_colors <<<"$row")"
+    assert_eq "in red" red "$(color_of "$row" malformed)"
+
+    row=$(grep "^$WS_PROJECTS/beta"$'\t' <<<"$rows" | cut -f2-)
+    assert_eq "a project row is its path after the waiting mark" "● ~/projects/beta" "$(strip_colors <<<"$row")"
+    assert_eq "the path is blue" blue "$(color_of "$row" '~/projects/beta')"
+
+    rows=$(NO_COLOR=1 ws pick --print)
+    assert "the plain row of an up env" grep -qE $'\t''t1 +review +1 waiting +pr:open +env:up +1\.5G feat/x$' <<<"$rows"
+    assert "the plain row of a part env" grep -qE $'\t''t2 +building +pr:merged +env:part 1/2 +5\.0G feat/y$' <<<"$rows"
+    assert "the plain row of a down env" grep -qE $'\t''t3 +verifying +pr:closed +env:down +feat/z$' <<<"$rows"
+    assert "the plain row of a slot with no container is down" \
+        grep -qE $'\t''t4 +merged +pr:no-pr +env:down +feat/w$' <<<"$rows"
+    assert "the plain row of no env" grep -qE $'\t''t5 +qa +pr:no-pr +feat/v$' <<<"$rows"
+    assert "a project keeps its plain row" grep -qxF "$WS_PROJECTS/beta"$'\t''~/projects/beta  1 waiting' <<<"$rows"
+    refute "NO_COLOR prints no color" grep -q $'\e' <<<"$rows"
+    refute "NO_COLOR set to nothing prints no color either" grep -q $'\e' <<<"$(NO_COLOR='' ws pick --print)"
+}
+
+test_pick_env_not_live_in_color() {
+    local rows row
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    ws new t3 feat/z +alpha >/dev/null 2>&1
+    sed -i 's#^WS_URLS=$#WS_URLS=web=http://localhost:4400#; s/^WS_SLOT=$/WS_SLOT=3/' "$WS_ROOT/t1/.ws"
+    sed -i 's/^WS_SLOT=$/WS_SLOT=4/' "$WS_ROOT/t2/.ws"
+    live_container dockyard-feat-x alpha running x1 "$GIB"
+    touch "$FX/docker.err"
+    rows=$(ws pick --print)
+    row=$(row_of t1 "$rows")
+    assert_eq "URLs in .ws give up with a ? and no memory" "  t1  spec       ▲ up?" "$(strip_colors <<<"$row")"
+    assert_eq "dimmed, since docker did not say so" dim "$(color_of "$row" ▲)"
+    assert_eq "the word is dimmed too" dim "$(color_of "$row" up?)"
+    row=$(row_of t2 "$rows")
+    assert_eq "a slot alone in .ws gives down with a ?" "  t2  spec       ▼ down?" "$(strip_colors <<<"$row")"
+    assert_eq "dimmed" dim "$(color_of "$row" down?)"
+    assert_eq "no record gives the dot" "  t3  spec       ·" "$(row_of t3 "$rows" | strip_colors)"
+}
+
+test_pick_pr_counts() {
+    local rows
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
+    add_pr beta feat/x OPEN 13 "$(head_of "$WS_ROOT/t1/beta")"
+    add_pr beta feat/y MERGED 4 "$(head_of "$WS_ROOT/t2/beta")"
+    ws status --refresh
+    rows=$(ws pick --print)
+    assert_eq "the counts come from the PRs of the cache" "  t1  spec       ·               ○2" "$(row_of t1 "$rows" | strip_colors)"
+    assert_eq "one merged PR" "  t2  spec       ·               ✓1" "$(row_of t2 "$rows" | strip_colors)"
+    {
+        jq '.prs |= del(.pulls)' "$XDG_CACHE_HOME/ws/status.json" >"$FX/status.new" &&
+            mv "$FX/status.new" "$XDG_CACHE_HOME/ws/status.json"
+    } || abort "cannot write an old cache"
+    rows=$(ws pick --print)
+    assert_eq "a cache of an older ws counts each state of its list once" "  t1  spec       ·               ○1" \
+        "$(row_of t1 "$rows" | strip_colors)"
+    assert_eq "and keeps the merged state" "  t2  spec       ·               ✓1" "$(row_of t2 "$rows" | strip_colors)"
+}
+
+test_pick_id_width() {
+    local rows long=abcdefghij-abcdefghij-abcdefghij-abcd utf8 col1 col2 col3
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    ws new "$long" feat/y +beta >/dev/null 2>&1
+    ws new t333 feat/z +alpha >/dev/null 2>&1
+    utf8=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8' | head -n 1)
+    [[ -n $utf8 ]] || utf8=C.UTF-8
+    rows=$(LC_ALL=C ws pick --print | strip_colors)
+    assert_eq "an id over 30 characters is cut to 30 with an ellipsis" \
+        "  abcdefghij-abcdefghij-abcdefg…  spec       ·" "$(row_of "$long" "$rows")"
+    assert_eq "a short id is padded to the same width" "  t1                              spec       ·" "$(row_of t1 "$rows")"
+    col1=$(row_of t1 "$rows" | LC_ALL=$utf8 awk '{ print index($0, "spec") }')
+    col2=$(row_of "$long" "$rows" | LC_ALL=$utf8 awk '{ print index($0, "spec") }')
+    col3=$(row_of t333 "$rows" | LC_ALL=$utf8 awk '{ print index($0, "spec") }')
+    assert_eq "the stage starts in the same column on every row" "$col1 $col1" "$col2 $col3"
+    assert_eq "the rows are the same under $utf8 as under C" "$rows" "$(LC_ALL=$utf8 ws pick --print | strip_colors)"
+}
+
+test_memory_bar() {
+    local line pct full tone want
+    new_fixture_no_ticket
+    if ! command -v script >/dev/null; then
+        ok "memory bar skipped: no script"
+        return
+    fi
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    machine_memory $((100 * GIB)) 4194304
+    for want in 69:14:green 70:14:yellow 89:18:yellow 90:18:red; do
+        IFS=: read -r pct full tone <<<"$want"
+        echo '[]' >"$FX/docker.json"
+        live_container dockyard-other web running o1 $((512 * MIB))
+        live_container dockyard-feat-x alpha running x1 $((pct * GIB - 512 * MIB))
+        line=$(tty_ls | head -n 1)
+        assert_eq "at $pct% of the cap the line is a bar of 20 cells, the memory and cap, free, and other" \
+            "containers ━━━━━━━━━━━━━━━━━━━━ $pct.0/100.0G   free 4.0G   other 512M" "$(strip_colors <<<"$line")"
+        printf -v want '%s\t%*s\n%s\t%*s' "$tone" "$full" '' border $((20 - full)) ''
+        assert_eq "at $pct% $full cells are $tone and the other $((20 - full)) are empty" "${want// /━}" \
+            "$(runs_of "$line" | grep '━')"
+        assert_eq "the word containers is dim" dim "$(color_of "$line" containers)"
+        assert_eq "the memory is in the foreground color" fg "$(color_of "$line" "$pct.0")"
+    done
+    echo max >"$WS_CGROUP/containers.slice/memory.max"
+    assert_eq "with no cap the line gives the memory and no bar" "containers 90.0G   free 4.0G   other 512M" \
+        "$(tty_ls | head -n 1 | strip_colors)"
+    touch "$FX/docker.err"
+    line=$(tty_ls | head -n 1)
+    assert_eq "when docker is not live the line gives the reason" "env from .ws (docker ps failed)   free 4.0G" \
+        "$(strip_colors <<<"$line")"
+    assert_eq "dimmed" dim "$(color_of "$line" 'docker ps failed')"
+    rm "$FX/docker.err"
+    assert "ls on a terminal colors the rows" grep -q $'\e' <<<"$(tty_ls | sed -n 2p)"
+    refute "ls into a pipe prints no color" grep -q $'\e' <<<"$(ws ls)"
+    assert_eq "ls into a pipe prints the plain memory line" "containers 90.0G, 4.0G available, 1 other stack 512M" \
+        "$(ws ls | head -n 1)"
+    line=$(NO_COLOR=1 tty_ls)
+    refute "NO_COLOR keeps ls on a terminal plain" grep -q $'\e' <<<"$line"
+    assert_eq "with the plain memory line" "containers 90.0G, 4.0G available, 1 other stack 512M" "$(head -n 1 <<<"$line")"
+}
+
+test_pick_fzf_flags() {
+    local cmd want arg found missing=0
     local -a args=()
     new_fixture_no_ticket
     fake_fzf
@@ -1068,19 +1338,130 @@ test_pick_shows_the_header_and_a_preview() {
     WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
     wait_refresh
     mapfile -d '' args <"$FX/fzf.args"
-    for arg in "${args[@]}"; do
-        case $arg in
-        --header=*) header=${arg#--header=} ;;
-        --preview=*) preview=${arg#--preview=} ;;
-        --preview-window=*) window=${arg#--preview-window=} ;;
-        esac
+    for want in --ansi $'--delimiter=\t' --with-nth=2.. --tiebreak=index --style=full:sharp --border=none "--gutter= " \
+        --layout=default --highlight-line --info=inline-right "--prompt=> " "--pointer=>" "--marker=+" \
+        "--list-label= Results " "--preview-label= Preview " --preview-window=right,45%,wrap \
+        --color=fg:#ebdbb2,bg:#282828,preview-bg:#282828,hl:#b8bb26:bold,fg+:#ebdbb2,bg+:#3c3836,hl+:#b8bb26:bold,gutter:#282828 \
+        --color=border:#504945,list-border:#504945,preview-border:#504945,input-border:#83a598 \
+        --color=label:#fabd2f:bold,prompt:#83a598,pointer:#fb4934,marker:#8ec07c,query:#ebdbb2 \
+        --color=header:#928374,info:#928374,spinner:#d3869b,separator:#504945,scrollbar:#504945; do
+        found=0
+        for arg in "${args[@]}"; do
+            [[ $arg != "$want" ]] || found=1
+        done
+        if ((found == 0)); then
+            missing=1
+            printf '      missing: %s\n' "$want"
+        fi
     done
-    assert_eq "fzf shows the memory line of ls as its header" "$(ws ls | head -n 1)" "$header"
-    assert_eq "the preview sits on the right" right,40%,wrap "$window"
-    cmd=${preview//\{s1\}/$(printf %q "$WS_ROOT/t1")}
+    assert_eq "fzf gets the flags of the Telescope look" 0 "$missing"
+    refute "it gets no header" fzf_arg --header=
+    if command -v script >/dev/null; then
+        assert_eq "the input label is the memory line of ls on a terminal" " $(tty_ls | head -n 1) " "$(fzf_arg --input-label=)"
+    fi
+    assert "the rows reach fzf in color" grep -q $'\e' "$FX/fzf.in"
+    cmd=$(fzf_arg --bind=focus:transform-preview-label:)
+    cmd=${cmd//\{s1\}/$(printf %q "$WS_ROOT/t1")}
+    assert_eq "the preview label is the name of the row under the cursor" " t1 " "$(bash -c "$cmd")"
+    cmd=$(fzf_arg --preview=)
+    cmd=${cmd//\{s1\}/$(printf %q "$WS_ROOT/t1")}
     ws_guard
     assert_eq "the preview command of fzf prints the preview of the row under the cursor" \
         "$(ws pick --preview "$WS_ROOT/t1")" "$(bash -c "$cmd")"
+}
+
+test_pick_old_fzf() {
+    local version
+    new_fixture_no_ticket
+    fake_fzf
+    ws new t1 feat/x +alpha >/dev/null 2>&1
+    machine_memory $((8 * GIB)) 4194304
+    for version in 0.65.2 0.9.0 dev; do
+        WS_FZF_VERSION=$version WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
+        wait_refresh
+        refute "fzf $version gets no --style" fzf_arg --style=
+        refute "fzf $version gets no --gutter" fzf_arg --gutter=
+        assert_eq "fzf $version keeps the prompt of before" "ws> " "$(fzf_arg --prompt=)"
+        assert_eq "fzf $version shows the plain memory line as its header" "$(ws ls | head -n 1)" "$(fzf_arg --header=)"
+        assert_eq "fzf $version keeps the preview window of before" right,40%,wrap "$(fzf_arg --preview-window=)"
+        refute "fzf $version gets plain rows" grep -q $'\e' "$FX/fzf.in"
+    done
+    WS_FZF_VERSION=0.66.0 WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
+    wait_refresh
+    assert_eq "fzf 0.66.0 gets the Telescope look" full:sharp "$(fzf_arg --style=)"
+    NO_COLOR=1 WS_FZF_PICK=$WS_ROOT/t1 ws pick >/dev/null 2>&1
+    wait_refresh
+    refute "NO_COLOR keeps the look of before" fzf_arg --style=
+    refute "with plain rows" grep -q $'\e' "$FX/fzf.in"
+}
+
+test_pick_preview_in_color() {
+    local out plain line name
+    new_fixture_no_ticket
+    ws new t1 feat/x +alpha +beta >/dev/null 2>&1
+    ws new t2 feat/y +beta >/dev/null 2>&1
+    sed -i 's/^WS_STAGE=.*/WS_STAGE=review/' "$WS_ROOT/t1/.ws"
+    add_pr alpha feat/x OPEN 12 "$(head_of "$WS_ROOT/t1/alpha")"
+    add_pr beta feat/x MERGED 4 "$(head_of "$WS_ROOT/t1/beta")"
+    add_pr beta feat/y CLOSED 3 "$(head_of "$WS_ROOT/t2/beta")"
+    ws status --refresh
+    live_container dockyard-feat-x alpha running x1 "$GIB"
+    live_container dockyard-feat-x beta exited x2
+    live_container dockyard-feat-x redis created x3
+    live_container dockyard-feat-x db dead x4
+    {
+        mkdir -p "$WS_VAULT/handoffs" "$WS_VAULT/projects/work/t1/progress" &&
+            printf 'summary: stopped after the tests\n' >"$WS_VAULT/handoffs/2026-01-03T10-30-t1.yaml" &&
+            printf -- '- 2026-01-07T10:00:00Z step 7\nfree text' >"$WS_VAULT/projects/work/t1/progress/t1.md"
+    } || abort "cannot write the vault files"
+    out=$(ws pick --preview "$WS_ROOT/t1")
+    plain=$(NO_COLOR=1 ws pick --preview "$WS_ROOT/t1")
+    assert_eq "the colored preview says what the plain one says" "$plain" "$(strip_colors <<<"$out")"
+    refute "the plain preview has no color" grep -q $'\e' <<<"$plain"
+    for name in stage branch env PRs handoff progress; do
+        assert_eq "the section name $name is yellow" yellow "$(color_of "$(line_of "$name" "$out")" "$name")"
+    done
+    assert_eq "the stage has the color of its row" purple "$(color_of "$(line_of stage "$out")" review)"
+    assert_eq "the part env is yellow" yellow "$(color_of "$(line_of env "$out")" 'part 1/4')"
+    assert_eq "a running container is green" green "$(color_of "$(line_of '  alpha ' "$out")" running)"
+    assert_eq "an exited container is red" red "$(color_of "$(line_of '  beta ' "$out")" exited)"
+    assert_eq "a dead container is red" red "$(color_of "$(line_of '  db ' "$out")" dead)"
+    assert_eq "a created container is yellow" yellow "$(color_of "$(line_of '  redis ' "$out")" created)"
+    assert_eq "the open count is green" green "$(color_of "$(line_of PRs "$out")" '1 open')"
+    assert_eq "the merged count is purple" purple "$(color_of "$(line_of PRs "$out")" '1 merged')"
+    assert_eq "an open PR is green" green "$(color_of "$(grep -m1 '#12' <<<"$out")" open)"
+    assert_eq "a merged PR is purple" purple "$(color_of "$(grep -m1 '#4' <<<"$out")" merged)"
+    assert_eq "a closed PR is red" red "$(color_of "$(ws pick --preview "$WS_ROOT/t2" | grep -m1 '#3')" closed)"
+    line=$(grep -m1 'step 7' <<<"$out")
+    assert_eq "a progress timestamp is dimmed" dim "$(color_of "$line" 2026-01-07T10:00:00Z)"
+    assert_eq "the progress text is not" none "$(color_of "$line" 'step 7')"
+    assert_eq "a progress line with no timestamp prints as it is" "  free text" "$(grep -m1 'free text' <<<"$out")"
+
+    out=$(ws pick --preview "$WS_PROJECTS/alpha")
+    assert_eq "the path of a project is blue" blue "$(color_of "$(head -n 1 <<<"$out")" '~/projects/alpha')"
+    assert_eq "its section names are yellow" yellow "$(color_of "$(line_of branch "$out")" branch)"
+    echo '[]' >"$FX/docker.json"
+    sed -i 's/^WS_SLOT=$/WS_SLOT=2/' "$WS_ROOT/t1/.ws"
+    line=$(line_of env "$(ws pick --preview "$WS_ROOT/t1")")
+    assert_eq "a kept slot with no containers is red, as the down of its row" red "$(color_of "$line" 'slot 2 kept')"
+}
+
+test_tmux_conf() {
+    local conf=$WS_TESTS/../../dotfiles/tmux/.tmux.conf tmux out rc key
+    new_fixture_no_ticket
+    tmux=$(PATH=$_base_path type -P tmux)
+    out=$(env -u TMUX -u TMUX_PANE "$tmux" -L wsconf -f /dev/null start-server \; source-file "$conf" 2>&1) && rc=0 || rc=$?
+    assert_eq "tmux reads the config with no error" "0:" "$rc:$out"
+    out=$(env -u TMUX -u TMUX_PANE "$tmux" -L wsconf -f "$conf" start-server \; show -g status-style \; \
+        show -gw pane-border-style \; show -gw pane-active-border-style \; show -gw window-status-current-style 2>&1)
+    assert_eq "the status bar, pane borders, and current window take the Gruvbox colors" \
+        $'status-style "bg=#282828 fg=#ebdbb2"\npane-border-style "fg=#504945"\npane-active-border-style "fg=#83a598"\nwindow-status-current-style "bg=#3c3836 fg=#ebdbb2"' \
+        "$out"
+    key=$(env -u TMUX -u TMUX_PANE "$tmux" -L wsconf -f "$conf" start-server \; list-keys -T prefix f 2>&1)
+    assert "prefix f opens ws pick in a popup" grep -qE 'display-popup .* ws pick$' <<<"$key"
+    assert "with no tmux border, since fzf draws its own" grep -qE 'display-popup -[A-Z]*B' <<<"$key"
+    assert "80% wide" grep -qE ' -w "?80%"? ' <<<"$key"
+    assert "90% high" grep -qE ' -h "?90%"? ' <<<"$key"
 }
 
 commit_in() {
@@ -2054,7 +2435,15 @@ run_test test_pick_help
 run_test test_pick_live_env
 run_test test_pick_env_falls_back_to_ws
 run_test test_pick_preview
-run_test test_pick_shows_the_header_and_a_preview
+run_test test_pick_rows_in_color
+run_test test_pick_env_not_live_in_color
+run_test test_pick_pr_counts
+run_test test_pick_id_width
+run_test test_memory_bar
+run_test test_pick_fzf_flags
+run_test test_pick_old_fzf
+run_test test_pick_preview_in_color
+run_test test_tmux_conf
 run_test test_dotted_id
 run_test test_names_are_ascii
 run_test test_rm_refuses_a_foreign_process
