@@ -56,7 +56,15 @@ declare -gA WS_COMMANDS=(
     [up]="start the dockyard env of a ticket, with any +<service>, and record its slot and URLs"
     [verify]="run the holdout scenarios of a ticket against its env in a background Claude session"
 )
-declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_BAD=() P_STATES=() WS_FETCHED=() UP_PROFILES=()
+declare -gA WS_HEX=([bg]='#282828' [fg]='#ebdbb2' [sel]='#3c3836' [border]='#504945' [dim]='#665c54' [grey]='#928374'
+    [light]='#a89984' [red]='#fb4934' [yellow]='#fabd2f' [green]='#b8bb26' [aqua]='#8ec07c' [blue]='#83a598'
+    [purple]='#d3869b' [orange]='#fe8019')
+declare -gA WS_INK=()
+declare -gA WS_STAGE_INK=([building]=blue [verifying]=aqua [review]=purple [merged]=green)
+declare -gA WS_ENV_MARK=([up]=▲ [part]=◐ [down]=▼) WS_ENV_INK=([up]=green [part]=yellow [down]=red)
+declare -gA WS_PR_MARK=([open]=○ [merged]=✓ [closed]=✗) WS_PR_INK=([open]=green [merged]=purple [closed]=red)
+declare -gA T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_SLOT=() T_BAD=() P_STATES=() P_COUNTS=() WS_FETCHED=()
+declare -gA UP_PROFILES=()
 declare -ga T_IDS=() T_PLAIN=() S_CWD=() S_WAIT=() R_PATH=() R_TEXT=()
 declare -gA E_ALL=() E_RUN=() E_MEM=() E_OWNED=()
 declare -ga E_STACK=() E_SERVICE=() E_STATE=() E_BYTES=()
@@ -2596,23 +2604,45 @@ command that takes an <id> also takes the Jira key of the ticket.
           repos. A key takes its id from their branch, as new does.
           No process may work in them, no container may mount them,
           and no other ticket may hold them.
-  ls      print a memory line, then list the tickets with their stage,
-          the Claude sessions that wait on you, PR state, env state,
-          memory, and branch. One docker ps gives the env state of the
-          stack of each ticket, dockyard-<stack>: up when every
-          container runs, part <running>/<all> when some run, down when
-          none runs, and nothing when the stack has no container. The
-          memory adds up memory.current of the running containers,
-          whose cgroups ws finds under any slice of $WS_CGROUP,
-          /sys/fs/cgroup by default. The memory line gives the memory
-          of all containers, against the memory.max of containers.slice
-          when it has one, the MemAvailable of the machine, and the
-          count and memory of the running stacks of no ticket. When
-          docker is missing, fails, or does not answer in
-          WS_DOCKER_TIMEOUT seconds, 2 by default and when it is not a
-          number above 0, the env state is the one .ws records, up with
-          URLs and down with only a slot, with a ? after it, and the
-          memory line says why.
+  ls      print a memory line, then a row per ticket. One docker ps
+          gives the env state of the stack of each ticket,
+          dockyard-<stack>: up when every container runs, part
+          <running>/<all> when some run, down when none runs or when
+          the stack has no container and .ws keeps a slot, and nothing
+          otherwise. The memory adds up memory.current of the running
+          containers, whose cgroups ws finds under any slice of
+          $WS_CGROUP, /sys/fs/cgroup by default. When docker is
+          missing, fails, or does not answer in WS_DOCKER_TIMEOUT
+          seconds, 2 by default and when it is not a number above 0,
+          the env state is the one .ws records, up with URLs and down
+          with only a slot, with a ? after it, and the memory line
+          says why. On a terminal ls prints the rows of pick in color.
+          The memory line there is a bar of 20 cells, the memory of all
+          containers against the memory.max of containers.slice, green
+          below 70%, yellow below 90%, and red from 90%. Free is the
+          MemAvailable of the machine, and other is the memory of the
+          running stacks of no ticket. A row in color has these
+          columns:
+            ●              a Claude session waits on you there
+            <id>           cut to 30 characters with …
+            <stage>        building blue, verifying aqua, review
+                           purple, merged green, others grey
+            ▲ up           every container runs, green
+            ◐ 3/5          3 of 5 containers run, yellow
+            ▼ down         no container runs, red
+            ·              no env
+            up?, down?     dimmed, the state that .ws records when
+                           docker gives none
+            <memory>       yellow from 5G, red from 8G
+            ○2 ✓1 ✗1       open, merged, and closed PRs, counted from
+                           the status cache
+          A row that is not a ticket is its path, in blue, and a
+          malformed .ws makes a red row. When stdout is not a terminal,
+          or NO_COLOR is set to any value, ls prints plain text: the
+          line "containers <memory> of <cap> cap, <free> available,
+          <n> other stacks <memory>", then per ticket its stage, the
+          number of sessions that wait, pr:<states>, env:<state>, the
+          memory, and the branch.
   pick    list the tickets, then $WS_PROJECTS itself, then the other
           directories in $WS_ROOT, then every directory in
           $WS_PROJECTS, then the vault, in fzf. Tickets with waiting
@@ -2623,10 +2653,12 @@ command that takes an <id> also takes the Jira key of the ticket.
           underscores. When a session of that name works in another
           directory, or the name is a ticket id, pick takes <name>-2,
           <name>-3, and so on, so two directories never share a
-          session. --print prints the list as <path><TAB><row>. fzf
-          shows the memory line of ls as its header, and on the right a
-          preview of the row under the cursor. For a ticket that is its
-          stage, branch, env state with the state and memory of each
+          session. --print prints the list as <path><TAB><row>, with
+          the rows of ls in color unless NO_COLOR is set. fzf shows the
+          memory line of ls as the label of its input box, and on the
+          right a preview of the row under the cursor, labeled with the
+          name of the row. For a ticket the preview is its stage,
+          branch, env state with the state and memory of each
           container, its PRs from the status cache, the summary of its
           newest handoff in $WS_VAULT/handoffs, and the last 5 lines of
           $WS_VAULT/projects/work/<topic>/progress/<id>.md. A handoff
@@ -2635,8 +2667,11 @@ command that takes an <id> also takes the Jira key of the ticket.
           with the latest date and time in its name, as the
           SessionStart hook of the vault picks it. For a git checkout
           the preview is its branch and last commit. --preview <path>
-          prints the preview of one row. It reads .ws, docker, the
-          status cache, and the vault, and never asks gh.
+          prints the preview of one row, in color unless NO_COLOR is
+          set. It reads .ws, docker, the status cache, and the vault,
+          and never asks gh. The colors are classic Gruvbox Dark. An
+          fzf older than 0.66.0, or NO_COLOR, gets the plain rows and
+          the memory line as the header of fzf's own look.
   stage   set the stage, one of spec planned building verifying qa
           review merged. Without <id>, the ticket of the current
           directory. Warns when more than 5 tickets are in building.
@@ -2981,7 +3016,7 @@ ticket_scan() {
     local dir id
     local -A kv=()
     T_IDS=() T_PLAIN=()
-    T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_BAD=()
+    T_STAGE=() T_BRANCH=() T_REPOS=() T_KEY=() T_ENV=() T_SLOT=() T_BAD=()
     for dir in "$WS_ROOT"/*/; do
         dir=${dir%/}
         [[ -d $dir && ! -L $dir && $dir != *[$'\t\n']* ]] || continue
@@ -2999,6 +3034,7 @@ ticket_scan() {
         T_BRANCH[$id]=${kv[WS_BRANCH]-}
         T_REPOS[$id]=${kv[WS_REPOS]-}
         T_KEY[$id]=${kv[WS_TICKET]-}
+        T_SLOT[$id]=${kv[WS_SLOT]-}
         ticket_recorded_env kv
         T_ENV[$id]=$REPLY
     done
@@ -3961,8 +3997,8 @@ ws_adopt() {
 }
 
 status_read() {
-    local kind a b
-    S_CWD=() S_WAIT=() P_STATES=()
+    local kind a b id state
+    S_CWD=() S_WAIT=() P_STATES=() P_COUNTS=()
     [[ -f $WS_CACHE_DIR/status.json ]] || return 0
     while IFS=$'\t' read -r kind a b; do
         case $kind in
@@ -3971,15 +4007,34 @@ status_read() {
             S_CWD+=("$b")
             ;;
         P) P_STATES[$a]=$b ;;
+        N) P_COUNTS[$a]=$b ;;
         esac
     done < <(jq -r '
+        def ticket: .key | test("\\A[A-Za-z0-9][A-Za-z0-9._-]*\\z");
         ((.claude.sessions // []) | if type == "array" then .[] else empty end
             | select(type == "object" and (.cwd | type) == "string" and (.cwd | test("[\t\n]") | not))
             | "S\t\(if .waiting == true then 1 else 0 end)\t\(.cwd)"),
         ((.prs.tickets // {}) | if type == "object" then to_entries[] else empty end
-            | select((.key | test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and (.value | type) == "array")
-            | "P\t\(.key)\t\(.value | map(strings | select(test("^[a-z-]+$"))) | join(","))")' \
+            | select(ticket and (.value | type) == "array")
+            | "P\t\(.key)\t\(.value | map(strings | select(test("^[a-z-]+$"))) | join(","))"),
+        ((.prs.pulls // {}) | if type == "object" then to_entries[] else empty end
+            | select(ticket and (.value | type) == "array")
+            | [.value[] | objects | .state] as $s
+            | "N\t\(.key)\t\(["open", "merged", "closed"] | map(. as $w | $s | map(select(. == $w)) | length | tostring)
+                | join(" "))")' \
         "$WS_CACHE_DIR/status.json" 2>/dev/null)
+    for id in "${!P_STATES[@]}"; do
+        [[ -z ${P_COUNTS[$id]+set} ]] || continue
+        P_COUNTS[$id]=
+        for state in open merged closed; do
+            if [[ ,${P_STATES[$id]}, == *,"$state",* ]]; then
+                P_COUNTS[$id]+=" 1"
+            else
+                P_COUNTS[$id]+=" 0"
+            fi
+        done
+        P_COUNTS[$id]=${P_COUNTS[$id]# }
+    done
 }
 
 status_prs() {
@@ -4163,51 +4218,111 @@ env_state() {
     fi
 }
 
+ws_gib() {
+    local tenths=$((($1 * 10 + 536870912) / 1073741824))
+    REPLY=$((tenths / 10)).$((tenths % 10))
+}
+
 ws_mem() {
-    local tenths
     if (($1 >= 1073741824)); then
-        tenths=$((($1 * 10 + 536870912) / 1073741824))
-        REPLY=$((tenths / 10)).$((tenths % 10))G
+        ws_gib "$1"
+        REPLY+=G
     else
         REPLY=$((($1 + 524288) / 1048576))M
     fi
 }
 
+ws_color() {
+    local name hex
+    for name in "${!WS_HEX[@]}" off; do
+        WS_INK[$name]=
+    done
+    [[ $1 == auto && -z ${NO_COLOR+set} ]] || return 0
+    for name in "${!WS_HEX[@]}"; do
+        hex=${WS_HEX[$name]#\#}
+        printf -v "WS_INK[$name]" '\e[38;2;%d;%d;%dm' "0x${hex:0:2}" "0x${hex:2:2}" "0x${hex:4:2}"
+    done
+    WS_INK[off]=$'\e[0m'
+}
+
+ink() {
+    local pad=$((${3:-0} - ${#2}))
+    ((pad > 0)) || pad=0
+    printf -v REPLY '%s%s%s%*s' "${WS_INK[$1]}" "$2" "${WS_INK[off]}" "$pad" ''
+}
+
 pick_header() {
-    local cap="" key value _ n=0 bytes=0
-    if [[ -n $E_WHY ]]; then
-        R_HEAD="env from .ws ($E_WHY)"
-    else
-        ws_mem "$E_SUM"
-        R_HEAD="containers $REPLY"
-        { read -r cap <"$WS_CGROUP/containers.slice/memory.max"; } 2>/dev/null || true
-        if [[ $cap =~ ^[0-9]+$ ]]; then
-            ws_mem "$cap"
-            R_HEAD+=" of $REPLY cap"
-        fi
-    fi
+    local cap="" avail="" key value _ n=0 bytes=0 full tone empty used total
+    local -n c=WS_INK
+    { read -r cap <"$WS_CGROUP/containers.slice/memory.max"; } 2>/dev/null || true
+    [[ $cap =~ ^[0-9]+$ ]] || cap=
     if [[ -r $WS_PROC/meminfo ]]; then
         while read -r key value _; do
             [[ $key == MemAvailable: && $value =~ ^[0-9]+$ ]] || continue
-            ws_mem $((value * 1024))
-            R_HEAD+=", $REPLY available"
+            avail=$((value * 1024))
             break
         done <"$WS_PROC/meminfo"
     fi
-    [[ -z $E_WHY ]] || return 0
-    for key in "${!E_RUN[@]}"; do
-        [[ -z ${E_OWNED[$key]+set} ]] || continue
-        n=$((n + 1))
-        bytes=$((bytes + ${E_MEM[$key]:-0}))
-    done
-    ws_mem "$bytes"
-    R_HEAD+=", $n other stack"
-    ((n == 1)) || R_HEAD+=s
-    ((n == 0)) || R_HEAD+=" $REPLY"
+    if [[ -z $E_WHY ]]; then
+        for key in "${!E_RUN[@]}"; do
+            [[ -z ${E_OWNED[$key]+set} ]] || continue
+            n=$((n + 1))
+            bytes=$((bytes + ${E_MEM[$key]:-0}))
+        done
+    fi
+    if [[ -z ${c[off]} ]]; then
+        if [[ -n $E_WHY ]]; then
+            R_HEAD="env from .ws ($E_WHY)"
+        else
+            ws_mem "$E_SUM"
+            R_HEAD="containers $REPLY"
+            if [[ -n $cap ]]; then
+                ws_mem "$cap"
+                R_HEAD+=" of $REPLY cap"
+            fi
+        fi
+        if [[ -n $avail ]]; then
+            ws_mem "$avail"
+            R_HEAD+=", $REPLY available"
+        fi
+        [[ -z $E_WHY ]] || return 0
+        ws_mem "$bytes"
+        R_HEAD+=", $n other stack"
+        ((n == 1)) || R_HEAD+=s
+        ((n == 0)) || R_HEAD+=" $REPLY"
+        return 0
+    fi
+    if [[ -n $E_WHY ]]; then
+        R_HEAD="${c[dim]}env from .ws ($E_WHY)${c[off]}"
+    elif ((${cap:-0} > 0)); then
+        full=$(((E_SUM * 40 / cap + 1) / 2))
+        ((full <= 20)) || full=20
+        tone=green
+        ((E_SUM * 1000 / cap < 700)) || tone=yellow
+        ((E_SUM * 1000 / cap < 900)) || tone=red
+        printf -v used '%*s' "$full" ''
+        printf -v empty '%*s' $((20 - full)) ''
+        ws_gib "$cap"
+        total=$REPLY
+        ws_gib "$E_SUM"
+        R_HEAD="${c[dim]}containers${c[off]} ${c[$tone]}${used// /━}${c[border]}${empty// /━}${c[off]}"
+        R_HEAD+=" ${c[fg]}$REPLY${c[dim]}/${total}G${c[off]}"
+    else
+        ws_mem "$E_SUM"
+        R_HEAD="${c[dim]}containers${c[off]} ${c[fg]}$REPLY${c[off]}"
+    fi
+    if [[ -n $avail ]]; then
+        ws_mem "$avail"
+        R_HEAD+="   ${c[dim]}free${c[off]} ${c[fg]}$REPLY${c[off]}"
+    fi
+    if ((n)); then
+        ws_mem "$bytes"
+        R_HEAD+="   ${c[dim]}other${c[off]} ${c[fg]}$REPLY${c[off]}"
+    fi
 }
 
 pick_build() {
-    local id dir i n best len stage idx rank waiting pr env mem stack text
+    local id dir i n best len stage idx rank env live bytes stack text width=0
     local -a rows=() more=() reals=() order=()
     local -A seen=() wait_of=() stage_rank=()
     R_PATH=() R_TEXT=()
@@ -4260,40 +4375,127 @@ pick_build() {
             printf '%s\t%s\t%s\t%s\n' "$rank" "$idx" "$id" "$i"
         done | LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3 | cut -f4
     )
+    for id in "${T_IDS[@]}"; do
+        ((${#id} <= width)) || width=${#id}
+    done
+    ((width <= 30)) || width=30
     for i in "${order[@]}"; do
         id=${T_IDS[i]}
-        waiting=
-        ((${wait_of[$i]:-0} == 0)) || waiting="${wait_of[$i]} waiting"
-        if [[ -n ${T_BAD[$id]+set} ]]; then
-            printf -v text '%-16s %s' "$id" "malformed .ws: ${T_BAD[$id]}"
+        env="" live="" bytes=""
+        if [[ -z ${T_BAD[$id]+set} && -z $E_WHY ]]; then
+            live=1
+            stack=dockyard-$(ticket_stack_name "${T_BRANCH[$id]}")
+            E_OWNED[$stack]=1
+            env_state "$stack"
+            env=${REPLY:-${T_SLOT[$id]:+down}}
+            bytes=${E_MEM[$stack]-}
+        elif [[ -z ${T_BAD[$id]+set} ]]; then
+            env=${T_ENV[$id]}
+        fi
+        if [[ -n ${WS_INK[off]} ]]; then
+            pick_color_row "$id" "${wait_of[$i]:-0}" "$env" "$live" "$bytes" "$width"
         else
-            pr=${P_STATES[$id]:+pr:${P_STATES[$id]}}
-            env=${T_ENV[$id]:+env:${T_ENV[$id]}?}
-            mem=
-            if [[ -z $E_WHY ]]; then
-                stack=dockyard-$(ticket_stack_name "${T_BRANCH[$id]}")
-                E_OWNED[$stack]=1
-                env_state "$stack"
-                env=${REPLY:+env:$REPLY}
-                if [[ -n ${E_MEM[$stack]-} ]]; then
-                    ws_mem "${E_MEM[$stack]}"
-                    mem=$REPLY
-                fi
-            fi
-            printf -v text '%-16s %-10s %-10s %-16s %-14s %6s %s' "$id" "${T_STAGE[$id]:-?}" "$waiting" "$pr" "$env" \
-                "$mem" "${T_BRANCH[$id]}"
-            text=${text%"${text##*[! ]}"}
+            pick_plain_row "$id" "${wait_of[$i]:-0}" "$env" "$live" "$bytes"
+        fi
+        R_PATH+=("${rows[i]}")
+        R_TEXT+=("$REPLY")
+    done
+    for ((i = ${#T_IDS[@]}; i < ${#rows[@]}; i++)); do
+        text=${rows[i]/#"$HOME/"/\~/}
+        if [[ -n ${WS_INK[off]} ]]; then
+            pick_wait_mark "${wait_of[$i]:-0}"
+            text="$REPLY ${WS_INK[blue]}$text${WS_INK[off]}"
+        elif ((${wait_of[$i]:-0})); then
+            text+="  ${wait_of[$i]} waiting"
         fi
         R_PATH+=("${rows[i]}")
         R_TEXT+=("$text")
     done
-    for ((i = ${#T_IDS[@]}; i < ${#rows[@]}; i++)); do
-        text=${rows[i]/#"$HOME/"/\~/}
-        ((${wait_of[$i]:-0} == 0)) || text+="  ${wait_of[$i]} waiting"
-        R_PATH+=("${rows[i]}")
-        R_TEXT+=("$text")
-    done
     pick_header
+}
+
+pick_wait_mark() {
+    if (($1)); then
+        REPLY="${WS_INK[yellow]}●${WS_INK[off]}"
+    else
+        REPLY=" "
+    fi
+}
+
+pick_plain_row() {
+    local id=$1 wait=$2 env=$3 live=$4 bytes=$5 mem="" waiting="" row
+    if [[ -n ${T_BAD[$id]+set} ]]; then
+        printf -v REPLY '%-16s %s' "$id" "malformed .ws: ${T_BAD[$id]}"
+        return 0
+    fi
+    [[ -z $env || -n $live ]] || env+="?"
+    if [[ -n $bytes ]]; then
+        ws_mem "$bytes"
+        mem=$REPLY
+    fi
+    ((wait == 0)) || waiting="$wait waiting"
+    printf -v row '%-16s %-10s %-10s %-16s %-14s %6s %s' "$id" "${T_STAGE[$id]:-?}" "$waiting" \
+        "${P_STATES[$id]:+pr:${P_STATES[$id]}}" "${env:+env:$env}" "$mem" "${T_BRANCH[$id]}"
+    REPLY=${row%"${row##*[! ]}"}
+}
+
+pick_color_row() {
+    local id=$1 wait=$2 env=$3 live=$4 bytes=$5 width=$6 stage=${T_STAGE[$1]:-?} mem row tone state
+    local -n c=WS_INK
+    pick_wait_mark "$wait"
+    row="$REPLY "
+    tone="fg"
+    [[ -z ${T_BAD[$id]+set} ]] || tone=red
+    if ((${#id} > width)); then
+        row+="${c[$tone]}${id:0:width-1}…${c[off]}"
+    else
+        ink "$tone" "$id" "$width"
+        row+=$REPLY
+    fi
+    if [[ -n ${T_BAD[$id]+set} ]]; then
+        REPLY="$row  ${c[red]}malformed .ws: ${T_BAD[$id]}${c[off]}"
+        return 0
+    fi
+    ink "${WS_STAGE_INK[$stage]:-grey}" "$stage" 9
+    row+="  $REPLY  "
+    if [[ -z $env ]]; then
+        row+="${c[dim]}·${c[off]}      "
+    else
+        state=${env%% *}
+        tone=${WS_ENV_INK[$state]}
+        env=${env#part }
+        if [[ -z $live ]]; then
+            tone=dim
+            env+="?"
+        fi
+        ink "$tone" "$env" 5
+        row+="${c[$tone]}${WS_ENV_MARK[$state]}${c[off]} $REPLY"
+    fi
+    if [[ -n $bytes ]]; then
+        ws_mem "$bytes"
+        printf -v mem '%6s' "$REPLY"
+        tone=light
+        ((bytes < 5 * 1073741824)) || tone=yellow
+        ((bytes < 8 * 1073741824)) || tone=red
+        row+=" ${c[$tone]}$mem${c[off]}"
+    else
+        row+="       "
+    fi
+    pick_pr_marks "$id"
+    row+="  $REPLY"
+    REPLY=${row%"${row##*[! ]}"}
+}
+
+pick_pr_marks() {
+    local state k=0
+    local -a prs=(0 0 0)
+    [[ -z ${P_COUNTS[$1]+set} ]] || read -r -a prs <<<"${P_COUNTS[$1]}"
+    REPLY=
+    for state in open merged closed; do
+        ((prs[k] == 0)) || REPLY+=" ${WS_INK[${WS_PR_INK[$state]}]}${WS_PR_MARK[$state]}${prs[k]}${WS_INK[off]}"
+        k=$((k + 1))
+    done
+    REPLY=${REPLY# }
 }
 
 pick_rows() {
@@ -4305,6 +4507,11 @@ pick_rows() {
 
 ticket_list() {
     local i
+    if [[ -t 1 ]]; then
+        ws_color auto
+    else
+        ws_color off
+    fi
     pick_build
     printf '%s\n' "$R_HEAD"
     if ((${#T_IDS[@]} == 0)); then
@@ -4379,28 +4586,31 @@ pick_preview() {
 }
 
 dir_preview() {
-    ws_shown "$1"
+    local -n c=WS_INK
+    echo "${c[blue]}$(ws_shown "$1")${c[off]}"
     [[ -e $1/.git ]] || return 0
     REPLY=$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
     [[ $REPLY != HEAD ]] || REPLY="detached HEAD"
-    echo "branch    $REPLY"
+    echo "${c[yellow]}branch${c[off]}    $REPLY"
     REPLY=$(git -C "$1" log -1 --format='%h %s (%cr)' 2>/dev/null) || REPLY=
-    [[ -z $REPLY ]] || echo "last      $REPLY"
+    [[ -z $REPLY ]] || echo "${c[yellow]}last${c[off]}      $REPLY"
 }
 
 ticket_preview() {
-    local dir=$1 id topic stack i mem line progress
+    local dir=$1 id topic stack i mem line progress tone stage
     local -a services=()
     local -A kv=()
+    local -n c=WS_INK
     if ! ticket_read "$dir" kv; then
-        echo "malformed .ws: $REPLY"
+        echo "${c[red]}malformed .ws: $REPLY${c[off]}"
         return 0
     fi
     id=${kv[WS_ID]}
     topic=${kv[WS_TOPIC]-}
+    stage=${kv[WS_STAGE]:-?}
     echo "$id"
-    echo "stage     ${kv[WS_STAGE]:-?}"
-    echo "branch    ${kv[WS_BRANCH]:-?}"
+    echo "${c[yellow]}stage${c[off]}     ${c[${WS_STAGE_INK[$stage]:-grey}]}$stage${c[off]}"
+    echo "${c[yellow]}branch${c[off]}    ${kv[WS_BRANCH]:-?}"
     if env_scan; then
         stack=dockyard-$(ticket_stack_name "${kv[WS_BRANCH]-}")
         mem=
@@ -4409,15 +4619,26 @@ ticket_preview() {
             mem="  $REPLY"
         fi
         env_state "$stack"
-        if [[ -z $REPLY ]]; then
-            echo "env       no containers${kv[WS_SLOT]:+, slot ${kv[WS_SLOT]} kept}"
+        if [[ -z $REPLY && -n ${kv[WS_SLOT]-} ]]; then
+            echo "${c[yellow]}env${c[off]}       ${c[red]}no containers, slot ${kv[WS_SLOT]} kept${c[off]}"
+        elif [[ -z $REPLY ]]; then
+            echo "${c[yellow]}env${c[off]}       ${c[dim]}no containers${c[off]}"
         else
-            echo "env       $REPLY$mem"
+            echo "${c[yellow]}env${c[off]}       ${c[${WS_ENV_INK[${REPLY%% *}]}]}$REPLY${c[off]}$mem"
             for i in "${!E_STACK[@]}"; do
                 [[ ${E_STACK[i]} == "$stack" ]] || continue
-                REPLY=
-                [[ -z ${E_BYTES[i]} ]] || ws_mem "${E_BYTES[i]}"
-                printf -v line '  %-20s %-10s %s' "${E_SERVICE[i]}" "${E_STATE[i]}" "$REPLY"
+                case ${E_STATE[i]} in
+                running) tone=green ;;
+                exited | dead) tone=red ;;
+                *) tone=yellow ;;
+                esac
+                mem=
+                if [[ -n ${E_BYTES[i]} ]]; then
+                    ws_mem "${E_BYTES[i]}"
+                    mem=$REPLY
+                fi
+                ink "$tone" "${E_STATE[i]}" 10
+                printf -v line '  %-20s %s %s' "${E_SERVICE[i]}" "$REPLY" "$mem"
                 services+=("${line%"${line##*[! ]}"}")
             done
             printf '%s\n' "${services[@]}" | LC_ALL=C sort
@@ -4425,17 +4646,17 @@ ticket_preview() {
     else
         line=$REPLY
         ticket_recorded_env kv
-        echo "env       ${REPLY:-none} from .ws ($line)"
+        echo "${c[yellow]}env${c[off]}       ${c[dim]}${REPLY:-none} from .ws ($line)${c[off]}"
     fi
     ticket_prs "$id"
     if ticket_handoff "$id"; then
-        echo "handoff   ${REPLY##*/}"
+        echo "${c[yellow]}handoff${c[off]}   ${REPLY##*/}"
         handoff_summary "$REPLY"
     fi
     progress=$WS_VAULT/projects/work/$topic/progress/$id.md
     if [[ -n $topic && -s $progress ]]; then
-        echo "progress"
-        tail -n 5 -- "$progress" | sed 's/^/  /'
+        echo "${c[yellow]}progress${c[off]}"
+        tail -n 5 -- "$progress" | sed -E "s/^(- )?([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z)/\\1${c[dim]}\\2${c[off]}/; s/^/  /"
     fi
 }
 
@@ -4443,6 +4664,7 @@ ticket_prs() {
     local line repo number state states_only=0
     local -a lines=() counts=()
     local -A count=()
+    local -n c=WS_INK
     if [[ -f $WS_CACHE_DIR/status.json ]]; then
         mapfile -t lines < <(jq -r --arg id "$1" '
             def name: type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9._-]*\\z");
@@ -4458,7 +4680,7 @@ ticket_prs() {
               else empty end' "$WS_CACHE_DIR/status.json" 2>/dev/null)
     fi
     if ((${#lines[@]} == 0)); then
-        echo "PRs       not in the status cache yet"
+        echo "${c[yellow]}PRs${c[off]}       ${c[dim]}not in the status cache yet${c[off]}"
         return 0
     fi
     for line in "${lines[@]}"; do
@@ -4469,21 +4691,21 @@ ticket_prs() {
     for state in open merged closed no-pr $(printf '%s\n' "${!count[@]}" | LC_ALL=C sort); do
         [[ -n ${count[$state]+set} ]] || continue
         if ((states_only)); then
-            counts+=("$state")
+            counts+=("${c[${WS_PR_INK[$state]:-grey}]}$state${c[off]}")
         else
-            counts+=("${count[$state]} $state")
+            counts+=("${c[${WS_PR_INK[$state]:-grey}]}${count[$state]} $state${c[off]}")
         fi
         unset "count[$state]"
     done
     line=$(printf '%s, ' "${counts[@]}")
-    echo "PRs       ${line%, }"
+    echo "${c[yellow]}PRs${c[off]}       ${line%, }"
     if ((states_only)); then
-        echo "  the cache has no PR numbers until the next status refresh"
+        echo "  ${c[dim]}the cache has no PR numbers until the next status refresh${c[off]}"
         return 0
     fi
     for line in "${lines[@]}"; do
         IFS=$WS_US read -r repo number state <<<"$line"
-        printf '  %-20s %-10s %s\n' "$repo" "${number:+#$number}" "$state"
+        printf '  %-20s %-10s %s\n' "$repo" "${number:+#$number}" "${c[${WS_PR_INK[$state]:-grey}]}$state${c[off]}"
     done
 }
 
@@ -4542,13 +4764,17 @@ handoff_summary() {
 
 ws_pick() {
     local sel out self
+    local -a look=()
+    local -n h=WS_HEX
     case "$#:${1-}" in
     1:--print)
+        ws_color auto
         pick_build
         pick_rows
         return
         ;;
     2:--preview)
+        ws_color auto
         pick_preview "$2"
         return
         ;;
@@ -4568,9 +4794,26 @@ ws_pick() {
     fi
     self=$(realpath -e -- "${BASH_SOURCE[0]}") || return 1
     status_refresh_bg
+    if fzf_styled; then
+        ws_color auto
+    else
+        ws_color off
+    fi
     pick_build
-    sel=$(pick_rows | fzf --delimiter=$'\t' --with-nth=2.. --tiebreak=index --prompt='ws> ' --header="$R_HEAD" \
-        --preview="bash $(printf %q "$self") pick --preview {s1}" --preview-window=right,40%,wrap) || return 0
+    if [[ -n ${WS_INK[off]} ]]; then
+        look=(--ansi --style=full:sharp --border=none --gutter=' ' --layout=default --highlight-line --info=inline-right
+            --prompt='> ' --pointer='>' --marker='+' --input-label=" $R_HEAD " --list-label=' Results '
+            --preview-label=' Preview ' '--preview-window=right,45%,wrap'
+            --bind="focus:transform-preview-label:printf ' %s ' \"\$(basename {s1})\""
+            --color="fg:${h[fg]},bg:${h[bg]},preview-bg:${h[bg]},hl:${h[green]}:bold,fg+:${h[fg]},bg+:${h[sel]},hl+:${h[green]}:bold,gutter:${h[bg]}"
+            --color="border:${h[border]},list-border:${h[border]},preview-border:${h[border]},input-border:${h[blue]}"
+            --color="label:${h[yellow]}:bold,prompt:${h[blue]},pointer:${h[red]},marker:${h[aqua]},query:${h[fg]}"
+            --color="header:${h[grey]},info:${h[grey]},spinner:${h[purple]},separator:${h[border]},scrollbar:${h[border]}")
+    else
+        look=(--prompt='ws> ' --header="$R_HEAD" '--preview-window=right,40%,wrap')
+    fi
+    sel=$(pick_rows | fzf --delimiter=$'\t' --with-nth=2.. --tiebreak=index "${look[@]}" \
+        --preview="bash $(printf %q "$self") pick --preview {s1}") || return 0
     if [[ -n ${TMUX-} ]]; then
         if ! out=$(pick_open "${sel%%$'\t'*}" 2>&1); then
             tmux display-message -- "${out:-ws: cannot open ${sel%%$'\t'*}}"
@@ -4579,6 +4822,15 @@ ws_pick() {
     else
         pick_open "${sel%%$'\t'*}"
     fi
+}
+
+# --style, the borders and labels of each section, and their colors came in fzf 0.58.0,
+# and --gutter in 0.66.0.
+fzf_styled() {
+    local v
+    v=$(fzf --version </dev/null 2>/dev/null) || return 1
+    [[ $v =~ ^([0-9]+)\.([0-9]+)\. ]] || return 1
+    ((BASH_REMATCH[1] > 0 || BASH_REMATCH[2] >= 66))
 }
 
 ws_ls() {
